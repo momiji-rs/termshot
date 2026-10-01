@@ -138,7 +138,7 @@ parsing, font reading/validation/padding, drawing, PNG filtering, compression
 allocation/matching/emission/checksum, PNG packaging, and writing. The benchmark
 measures ordinary CLI runs separately from profiling and optional peak RSS runs;
 it records raw samples, median, p95, output size and hash, and toolchain details. Python 3 is needed only
-for benchmarks and tests.
+for the benchmark scripts; the tests need only a C compiler and rustc.
 
 See [performance measurements](docs/performance.md) for the before/after results,
 baseline reproduction, timing boundaries, and remaining bottlenecks. Extended
