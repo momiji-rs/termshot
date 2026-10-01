@@ -1,0 +1,204 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -4,6 +4,7 @@
+ use std::env;
+ use std::fs;
+ use std::process::ExitCode;
++use std::time::Instant;
+ 
+ const DEFAULT_COLS: usize = 100;
+ const DEFAULT_ROWS: usize = 30;
+@@ -247,6 +248,8 @@
+ ";
+ 
+ fn main() -> ExitCode {
++    let started = Instant::now();
++    let profile = env::var_os("TERMSHOT_PROFILE").is_some();
+     let mut args = env::args().skip(1);
+     let Some(src) = args.next() else {
+         eprintln!("{USAGE}");
+@@ -294,6 +297,7 @@
+         },
+         None => DEFAULT_ROWS,
+     };
++    let read_started = Instant::now();
+     let data = match fs::read(&src) {
+         Ok(data) => data,
+         Err(error) => {
+@@ -301,7 +305,10 @@
+             return ExitCode::from(1);
+         }
+     };
++    let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
++    let parse_started = Instant::now();
+     let cells = parse(&data, cols, rows);
++    let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
+     let font = match std::ffi::CString::new(font_path) {
+         Ok(font) => font,
+         Err(_) => {
+@@ -326,5 +333,8 @@
+             out.as_ptr(),
+         )
+     };
++    if profile {
++        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", started.elapsed().as_secs_f64() * 1000.0, data.len());
++    }
+     ExitCode::from(code as u8)
+ }
+--- a/src/draw.c
++++ b/src/draw.c
+@@ -8,6 +8,17 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <time.h>
++
++static int profiling;
++static double png_marks[4];
++static double now_ms(void) {
++    if (!profiling) return 0;
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
++}
++#define STBIW_PNG_PROFILE(stage) (png_marks[stage] = now_ms())
+ 
+ #define STB_TRUETYPE_IMPLEMENTATION
+ #include "stb_truetype.h"
+@@ -171,6 +182,8 @@
+ }
+ 
+ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, double font_px, const char *out_path) {
++    profiling = getenv("TERMSHOT_PROFILE") != NULL;
++    double started = now_ms();
+     FILE *fp = fopen(font_path, "rb");
+     if (!fp) {
+         fprintf(stderr, "font open failed: %s\n", font_path);
+@@ -192,6 +205,7 @@
+         return 1;
+     }
+     fclose(fp);
++    double font_read = now_ms();
+ 
+     stbtt_fontinfo font;
+     int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
+@@ -227,12 +241,14 @@
+ 
+     g_w = width;
+     g_h = height;
++    double font_setup = now_ms();
+     g_img = (uint8_t *)malloc((size_t)width * height * 4);
+     if (!g_img) {
+         free(ttf);
+         return 2;
+     }
+ 
++    double allocated = now_ms();
+     for (int r = 0; r < rows; r++) {
+         for (int c = 0; c < cols; c++) {
+             const Cell *cell = &cells[r * cols + c];
+@@ -240,12 +256,19 @@
+         }
+     }
+ 
++    double background = now_ms();
++    double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
++    size_t glyphs = 0;
+     for (int r = 0; r < rows; r++) {
+         for (int c = 0; c < cols; c++) {
+             const Cell *cell = &cells[r * cols + c];
+             uint32_t cp = cell->ch;
+             if (cp == 0 || cp == ' ') continue;
+-            if (paint_geometry(c, r, cell_w, cell_h, cp, cell->bold, cell->fr, cell->fg, cell->fb)) continue;
++            double tick = now_ms();
++            int geometry = paint_geometry(c, r, cell_w, cell_h, cp, cell->bold, cell->fr, cell->fg, cell->fb);
++            geometry_ms += now_ms() - tick;
++            if (geometry) continue;
++            tick = now_ms();
+             if (stbtt_FindGlyphIndex(&font, (int)cp) == 0) continue;
+             int ix0, iy0, ix1, iy1;
+             stbtt_GetCodepointBitmapBox(&font, (int)cp, scale, scale, &ix0, &iy0, &ix1, &iy1);
+@@ -255,18 +278,42 @@
+             unsigned char *bm = (unsigned char *)malloc((size_t)gw * gh);
+             if (!bm) continue;
+             stbtt_MakeCodepointBitmap(&font, bm, gw, gh, gw, scale, scale, (int)cp);
++            glyphs++;
++            glyph_ms += now_ms() - tick;
++            tick = now_ms();
+             int dx = c * cell_w + ix0;
+             int dy = r * cell_h + baseline + iy0;
+             blend(dx, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
+             if (cell->bold) blend(dx + 1, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
++            blend_ms += now_ms() - tick;
+             free(bm);
+         }
+     }
+ 
+-    int ok = stbi_write_png(out_path, width, height, 4, g_img, width * 4);
++    double foreground = now_ms();
++    int png_len = 0;
++    unsigned char *png = stbi_write_png_to_mem(g_img, width * 4, width, height, 4, &png_len);
++    double encoded = now_ms();
++    int ok = 0;
++    if (png) {
++        FILE *out = fopen(out_path, "wb");
++        if (out) {
++            ok = fwrite(png, 1, (size_t)png_len, out) == (size_t)png_len;
++            if (fclose(out) != 0) ok = 0;
++        }
++        free(png);
++    }
++    double written = now_ms();
+     free(g_img);
+     g_img = NULL;
+     free(ttf);
++    if (profiling) {
++        fprintf(stderr, "termshot-profile {\"font_read_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
++            font_read - started, font_setup - font_read, allocated - font_setup,
++            background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
++            png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
++            encoded - foreground, written - encoded, now_ms() - written, glyphs, png_len, (size_t)width * height * 4);
++    }
+     if (!ok) {
+         fprintf(stderr, "png write failed: %s\n", out_path);
+         return 2;
+--- a/third_party/stb/stb_image_write.h
++++ b/third_party/stb/stb_image_write.h
+@@ -1125,6 +1125,10 @@
+    }
+ }
+ 
++// termshot: optional phase timing; no effect in other consumers.
++#ifndef STBIW_PNG_PROFILE
++#define STBIW_PNG_PROFILE(stage) ((void)0)
++#endif
+ STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int stride_bytes, int x, int y, int n, int *out_len)
+ {
+    int force_filter = stbi_write_force_png_filter;
+@@ -1141,6 +1145,7 @@
+       force_filter = -1;
+    }
+ 
++   STBIW_PNG_PROFILE(0);
+    filt = (unsigned char *) STBIW_MALLOC((x*n+1) * y); if (!filt) return 0;
+    line_buffer = (signed char *) STBIW_MALLOC(x * n); if (!line_buffer) { STBIW_FREE(filt); return 0; }
+    for (j=0; j < y; ++j) {
+@@ -1173,8 +1178,10 @@
+       STBIW_MEMMOVE(filt+j*(x*n+1)+1, line_buffer, x*n);
+    }
+    STBIW_FREE(line_buffer);
++   STBIW_PNG_PROFILE(1);
+    zlib = stbi_zlib_compress(filt, y*( x*n+1), &zlen, stbi_write_png_compression_level);
+    STBIW_FREE(filt);
++   STBIW_PNG_PROFILE(2);
+    if (!zlib) return 0;
+ 
+    // each tag requires 12 bytes of overhead
+@@ -1207,6 +1214,7 @@
+    stbiw__wpcrc(&o,0);
+ 
+    STBIW_ASSERT(o == out + *out_len);
++   STBIW_PNG_PROFILE(3);
+ 
+    return out;
+ }

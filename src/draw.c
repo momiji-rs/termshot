@@ -8,6 +8,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+static int profiling;
+static double png_marks[4];
+static double now_ms(void) {
+    if (!profiling) return 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
+}
+#define STBIW_PNG_PROFILE(stage) (png_marks[stage] = now_ms())
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -23,16 +34,23 @@ typedef struct {
 
 _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 
+/* Bounded per-render cache. Bold and colors reuse the same coverage bitmap. */
+typedef struct {
+    uint32_t cp;
+    int valid, ix0, iy0, w, h;
+    unsigned char *bitmap;
+} Glyph;
+#define GLYPH_CACHE_SIZE 256
+
 static uint8_t *g_img;
 static int g_w, g_h;
 
 static void put(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if ((unsigned)x >= (unsigned)g_w || (unsigned)y >= (unsigned)g_h) return;
-    uint8_t *p = g_img + ((size_t)y * g_w + x) * 4;
+    uint8_t *p = g_img + ((size_t)y * g_w + x) * 3;
     p[0] = r;
     p[1] = g;
     p[2] = b;
-    p[3] = 255;
 }
 
 static void fill_rect(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
@@ -41,13 +59,12 @@ static void fill_rect(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint
     if (x1 > g_w) x1 = g_w;
     if (y1 > g_h) y1 = g_h;
     for (int y = y0; y < y1; y++) {
-        uint8_t *row = g_img + ((size_t)y * g_w + x0) * 4;
+        uint8_t *row = g_img + ((size_t)y * g_w + x0) * 3;
         for (int x = x0; x < x1; x++) {
             row[0] = r;
             row[1] = g;
             row[2] = b;
-            row[3] = 255;
-            row += 4;
+            row += 3;
         }
     }
 }
@@ -147,15 +164,17 @@ static int paint_geometry(int col, int row, int cell_w, int cell_h, uint32_t cp,
 
 static void blend(int dx, int dy, const unsigned char *bm, int gw, int gh,
                    uint8_t r, uint8_t g, uint8_t b) {
-    for (int y = 0; y < gh; y++) {
+    int x0 = dx < 0 ? -dx : 0;
+    int y0 = dy < 0 ? -dy : 0;
+    int x1 = gw < g_w - dx ? gw : g_w - dx;
+    int y1 = gh < g_h - dy ? gh : g_h - dy;
+    for (int y = y0; y < y1; y++) {
         int iy = dy + y;
-        if ((unsigned)iy >= (unsigned)g_h) continue;
-        for (int x = 0; x < gw; x++) {
+        for (int x = x0; x < x1; x++) {
             int ix = dx + x;
-            if ((unsigned)ix >= (unsigned)g_w) continue;
             unsigned char a = bm[y * gw + x];
             if (a == 0) continue;
-            uint8_t *p = g_img + ((size_t)iy * g_w + ix) * 4;
+            uint8_t *p = g_img + ((size_t)iy * g_w + ix) * 3;
             if (a == 255) {
                 p[0] = r;
                 p[1] = g;
@@ -165,12 +184,13 @@ static void blend(int dx, int dy, const unsigned char *bm, int gw, int gh,
                 p[1] = (uint8_t)((g * a + p[1] * (255 - a) + 127) / 255);
                 p[2] = (uint8_t)((b * a + p[2] * (255 - a) + 127) / 255);
             }
-            p[3] = 255;
         }
     }
 }
 
 int draw_png(const Cell *cells, int cols, int rows, const char *font_path, double font_px, const char *out_path) {
+    profiling = getenv("TERMSHOT_PROFILE") != NULL;
+    double started = now_ms();
     FILE *fp = fopen(font_path, "rb");
     if (!fp) {
         fprintf(stderr, "font open failed: %s\n", font_path);
@@ -192,6 +212,7 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
         return 1;
     }
     fclose(fp);
+    double font_read = now_ms();
 
     stbtt_fontinfo font;
     int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
@@ -227,46 +248,106 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
 
     g_w = width;
     g_h = height;
-    g_img = (uint8_t *)malloc((size_t)width * height * 4);
+    double font_setup = now_ms();
+    g_img = (uint8_t *)malloc((size_t)width * height * 3);
     if (!g_img) {
         free(ttf);
         return 2;
     }
 
+    double allocated = now_ms();
     for (int r = 0; r < rows; r++) {
+        int y = r * cell_h;
         for (int c = 0; c < cols; c++) {
             const Cell *cell = &cells[r * cols + c];
-            fill_rect(c * cell_w, r * cell_h, (c + 1) * cell_w, (r + 1) * cell_h, cell->br, cell->bg, cell->bb);
+            fill_rect(c * cell_w, y, (c + 1) * cell_w, y + 1, cell->br, cell->bg, cell->bb);
+        }
+        const uint8_t *scanline = g_img + (size_t)y * width * 3;
+        for (int dy = 1; dy < cell_h; dy++) {
+            memcpy(g_img + (size_t)(y + dy) * width * 3, scanline, (size_t)width * 3);
         }
     }
 
+    double background = now_ms();
+    double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
+    size_t glyphs = 0, cache_hits = 0;
+    Glyph cache[GLYPH_CACHE_SIZE] = {0};
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
             const Cell *cell = &cells[r * cols + c];
             uint32_t cp = cell->ch;
             if (cp == 0 || cp == ' ') continue;
-            if (paint_geometry(c, r, cell_w, cell_h, cp, cell->bold, cell->fr, cell->fg, cell->fb)) continue;
-            if (stbtt_FindGlyphIndex(&font, (int)cp) == 0) continue;
-            int ix0, iy0, ix1, iy1;
-            stbtt_GetCodepointBitmapBox(&font, (int)cp, scale, scale, &ix0, &iy0, &ix1, &iy1);
-            int gw = ix1 - ix0;
-            int gh = iy1 - iy0;
-            if (gw <= 0 || gh <= 0) continue;
-            unsigned char *bm = (unsigned char *)malloc((size_t)gw * gh);
-            if (!bm) continue;
-            stbtt_MakeCodepointBitmap(&font, bm, gw, gh, gw, scale, scale, (int)cp);
-            int dx = c * cell_w + ix0;
-            int dy = r * cell_h + baseline + iy0;
+            double tick = now_ms();
+            int geometry = paint_geometry(c, r, cell_w, cell_h, cp, cell->bold, cell->fr, cell->fg, cell->fb);
+            geometry_ms += now_ms() - tick;
+            if (geometry) continue;
+            tick = now_ms();
+            Glyph *entry = &cache[cp % GLYPH_CACHE_SIZE];
+            if (entry->valid && entry->cp == cp) {
+                cache_hits++;
+            } else {
+                free(entry->bitmap);
+                *entry = (Glyph){.cp = cp, .valid = 1};
+                int glyph = stbtt_FindGlyphIndex(&font, (int)cp);
+                if (glyph != 0) {
+                    int ix1, iy1;
+                    stbtt_GetGlyphBitmapBox(&font, glyph, scale, scale, &entry->ix0, &entry->iy0, &ix1, &iy1);
+                    entry->w = ix1 - entry->ix0;
+                    entry->h = iy1 - entry->iy0;
+                    if (entry->w > 0 && entry->h > 0) {
+                        entry->bitmap = (unsigned char *)malloc((size_t)entry->w * entry->h);
+                        if (!entry->bitmap) {
+                            for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
+                            free(g_img);
+                            g_img = NULL;
+                            free(ttf);
+                            fprintf(stderr, "glyph allocation failed\n");
+                            return 2;
+                        }
+                        stbtt_MakeGlyphBitmap(&font, entry->bitmap, entry->w, entry->h, entry->w, scale, scale, glyph);
+                        glyphs++;
+                    }
+                }
+            }
+            glyph_ms += now_ms() - tick;
+            tick = now_ms();
+            if (!entry->bitmap) continue;
+            const unsigned char *bm = entry->bitmap;
+            int gw = entry->w, gh = entry->h;
+            int dx = c * cell_w + entry->ix0;
+            int dy = r * cell_h + baseline + entry->iy0;
             blend(dx, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
             if (cell->bold) blend(dx + 1, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
-            free(bm);
+            blend_ms += now_ms() - tick;
+
         }
     }
 
-    int ok = stbi_write_png(out_path, width, height, 4, g_img, width * 4);
+    for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
+    double foreground = now_ms();
+    int png_len = 0;
+    unsigned char *png = stbi_write_png_to_mem(g_img, width * 3, width, height, 3, &png_len);
+    double encoded = now_ms();
+    int ok = 0;
+    if (png) {
+        FILE *out = fopen(out_path, "wb");
+        if (out) {
+            ok = fwrite(png, 1, (size_t)png_len, out) == (size_t)png_len;
+            if (fclose(out) != 0) ok = 0;
+        }
+        free(png);
+    }
+    double written = now_ms();
     free(g_img);
     g_img = NULL;
     free(ttf);
+    if (profiling) {
+        fprintf(stderr, "termshot-profile {\"font_read_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
+            font_read - started, font_setup - font_read, allocated - font_setup,
+            background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
+            png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
+            encoded - foreground, written - encoded, now_ms() - written, glyphs, cache_hits, png_len, (size_t)width * height * 3);
+    }
     if (!ok) {
         fprintf(stderr, "png write failed: %s\n", out_path);
         return 2;

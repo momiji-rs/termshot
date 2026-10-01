@@ -6,26 +6,22 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: build and render the sample logs
+      - name: install Linux build tools
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential rustc
+      - name: build, compare pixels, and check codecs with sanitizers
+        env:
+          SANITIZE: '1'
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
           rustc --version
           cc --version
-          ./build.sh
-          ./termshot examples/reply-sent.pty /tmp/reply-sent.png third_party/jetbrains-mono/JetBrainsMono-Regular.ttf 48
-          ./termshot examples/draft-ready.pty /tmp/draft-ready.png third_party/jetbrains-mono/JetBrainsMono-Regular.ttf 48
-          python3 - << 'PY'
-          import pathlib, struct
-          def size(path):
-              data = pathlib.Path(path).read_bytes()
-              assert data[:8] == b"\x89PNG\r\n\x1a\n", path
-              width, height = struct.unpack(">II", data[16:24])
-              print(path, width, height, len(data))
-              assert (width, height) == (2200, 1440), (width, height)
-          size("/tmp/reply-sent.png")
-          size("/tmp/draft-ready.png")
-          PY
+          ./tests/run.sh

@@ -36,9 +36,30 @@ The binary links libc and libm.
 
 `examples/reply-sent.pty` and `examples/draft-ready.pty` are captures from the [crisp-tui](https://github.com/solcreek/crisp-tui) demo inbox. The customers and messages are fake. At pixel height 48 the image is 2200×1440.
 
+## Measure and test
+
+```sh
+TERMSHOT_PROFILE=1 ./termshot examples/reply-sent.pty /tmp/reply.png \
+  third_party/jetbrains-mono/JetBrainsMono-Regular.ttf
+python3 scripts/bench.py --binary current=./termshot --runs 15 \
+  --output /tmp/termshot-bench.json
+SANITIZE=1 ./tests/run.sh
+```
+
+Profiling writes two `termshot-profile` JSON records to stderr, covering input,
+parsing, font loading, drawing, PNG filtering, compression, and writing. The
+benchmark measures ordinary CLI runs separately from profiling and records raw
+samples, median, p95, output size, and toolchain details. Python 3 is needed only
+for benchmarks and tests.
+
+See [performance measurements](docs/performance.md) for the before/after results,
+baseline reproduction, timing boundaries, and remaining bottlenecks. Pixel tests
+compare against the original renderer; PNG files now use opaque RGB instead of
+RGBA, so encoded bytes differ while decoded colors remain identical.
+
 ## Vendored files
 
 The program is MIT. Two things next to it keep their own terms:
 
-- `third_party/stb/` is [stb](https://github.com/nothings/stb) `stb_truetype.h` 1.26 and `stb_image_write.h` 1.16, public domain.
+- `third_party/stb/` is [stb](https://github.com/nothings/stb) `stb_truetype.h` 1.26 and `stb_image_write.h` 1.16, public domain. The PNG writer has [local performance patches](third_party/stb/CHANGES.md).
 - `third_party/jetbrains-mono/` is JetBrains Mono Regular, [SIL Open Font License 1.1](third_party/jetbrains-mono/OFL.txt).

@@ -4,6 +4,7 @@
 use std::env;
 use std::fs;
 use std::process::ExitCode;
+use std::time::Instant;
 
 const DEFAULT_COLS: usize = 100;
 const DEFAULT_ROWS: usize = 30;
@@ -83,16 +84,15 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
                 if body.first().is_some_and(|c| b"?>=<".contains(c)) {
                     continue;
                 }
-                let parts: Vec<&[u8]> = if body.is_empty() {
-                    Vec::new()
-                } else {
-                    body.split(|c| *c == b';').collect()
-                };
+                // CSI parameters are borrowed; replaying long logs allocates no
+                // per-sequence vectors. Missing and malformed values keep their defaults.
+                let parts = body.split(|c| *c == b';');
                 let num = |index: usize, default: i32| -> i32 {
                     parts
-                        .get(index)
+                        .clone()
+                        .nth(index)
                         .and_then(|p| std::str::from_utf8(p).ok())
-                        .and_then(|s| if s.is_empty() { None } else { s.parse().ok() })
+                        .and_then(|s| s.parse().ok())
                         .unwrap_or(default)
                 };
                 match final_b {
@@ -107,17 +107,13 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
                     b's' => saved = (row, col),
                     b'u' => (row, col) = saved,
                     b'm' => {
-                        let vals: Vec<i32> = if parts.is_empty() {
-                            vec![0]
-                        } else {
-                            parts
-                                .iter()
-                                .map(|p| std::str::from_utf8(p).ok().and_then(|s| s.parse().ok()).unwrap_or(0))
-                                .collect()
-                        };
-                        let mut k = 0;
-                        while k < vals.len() {
-                            let v = vals[k];
+                        let mut vals = parts.map(|p| {
+                            std::str::from_utf8(p)
+                                .ok()
+                                .and_then(|s| s.parse::<i32>().ok())
+                                .unwrap_or(0)
+                        });
+                        while let Some(v) = vals.next() {
                             if v == 0 {
                                 fg = DEFAULT_FG;
                                 bg = DEFAULT_BG;
@@ -130,16 +126,23 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
                                 fg = DEFAULT_FG;
                             } else if v == 49 {
                                 bg = DEFAULT_BG;
-                            } else if (v == 38 || v == 48) && vals.get(k + 1) == Some(&2) && k + 4 < vals.len() {
-                                let color = (vals[k + 2] as u8, vals[k + 3] as u8, vals[k + 4] as u8);
-                                if v == 38 {
-                                    fg = color;
-                                } else {
-                                    bg = color;
+                            } else if v == 38 || v == 48 {
+                                let mut color_params = vals.clone();
+                                if let (Some(2), Some(r), Some(g), Some(b)) = (
+                                    color_params.next(),
+                                    color_params.next(),
+                                    color_params.next(),
+                                    color_params.next(),
+                                ) {
+                                    let color = (r as u8, g as u8, b as u8);
+                                    if v == 38 {
+                                        fg = color;
+                                    } else {
+                                        bg = color;
+                                    }
+                                    vals = color_params;
                                 }
-                                k += 4;
                             }
-                            k += 1;
                         }
                     }
                     b'J' if num(0, 0) == 2 => {
@@ -223,7 +226,9 @@ fn utf8_at(data: &[u8]) -> (u32, usize) {
     }
     if b & 0xf0 == 0xe0 && data.len() >= 3 {
         return (
-            (((b as u32) & 0x0f) << 12) | (((data[1] as u32) & 0x3f) << 6) | ((data[2] as u32) & 0x3f),
+            (((b as u32) & 0x0f) << 12)
+                | (((data[1] as u32) & 0x3f) << 6)
+                | ((data[2] as u32) & 0x3f),
             3,
         );
     }
@@ -247,6 +252,8 @@ grid (default 100 30). SGR reset uses foreground #dbe7f7 on background #111823.
 ";
 
 fn main() -> ExitCode {
+    let started = Instant::now();
+    let profile = env::var_os("TERMSHOT_PROFILE").is_some();
     let mut args = env::args().skip(1);
     let Some(src) = args.next() else {
         eprintln!("{USAGE}");
@@ -294,6 +301,7 @@ fn main() -> ExitCode {
         },
         None => DEFAULT_ROWS,
     };
+    let read_started = Instant::now();
     let data = match fs::read(&src) {
         Ok(data) => data,
         Err(error) => {
@@ -301,7 +309,10 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
+    let parse_started = Instant::now();
     let cells = parse(&data, cols, rows);
+    let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
     let font = match std::ffi::CString::new(font_path) {
         Ok(font) => font,
         Err(_) => {
@@ -326,5 +337,8 @@ fn main() -> ExitCode {
             out.as_ptr(),
         )
     };
+    if profile {
+        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", started.elapsed().as_secs_f64() * 1000.0, data.len());
+    }
     ExitCode::from(code as u8)
 }
