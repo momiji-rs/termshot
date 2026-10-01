@@ -20,6 +20,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and clip glyph bounds before blending to reduce drawing work.
 - Reject DEFLATE candidates that cannot improve the current match while
   preserving compressed output for nonempty input.
+- Preserve concurrent rendering and checked font loading when profiling is
+  enabled; `font_load_ms` covers font reading, validation, and padding.
 
 ### Fixed
 

@@ -1,5 +1,11 @@
 # Performance measurements
 
+These archived measurements predate the merge of `670cbbb`, which added font
+validation and concurrent rendering. They compare against `8e1110e`, not the
+latest main. Current profiling reports Rust font reading, validation, and padding
+as `font_load_ms`; the historical `font_read_ms` field below covered C file I/O
+only. Rerun the benchmark to measure the combined implementation.
+
 Measured on 2026-10-01, macOS ARM64 (`macOS-26.3.1-arm64-arm-64bit-Mach-O`).
 
 Toolchain: rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew), Apple clang version 17.0.0 (clang-1700.6.4.2), Python 3.14.7. Both builds use the existing `-O2` / `opt-level=2` and `-ffp-contract=off` settings. No new runtime dependencies.
@@ -67,11 +73,13 @@ and rasterization. Geometry includes dispatch for ordinary characters.
 `font_setup` includes font initialization, metrics, and the existing stderr
 message. `allocate` is the image `malloc`; first-touch page costs appear in
 `background`. `output_write` includes opening, writing, closing, and freeing the
-PNG buffer. `cleanup` frees the raster and font. `total` starts in Rust `main`
+PNG buffer. `cleanup` freed the raster and font in the recorded build; current C
+cleanup frees only the raster, as Rust now owns the font. `total` starts in Rust `main`
 and includes C profile output. Process startup, final teardown, and scheduling
 are only in CLI wall time. Writes stop at `fclose`; they do not include `fsync`.
 
-Parsing, font I/O, allocation, and PNG filter selection are unchanged by this PR.
+Parsing, font I/O, allocation, and PNG filter selection were unchanged between
+the two measured builds.
 Differences in those stages reflect run-to-run noise, not an optimization. The
 sample profile batches show especially visible variation; use interleaved CLI
 medians for overall comparisons. Profile times and CLI times come from separate
@@ -132,6 +140,10 @@ SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh
 The profile variable is enabled by its presence, including a value of `0`. It
 emits two JSON records prefixed `termshot-profile ` on stderr. Foreground
 profiling uses per-operation clocks; ordinary CLI benchmark runs disable these.
+Timing hooks use thread-local storage, and the canvas and glyph cache belong to
+each render. The extended suite checks eight concurrent profiled renders for
+identical pixels and independent, finite timing records.
+
 Python 3 is needed for the optional benchmarks and extended tests, not the build
 or the existing `./test.sh` suite.
 
@@ -148,7 +160,7 @@ without changing pixels; unwritable destinations must fail.
 Each compressor has 4,976 independent zlib/PNG round trips, covering all PNG
 filters, 1–4 channels, padded strides, flipping, random bytes, repetitive inputs,
 short inputs, and window boundaries. Both codec variants and the C renderer run
-under ASan/UBSan in the extended suite. Existing coverage also passes: 38 parser
+under ASan/UBSan in the extended suite. Existing coverage also passes: 43 parser/font/drawing
 unit tests, 3,000 compressor differential cases, CLI checks, and portable pixel
 goldens. Local validation ran on macOS; CI includes Linux, macOS, sanitizer, and
 Rust 1.70 jobs. Timing thresholds are excluded from shared-runner CI.

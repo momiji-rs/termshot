@@ -6,6 +6,9 @@ use std::fs;
 use std::process::ExitCode;
 use std::time::Instant;
 
+mod font;
+#[cfg(test)]
+mod draw_tests;
 #[cfg(test)]
 mod tests;
 
@@ -49,7 +52,8 @@ extern "C" {
         cells: *const Cell,
         cols: i32,
         rows: i32,
-        font_path: *const i8,
+        // A font that passed font::check, followed by its zero padding.
+        font: *const u8,
         font_size: f64,
         out_path: *const i8,
     ) -> i32;
@@ -495,16 +499,18 @@ fn main() -> ExitCode {
         }
     };
     let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
+    let font_started = Instant::now();
+    let font = match font::load(&font_path) {
+        Ok(font) => font,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(1);
+        }
+    };
+    let font_load_ms = font_started.elapsed().as_secs_f64() * 1000.0;
     let parse_started = Instant::now();
     let cells = parse(&data, cols, rows);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
-    let font = match std::ffi::CString::new(font_path) {
-        Ok(font) => font,
-        Err(_) => {
-            eprintln!("font path contains a nul");
-            return ExitCode::from(2);
-        }
-    };
     let out = match std::ffi::CString::new(dest) {
         Ok(out) => out,
         Err(_) => {
@@ -523,7 +529,7 @@ fn main() -> ExitCode {
         )
     };
     if profile {
-        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", started.elapsed().as_secs_f64() * 1000.0, data.len());
+        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", started.elapsed().as_secs_f64() * 1000.0, data.len());
     }
     ExitCode::from(code as u8)
 }
