@@ -5,6 +5,9 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
+#[cfg(test)]
+mod tests;
+
 const DEFAULT_COLS: usize = 100;
 const DEFAULT_ROWS: usize = 30;
 const DEFAULT_FG: (u8, u8, u8) = (219, 231, 247);

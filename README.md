@@ -27,13 +27,25 @@ not interpreted.
 
 ## Build
 
-A C compiler and rustc are enough.
+A C compiler and rustc 1.70 or newer are enough.
 
 ```sh
 ./build.sh
 ```
 
 The binary links libc and libm.
+
+## Test
+
+```sh
+./test.sh
+```
+
+This builds termshot, runs the parser unit tests, checks the CLI exit codes, and compares the rendered samples against `tests/goldens.txt`. The goldens hash decoded pixels, so a change to how the PNG is encoded doesn't break them; only a change to the pixels does. They cover px 46 and 48, and CI runs them on Linux and macOS. px 46 is there because it is a size where a compiler that fuses multiply-adds would render different pixels.
+
+When a change is meant to move pixels, look at the renders in `target/test/`, then run `./test.sh --update-goldens`. `SANITIZE=1 ./test.sh` builds draw.c with ASan and UBSan; this works on macOS only.
+
+Tests marked `#[ignore]` describe the correct behaviour for a known bug and name its issue. Run them with `./target/test/unit --ignored`.
 
 ## Run
 
