@@ -8,16 +8,18 @@ cd "$(dirname "$0")"
 cc=${CC:-cc}
 target=''
 [ -n "${TARGET:-}" ] && target="--target $TARGET"
-# musl keeps its math in libc.a, which rustc links before our objects; name it
-# again after them, since -lm there would find the host's glibc libm.
-libm=-C\ link-arg=-lm
-case ${TARGET:-} in *-musl) libm=-C\ link-arg=-lc ;; esac
 # -ffp-contract=off keeps stb_truetype's float math unfused, so Apple clang on
 # arm64 (which emits FMA by default) matches x86-64 Linux pixel for pixel.
 # Never add -ffast-math: it changes about half of all renders.
 $cc -c src/draw.c -o draw.o -O2 -ffp-contract=off -Wall -Wextra -Wno-unused-function -Wno-missing-field-initializers -I third_party/stb ${CFLAGS:-}
 $cc -c src/deflate.c -o deflate.o -O2 -Wall -Wextra ${CFLAGS:-}
+# The C goes in as a static library (-l static=termshot_c, here and in test.sh)
+# rather than as bare objects, so rustc puts it before libc and libm. Objects
+# passed with -C link-arg land after them, which breaks static musl (math in
+# libc.a) and glibc on aarch64 (__stack_chk_guard in ld.so, dropped by
+# --as-needed). libm itself comes with std on Linux and libSystem on macOS.
+rm -f libtermshot_c.a
+ar rcs libtermshot_c.a draw.o deflate.o
 # shellcheck disable=SC2086
 rustc --edition 2021 src/main.rs -o termshot -C opt-level=2 $target \
-  -C link-arg="$PWD/draw.o" -C link-arg="$PWD/deflate.o" \
-  $libm ${RUSTC_LINK_ARGS:-}
+  -L native="$PWD" -l static=termshot_c ${RUSTC_LINK_ARGS:-}
