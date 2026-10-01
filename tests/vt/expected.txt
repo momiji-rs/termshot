@@ -368,3 +368,88 @@ abbbbbbbbb
 bbbb
 
 
+== wide
+a中b
+
+
+
+== wide-wrap
+
+中x
+
+
+== wide-fill
+        中
+x
+
+
+== wide-nowrap
+
+
+
+
+== wide-tail
+ x
+
+
+
+== wide-lead
+x
+
+
+
+== wide-shift
+ 文
+
+
+
+== wide-ascii
+ ab
+
+
+
+== wide-el
+
+
+
+
+== wide-ech
+  x
+
+
+
+== wide-dch
+ x
+
+
+
+== wide-ich
+ aaaaaaaa
+
+
+
+== emoji
+😀!
+
+
+
+== hangul
+한글
+
+
+
+== fullwidth
+ＡＢ
+
+
+
+== combine
+éäx
+
+
+
+== zwj
+ab
+
+
+

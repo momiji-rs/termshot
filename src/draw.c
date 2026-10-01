@@ -46,6 +46,8 @@ _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 #define ATTR_UNDERLINE 2
 #define ATTR_DOUBLE_UNDERLINE 4
 #define ATTR_STRIKE 8
+#define ATTR_WIDE 16 /* the first of a wide character's two cells */
+#define ATTR_TAIL 32 /* the second; ch is 0 */
 
 /* The canvas is RGB: alpha would always be 255, and an opaque RGBA PNG is
    larger and blocks palette quantization in downstream optimizers. */
@@ -57,7 +59,10 @@ _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 /* Bounded per-render cache. Bold and colors reuse the same coverage bitmap. */
 typedef struct {
     uint32_t cp;
-    int valid, ix0, iy0, w, h;
+    /* wide is part of the key: a wide glyph is centered over two cells. shift
+       moves the glyph right within its cell (or cells); missing means neither
+       font has it. */
+    int valid, wide, missing, shift, ix0, iy0, w, h;
     unsigned char *bitmap;
 } Glyph;
 #define GLYPH_CACHE_SIZE 256
@@ -474,20 +479,48 @@ static void blend(Canvas *cv, int dx, int dy, const unsigned char *bm, int gw, i
     }
 }
 
-/* Paint cells with the font in font (a TrueType file the caller has already
-   checked; see src/font.rs) and write a PNG. The canvas and cache are local;
-   timing hooks use thread-local state so concurrent renders remain independent.
+static int init_font(stbtt_fontinfo *font, const unsigned char *ttf) {
+    int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
+    return offset >= 0 && stbtt_InitFont(font, ttf, offset);
+}
+
+/* Unicode's space separators (Zs): blank even when no font has them. */
+static int is_space(uint32_t cp) {
+    return cp == 0x20 || cp == 0xa0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200a) || cp == 0x202f ||
+           cp == 0x205f || cp == 0x3000;
+}
+
+/* An outlined box for a character neither font has, inset in its cells. */
+static void paint_tofu(Canvas *cv, int x, int y, int span, int cell_w, int cell_h,
+                       uint8_t r, uint8_t g, uint8_t b) {
+    int t = cell_w / 12 < 1 ? 1 : cell_w / 12;
+    int x0 = x + cell_w / 6, x1 = x + span - cell_w / 6;
+    int y0 = y + cell_h / 6, y1 = y + cell_h - cell_h / 6;
+    if (x1 - x0 <= 2 * t || y1 - y0 <= 2 * t) {
+        fill_rect(cv, x0, y0, x1, y1, r, g, b);
+        return;
+    }
+    fill_rect(cv, x0, y0, x1, y0 + t, r, g, b);
+    fill_rect(cv, x0, y1 - t, x1, y1, r, g, b);
+    fill_rect(cv, x0, y0 + t, x0 + t, y1 - t, r, g, b);
+    fill_rect(cv, x1 - t, y0 + t, x1, y1 - t, r, g, b);
+}
+
+/* Paint cells with the font in ttf (a TrueType file the caller has already
+   checked; see src/font.rs) and write a PNG. fallback_ttf, checked the same
+   way, or NULL, supplies the characters ttf lacks; characters neither has are
+   drawn as an outlined box. The canvas and cache are local; timing hooks use
+   thread-local state so concurrent renders remain independent.
    verbose prints the cell and image size to stderr.
    Returns 0; 1 for an unusable font; 2 when the image is too large or memory
    runs out; 3 when the PNG cannot be written. */
-int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, double font_px,
-             const char *out_path, int verbose) {
+int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
+             const unsigned char *fallback_ttf, double font_px, const char *out_path, int verbose) {
     profiling = getenv("TERMSHOT_PROFILE") != NULL;
     termshot_deflate_profile.enabled = profiling;
     double started = now_ms();
-    stbtt_fontinfo font;
-    int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
-    if (offset < 0 || !stbtt_InitFont(&font, ttf, offset)) {
+    stbtt_fontinfo font, fallback;
+    if (!init_font(&font, ttf) || (fallback_ttf && !init_font(&fallback, fallback_ttf))) {
         fprintf(stderr, "termshot: font init failed\n");
         return 1;
     }
@@ -510,6 +543,9 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
     int cell_h = body + gap;
     if (cell_h < 1) cell_h = 1;
     int baseline = (int)(ascent * scale + 0.5f) + (cell_h - body) / 2;
+    /* The fallback is sized to the same ascent-to-descent height and shares
+       the baseline. */
+    float fallback_scale = fallback_ttf ? stbtt_ScaleForPixelHeight(&fallback, (float)body) : 0;
     long long width = (long long)cols * cell_w;
     long long height = (long long)rows * cell_h;
     if (verbose) {
@@ -565,16 +601,37 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
             geometry_ms += now_ms() - tick;
             if (geometry) continue;
             tick = now_ms();
+            int wide = (cell->attrs & ATTR_WIDE) != 0;
+            int span = wide ? 2 * cell_w : cell_w;
             Glyph *entry = &cache[cp % GLYPH_CACHE_SIZE];
-            if (entry->valid && entry->cp == cp) {
+            if (entry->valid && entry->cp == cp && entry->wide == wide) {
                 cache_hits++;
             } else {
                 free(entry->bitmap);
-                *entry = (Glyph){.cp = cp, .valid = 1};
+                *entry = (Glyph){.cp = cp, .valid = 1, .wide = wide};
+                const stbtt_fontinfo *face = &font;
+                float s = scale;
                 int glyph = stbtt_FindGlyphIndex(&font, (int)cp);
+                if (glyph == 0 && fallback_ttf) {
+                    face = &fallback;
+                    s = fallback_scale;
+                    glyph = stbtt_FindGlyphIndex(&fallback, (int)cp);
+                }
+                entry->missing = glyph == 0;
                 if (glyph != 0) {
+                    /* The primary font's narrow glyphs sit where the font puts
+                       them. Wide and fallback glyphs are centered, and a
+                       fallback glyph too wide for its cells is shrunk. */
+                    int glyph_adv, glyph_lsb;
+                    stbtt_GetGlyphHMetrics(face, glyph, &glyph_adv, &glyph_lsb);
+                    float advance = glyph_adv * s;
+                    if (face == &fallback && advance > span) {
+                        s *= span / advance;
+                        advance = (float)span;
+                    }
+                    if (wide || face == &fallback) entry->shift = (int)floorf((span - advance) / 2 + 0.5f);
                     int ix1, iy1;
-                    stbtt_GetGlyphBitmapBox(&font, glyph, scale, scale, &entry->ix0, &entry->iy0, &ix1, &iy1);
+                    stbtt_GetGlyphBitmapBox(face, glyph, s, s, &entry->ix0, &entry->iy0, &ix1, &iy1);
                     entry->w = ix1 - entry->ix0;
                     entry->h = iy1 - entry->iy0;
                     if (entry->w > 0 && entry->h > 0) {
@@ -587,17 +644,22 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
                             fprintf(stderr, "termshot: glyph allocation failed\n");
                             return 2;
                         }
-                        stbtt_MakeGlyphBitmap(&font, entry->bitmap, entry->w, entry->h, entry->w, scale, scale, glyph);
+                        stbtt_MakeGlyphBitmap(face, entry->bitmap, entry->w, entry->h, entry->w, s, s, glyph);
                         glyphs++;
                     }
                 }
             }
             glyph_ms += now_ms() - tick;
             tick = now_ms();
+            if (entry->missing && !is_space(cp)) {
+                paint_tofu(cv, c * cell_w, r * cell_h, span, cell_w, cell_h, cell->fr, cell->fg, cell->fb);
+                blend_ms += now_ms() - tick;
+                continue;
+            }
             if (!entry->bitmap) continue;
             const unsigned char *bm = entry->bitmap;
             int gw = entry->w, gh = entry->h;
-            int dx = c * cell_w + entry->ix0;
+            int dx = c * cell_w + entry->shift + entry->ix0;
             int dy = r * cell_h + baseline + entry->iy0;
             blend(cv, dx, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
             if (cell->attrs & ATTR_BOLD) blend(cv, dx + 1, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
