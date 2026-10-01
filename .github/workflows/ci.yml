@@ -5,23 +5,41 @@ on:
   pull_request:
 
 jobs:
-  build:
+  test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: install Linux build tools
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential rustc
-      - name: build, compare pixels, and check codecs with sanitizers
-        env:
-          SANITIZE: '1'
-          UBSAN_OPTIONS: halt_on_error=1
+      - name: toolchain
         run: |
           rustc --version
           cc --version
-          ./tests/run.sh
+      - name: unit tests, cli checks, pixel goldens
+        run: ./test.sh
+      - name: extended pixels, codec round trips, and profiling
+        run: SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh
+      - name: keep renders on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renders-${{ matrix.os }}
+          path: target/test/
+
+  sanitize:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: draw.c under ASan + UBSan
+        run: SANITIZE=1 ./test.sh
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: rustc 1.70 (let-else, is_some_and)
+        run: |
+          rustup toolchain install 1.70.0 --profile minimal
+          RUSTUP_TOOLCHAIN=1.70.0 ./test.sh

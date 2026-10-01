@@ -2,4 +2,5 @@
 *.o
 *.png
 !docs/*.png
+/target/
 __pycache__/

@@ -22,6 +22,9 @@ static double now_ms(void) {
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
+/* stb's deflate, with a faster search that writes the same bytes (deflate.c). */
+unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality);
+#define STBIW_ZLIB_COMPRESS termshot_zlib_compress
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -33,6 +36,13 @@ typedef struct {
 } Cell;
 
 _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
+
+/* The canvas is RGB: alpha would always be 255, and an opaque RGBA PNG is
+   larger and blocks palette quantization in downstream optimizers. */
+#define BPP 3
+
+/* 2^27 pixels keeps the 3-byte rows plus filter bytes near 384 MiB, well under INT_MAX. */
+#define MAX_PIXELS (1 << 27)
 
 /* Bounded per-render cache. Bold and colors reuse the same coverage bitmap. */
 typedef struct {
@@ -47,7 +57,7 @@ static int g_w, g_h;
 
 static void put(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if ((unsigned)x >= (unsigned)g_w || (unsigned)y >= (unsigned)g_h) return;
-    uint8_t *p = g_img + ((size_t)y * g_w + x) * 3;
+    uint8_t *p = g_img + ((size_t)y * g_w + x) * BPP;
     p[0] = r;
     p[1] = g;
     p[2] = b;
@@ -59,12 +69,12 @@ static void fill_rect(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint
     if (x1 > g_w) x1 = g_w;
     if (y1 > g_h) y1 = g_h;
     for (int y = y0; y < y1; y++) {
-        uint8_t *row = g_img + ((size_t)y * g_w + x0) * 3;
+        uint8_t *row = g_img + ((size_t)y * g_w + x0) * BPP;
         for (int x = x0; x < x1; x++) {
             row[0] = r;
             row[1] = g;
             row[2] = b;
-            row += 3;
+            row += BPP;
         }
     }
 }
@@ -174,7 +184,7 @@ static void blend(int dx, int dy, const unsigned char *bm, int gw, int gh,
             int ix = dx + x;
             unsigned char a = bm[y * gw + x];
             if (a == 0) continue;
-            uint8_t *p = g_img + ((size_t)iy * g_w + ix) * 3;
+            uint8_t *p = g_img + ((size_t)iy * g_w + ix) * BPP;
             if (a == 255) {
                 p[0] = r;
                 p[1] = g;
@@ -246,10 +256,18 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
     fprintf(stderr, "advance %d units scale %.5f cell %dx%d baseline %d image %dx%d\n",
             adv, scale, cell_w, cell_h, baseline, width, height);
 
+    /* stb_image_write sizes its buffers with int: (width*BPP+1)*height must not wrap. */
+    if ((long long)width * height > MAX_PIXELS) {
+        free(ttf);
+        fprintf(stderr, "image %dx%d is over %d pixels; lower px, cols or rows\n",
+                width, height, MAX_PIXELS);
+        return 2;
+    }
+
     g_w = width;
     g_h = height;
     double font_setup = now_ms();
-    g_img = (uint8_t *)malloc((size_t)width * height * 3);
+    g_img = (uint8_t *)malloc((size_t)width * height * BPP);
     if (!g_img) {
         free(ttf);
         return 2;
@@ -262,9 +280,9 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
             const Cell *cell = &cells[r * cols + c];
             fill_rect(c * cell_w, y, (c + 1) * cell_w, y + 1, cell->br, cell->bg, cell->bb);
         }
-        const uint8_t *scanline = g_img + (size_t)y * width * 3;
+        const uint8_t *scanline = g_img + (size_t)y * width * BPP;
         for (int dy = 1; dy < cell_h; dy++) {
-            memcpy(g_img + (size_t)(y + dy) * width * 3, scanline, (size_t)width * 3);
+            memcpy(g_img + (size_t)(y + dy) * width * BPP, scanline, (size_t)width * BPP);
         }
     }
 
@@ -325,8 +343,10 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
 
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
     double foreground = now_ms();
+    /* Keep the no-filter encoding selected by upstream for terminal images. */
+    stbi_write_force_png_filter = 0;
     int png_len = 0;
-    unsigned char *png = stbi_write_png_to_mem(g_img, width * 3, width, height, 3, &png_len);
+    unsigned char *png = stbi_write_png_to_mem(g_img, width * BPP, width, height, BPP, &png_len);
     double encoded = now_ms();
     int ok = 0;
     if (png) {
@@ -346,7 +366,7 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
             font_read - started, font_setup - font_read, allocated - font_setup,
             background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
-            encoded - foreground, written - encoded, now_ms() - written, glyphs, cache_hits, png_len, (size_t)width * height * 3);
+            encoded - foreground, written - encoded, now_ms() - written, glyphs, cache_hits, png_len, (size_t)width * height * BPP);
     }
     if (!ok) {
         fprintf(stderr, "png write failed: %s\n", out_path);

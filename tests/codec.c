@@ -3,6 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef TEST_CUSTOM_DEFLATE
+unsigned char *termshot_zlib_compress(unsigned char *, int, int *, int);
+#define STBIW_ZLIB_COMPRESS termshot_zlib_compress
+#endif
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 

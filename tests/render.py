@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check decoded pixels against pre-optimization goldens; Python stdlib only."""
+"""Check decoded pixels against goldens from main at 8e1110e; Python stdlib only."""
 import argparse
 import hashlib
 import json
@@ -98,7 +98,7 @@ def fixtures():
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--binary', type=Path, default=ROOT / 'termshot')
-    p.add_argument('--write-goldens', action='store_true', help='Only use with the original reference binary')
+    p.add_argument('--write-goldens', action='store_true', help='Only use with the main-at-8e1110e reference binary')
     args = p.parse_args()
     actual = {}
     env = {k: v for k, v in os.environ.items() if k != 'TERMSHOT_PROFILE'}

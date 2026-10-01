@@ -858,17 +858,8 @@ static int stbiw__zlib_bitrev(int code, int codebits)
 
 static unsigned int stbiw__zlib_countm(unsigned char *a, unsigned char *b, int limit)
 {
-   int i = 0;
-   if (limit > 258) limit = 258;
-   // termshot: memcpy permits unaligned loads without aliasing violations.
-   while (i + 8 <= limit) {
-      unsigned long long av, bv;
-      memcpy(&av, a+i, 8);
-      memcpy(&bv, b+i, 8);
-      if (av != bv) break;
-      i += 8;
-   }
-   for (; i < limit; ++i)
+   int i;
+   for (i=0; i < limit && i < 258; ++i)
       if (a[i] != b[i]) break;
    return i;
 }
@@ -934,14 +925,10 @@ STBIWDEF unsigned char * stbi_zlib_compress(unsigned char *data, int data_len, i
       unsigned char *bestloc = 0;
       unsigned char **hlist = hash_table[h];
       int n = stbiw__sbcount(hlist);
-      // termshot: newest matches win ties, as in the original forward scan.
-      // A maximal match cannot improve; avoid rescanning long identical runs.
-      for (j=n-1; j >= 0; --j) {
+      for (j=0; j < n; ++j) {
          if (hlist[j]-data > i-32768) { // if entry lies within window
-            if (bestloc && hlist[j][best] != data[i+best]) continue;
             int d = stbiw__zlib_countm(hlist[j], data+i, data_len-i);
-            if (d > best || (d == best && !bestloc)) { best=d; bestloc=hlist[j]; }
-            if (best == 258 || best == data_len-i) break;
+            if (d >= best) { best=d; bestloc=hlist[j]; }
          }
       }
       // when hash table entry is too long, delete half the entries
@@ -951,14 +938,13 @@ STBIWDEF unsigned char * stbi_zlib_compress(unsigned char *data, int data_len, i
       }
       stbiw__sbpush(hash_table[h],data+i);
 
-      if (bestloc && best < 258 && best < data_len-i-1) {
+      if (bestloc) {
          // "lazy matching" - check match at *next* byte, and if it's better, do cur byte as literal
          h = stbiw__zhash(data+i+1)&(stbiw__ZHASH-1);
          hlist = hash_table[h];
          n = stbiw__sbcount(hlist);
          for (j=0; j < n; ++j) {
             if (hlist[j]-data > i-32767) {
-               if (hlist[j][best] != data[i+1+best]) continue;
                int e = stbiw__zlib_countm(hlist[j], data+i+1, data_len-i-1);
                if (e > best) { // if next match is better, bail on current match
                   bestloc = NULL;
@@ -996,7 +982,7 @@ STBIWDEF unsigned char * stbi_zlib_compress(unsigned char *data, int data_len, i
    STBIW_FREE(hash_table);
 
    // store uncompressed instead if compression was worse
-   // An empty input still needs the final compressed block emitted above.
+   // termshot: retain the final compressed block for empty input.
    if (data_len > 0 && stbiw__sbn(out) > data_len + 2 + ((data_len+32766)/32767)*5) {
       stbiw__sbn(out) = 2;  // truncate to DEFLATE 32K window and FLEVEL = 1
       for (j = 0; j < data_len;) {
@@ -1165,17 +1151,6 @@ STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int s
    line_buffer = (signed char *) STBIW_MALLOC(x * n); if (!line_buffer) { STBIW_FREE(filt); return 0; }
    for (j=0; j < y; ++j) {
       int filter_type;
-      // termshot: identical scanlines have an optimal all-zero Up filter.
-      // Respect explicit filter selection and vertical flipping.
-      if (force_filter < 0 && j > 0) {
-         int row = stbi__flip_vertically_on_write ? y-1-j : j;
-         int prev = stbi__flip_vertically_on_write ? row+1 : row-1;
-         if (memcmp(pixels + row*stride_bytes, pixels + prev*stride_bytes, x*n) == 0) {
-            filt[j*(x*n+1)] = 2;
-            memset(filt+j*(x*n+1)+1, 0, x*n);
-            continue;
-         }
-      }
       if (force_filter > -1) {
          filter_type = force_filter;
          stbiw__encode_png_line((unsigned char*)(pixels), stride_bytes, x, y, j, n, force_filter, line_buffer);
@@ -1193,7 +1168,6 @@ STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int s
                best_filter_val = est;
                best_filter = filter_type;
             }
-            if (est == 0) break; // No later filter can improve this score.
          }
          if (filter_type != best_filter) {  // If the last iteration already got us the best filter, don't redo it
             stbiw__encode_png_line((unsigned char*)(pixels), stride_bytes, x, y, j, n, best_filter, line_buffer);

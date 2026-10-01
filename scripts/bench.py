@@ -23,10 +23,10 @@ def workloads(directory):
              for name in ('reply-sent', 'draft-ready')]
     generated = {
         'blank': (b'', 48, 100, 30),
-        'dense': ('\n'.join(['The quick brown fox 0123456789! @#$% ' * 3] * 30).encode(), 48, 100, 30),
+        'dense': ('\r\n'.join(['The quick brown fox 0123456789! @#$% ' * 3] * 30).encode(), 48, 100, 30),
         'ansi-replay': ((ROOT / 'examples/reply-sent.pty').read_bytes() * 250, 48, 100, 30),
-        'large': ('\n'.join(['Terminal benchmark 0123456789 ' * 9] * 80).encode(), 48, 240, 80),
-        'unicode': ('\n'.join([''.join(chr(0x100 + (r * 100 + c) % 800) for c in range(100)) for r in range(30)]).encode(), 24, 100, 30),
+        'large': ('\r\n'.join(['Terminal benchmark 0123456789 ' * 9] * 80).encode(), 48, 240, 80),
+        'unicode': ('\r\n'.join([''.join(chr(0x100 + (r * 100 + c) % 800) for c in range(100)) for r in range(30)]).encode(), 24, 100, 30),
     }
     for name, (data, px, cols, rows) in generated.items():
         path = directory / f'{name}.pty'
