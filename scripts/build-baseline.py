@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the reference and instrumented 7b7eb77 binaries in a new directory."""
+"""Build the reference and instrumented 1eaf7dd binaries in a new directory."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -7,7 +7,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('destination', type=Path, help='new, empty build directory')
-p.add_argument('--revision', default='7b7eb77')
+p.add_argument('--revision', default='1eaf7dd')
 p.add_argument('--profile-patch', type=Path, default=ROOT / 'docs/round-two-baseline.patch')
 a = p.parse_args()
 dest = a.destination.resolve()

@@ -1,10 +1,7 @@
 diff --git a/src/deflate.c b/src/deflate.c
 --- a/src/deflate.c
 +++ b/src/deflate.c
-@@ -21,6 +21,17 @@
- #include <stdint.h>
- #include <stdlib.h>
- #include <string.h>
+@@ -23,0 +24,11 @@
 +#include <time.h>
 +#include "deflate_profile.h"
 +
@@ -16,90 +13,37 @@ diff --git a/src/deflate.c b/src/deflate.c
 +    clock_gettime(CLOCK_MONOTONIC, &ts);
 +    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 +}
- 
- #define ZHASH 16384
- #define WINDOW 32768
-@@ -137,6 +148,7 @@
- }
- 
- unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality) {
+@@ -139,0 +151 @@
 +    double started = profile_now();
-     static const unsigned short lengthc[] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27,
-                                              31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 259};
-     static const unsigned char lengtheb[] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
-@@ -162,6 +174,7 @@
-     add_bits(&o, 1, 1); /* BFINAL = 1 */
-     add_bits(&o, 1, 2); /* BTYPE = 1, fixed Huffman */
- 
+@@ -164,0 +177 @@
 +    double allocated = profile_now();
-     int i = 0;
-     while (i < data_len - 3) {
-         unsigned int h = zhash(data + i);
-@@ -224,6 +237,7 @@
-     for (; i < data_len; i++) huff(&o, data[i]);
-     huff(&o, 256); /* end of block */
-     while (o.bitcount) add_bits(&o, 0, 1);
+@@ -226,0 +240 @@
 +    double matched = profile_now();
-     free(tab);
-     free(cnt);
- 
-@@ -243,6 +257,7 @@
-         }
-     }
- 
+@@ -245,0 +260 @@
 +    double finalized = profile_now();
-     uint32_t adler = adler32(data, (size_t)data_len);
-     put_byte(&o, (unsigned char)(adler >> 24));
-     put_byte(&o, (unsigned char)(adler >> 16));
-@@ -253,5 +268,11 @@
-         return NULL;
-     }
-     *out_len = (int)o.n;
+@@ -255,0 +271,6 @@
 +    if (termshot_deflate_profile.enabled) {
 +        termshot_deflate_profile.allocate_ms = allocated - started;
 +        termshot_deflate_profile.match_emit_ms = matched - allocated;
 +        termshot_deflate_profile.finalize_ms = finalized - matched;
 +        termshot_deflate_profile.checksum_ms = profile_now() - finalized;
 +    }
-     return o.p;
- }
 diff --git a/src/draw.c b/src/draw.c
 --- a/src/draw.c
 +++ b/src/draw.c
-@@ -9,6 +9,7 @@
- #include <stdlib.h>
- #include <string.h>
- #include <time.h>
+@@ -11,0 +12 @@
 +#include "deflate_profile.h"
- 
- /* PNG hooks have no context argument; keep timings independent per thread. */
- static _Thread_local int profiling;
-@@ -217,6 +218,7 @@
- int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, double font_px,
-              const char *out_path) {
-     profiling = getenv("TERMSHOT_PROFILE") != NULL;
+@@ -219,0 +221 @@
 +    termshot_deflate_profile.enabled = profiling;
-     double started = now_ms();
-     stbtt_fontinfo font;
-     int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
-@@ -347,7 +349,9 @@
-     free(cv->px);
-     cv->px = NULL;
-     if (profiling) {
+@@ -350 +352,3 @@
 -        fprintf(stderr, "termshot-profile {\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
 +        fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
 +            termshot_deflate_profile.allocate_ms, termshot_deflate_profile.match_emit_ms,
 +            termshot_deflate_profile.finalize_ms, termshot_deflate_profile.checksum_ms,
-             font_setup - started, allocated - font_setup,
-             background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
-             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
 diff --git a/src/font.rs b/src/font.rs
 --- a/src/font.rs
 +++ b/src/font.rs
-@@ -6,6 +6,14 @@
- //! made up) are covered by zero padding after the data.
- 
- use std::fs;
+@@ -8,0 +9,8 @@
 +use std::time::Instant;
 +
 +#[derive(Default)]
@@ -108,13 +52,7 @@ diff --git a/src/font.rs b/src/font.rs
 +    pub check_ms: f64,
 +    pub padding_ms: f64,
 +}
- 
- /// stb's reads past a checked table start reach at most about 460 KB
- /// (format 4: 16-bit offset + 2 * (16-bit codepoint delta) past 6 * 16-bit
-@@ -20,6 +28,20 @@
- pub fn load(path: &str) -> Result<Vec<u8>, String> {
-     let data = fs::read(path).map_err(|error| format!("{path}: {error}"))?;
-     prepare(data).map_err(|reason| format!("{path}: not a usable TrueType font: {reason}"))
+@@ -22,0 +31,14 @@
 +}
 +
 +/// The same validation as load(), with separate clocks only when requested.
@@ -129,16 +67,10 @@ diff --git a/src/font.rs b/src/font.rs
 +    data.resize(data.len() + PADDING, 0);
 +    timings.padding_ms = started.elapsed().as_secs_f64() * 1000.0;
 +    Ok(data)
- }
- 
- /// Check font bytes and append the padding.
 diff --git a/src/main.rs b/src/main.rs
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -694,7 +694,13 @@
-     };
-     let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
-     let font_started = Instant::now();
+@@ -914 +914,7 @@
 -    let font = match font::load(&font_path) {
 +    let mut font_timings = font::LoadTimings::default();
 +    let loaded = if profile {
@@ -147,18 +79,9 @@ diff --git a/src/main.rs b/src/main.rs
 +        font::load(&font_path)
 +    };
 +    let font = match loaded {
-         Ok(font) => font,
-         Err(error) => {
-             eprintln!("{error}");
-@@ -723,7 +729,7 @@
-         )
-     };
-     if profile {
+@@ -943 +949 @@
 -        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", started.elapsed().as_secs_f64() * 1000.0, data.len());
 +        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0, data.len());
-     }
-     ExitCode::from(code as u8)
- }
 diff --git a/src/deflate_profile.h b/src/deflate_profile.h
 new file mode 100644
 --- /dev/null

@@ -5,7 +5,7 @@ Headless: no window, no terminal, no crates.io dependencies. The same source bui
 on macOS and Linux and writes the same pixels.
 
 termshot reads bytes a terminal already emitted, rebuilds the cell grid, and paints it.
-The screenshot below, 2200×1440, takes about 9 ms from start to finished file
+The screenshot below, 2200×1440, takes about 19 ms from start to finished file
 on the Apple M3 measured below.
 
 ![A 100 by 30 demo inbox, rasterized from examples/reply-sent.pty](docs/reply-sent.png)
@@ -23,12 +23,20 @@ We built it for TUI work, where the thing to check is what the screen ends up sh
 - **Bug reports.** Ask for the raw log, not a phone photo of the screen, and render it at your
   end.
 
-It is not a terminal emulator. It draws one final frame, not an animation. Colors come from
-24-bit SGR (`38;2;r;g;b` and `48;2;r;g;b`, or the `38:2::r:g:b` colon form); scrolling and the
-16 and 256 color palettes are not interpreted yet ([#6](https://github.com/solcreek/termshot/issues/6)).
-Cursor movement, tabs, erase, insert and delete of characters, save and restore of the cursor,
-DEC line drawing (`ESC ( 0`), and escape and string sequences are parsed the way xterm does. A bare LF moves down without returning to column 0. Logs captured
+It draws one final frame, not an animation. The screen model follows xterm and covers:
+
+- autowrap, scrolling, scroll regions, inserting and deleting lines, and the alternate screen
+  that full-screen programs use (`vi`, `less`)
+- cursor movement, tabs, erase, inserting and deleting characters, saving the cursor, and DEC
+  line drawing (`ESC ( 0`)
+
+`tests/vt/` checks this against tmux, on short cases and on recorded `ls`, `less` and `vi`
+sessions. A bare LF moves down without returning to column 0, as in a terminal; logs captured
 through a PTY already have CR LF.
+
+Colors come from 24-bit SGR (`38;2;r;g;b`, `48;2;r;g;b`, or the `38:2::r:g:b` colon form). The
+16 and 256 color palettes and double-width characters are not interpreted yet
+([#6](https://github.com/solcreek/termshot/issues/6)).
 
 ## Speed
 
@@ -37,19 +45,19 @@ process start, input, font validation, parse, rasterize, PNG encode, and file cl
 
 | px | Image | PNG | Apple M3 median | p95 |
 | --- | --- | ---: | ---: | ---: |
-| 24 | 1100×720 | 79 KB | 5.34 ms | 5.98 ms |
-| 48 | 2200×1440 | 206 KB | 9.07 ms | 12.55 ms |
-| 128 | 5800×3840 | 955 KB | 31.76 ms | 34.38 ms |
+| 24 | 1100×720 | 79 KB | 7.14 ms | 10.48 ms |
+| 48 | 2200×1440 | 206 KB | 19.50 ms | 52.34 ms |
+| 128 | 5800×3840 | 955 KB | 35.78 ms | 50.72 ms |
 
 Measured on macOS 26.3.1 with 24 GiB RAM, 2026-10-01: three warmups and 30 runs
 per case, interleaved with baseline binaries. These are warm-filesystem measurements
 on a shared machine. Current Linux timings have not been measured.
 
-The latest round reduces median latency by 1.22–2.26× across 12 workloads against
-main at `255fa3a`, with byte-identical PNGs. Painting directly into PNG scanlines
+The latest round reduces median latency by 1.26–2.10× across 12 workloads against
+main at `1eaf7dd`, with byte-identical PNGs. Painting directly into PNG scanlines
 removes a full image copy and buffer; faster DEFLATE emission, Adler-32, and CRC-32
 reduce encoding work. ASCII parsing, font validation, and repeated rounded corners
-also improve. At 48 px, measured peak RSS falls from 22.67 to 13.52 MiB.
+also improve. At 48 px, measured peak RSS falls from 22.78 to 13.75 MiB.
 
 See [performance measurements](docs/performance.md) for all workloads, per-stage
 timings, raw samples, memory usage, validation, and remaining bottlenecks.
@@ -116,8 +124,8 @@ it records raw samples, median, p95, output size and hash, and toolchain details
 for benchmarks and tests.
 
 See [performance measurements](docs/performance.md) for the before/after results,
-baseline reproduction, timing boundaries, and remaining bottlenecks. Extended pixel tests compare against the renderer at `8e1110e`, including its
-terminal parsing fixes and portable floating-point settings.
+baseline reproduction, timing boundaries, and remaining bottlenecks. Extended
+pixel tests retain main's reference images and portable floating-point settings.
 
 See [CHANGELOG.md](CHANGELOG.md) for notable changes.
 

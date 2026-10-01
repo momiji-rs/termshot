@@ -1,0 +1,24 @@
+compressnet       3/tcp     # Compression Process
+#                          Bernie Volz <VOLZ@PROCESS.COM>
+echo              4/ddp    #AppleTalk Echo Protocol
+#                 4/tcp    Unassigned
+#                 4/udp    Unassigned
+rje               5/udp     # Remote Job Entry
+rje               5/tcp     # Remote Job Entry
+#                          Jon Postel <postel@isi.edu>
+zip               6/ddp    #Zone Information Protocol
+#                 6/tcp    Unassigned
+#                 6/udp    Unassigned
+echo              7/udp     # Echo
+typed in vi
+echo              7/tcp     # Echo
+#                          Jon Postel <postel@isi.edu>
+#                 8/tcp    Unassigned
+#                 8/udp    Unassigned
+discard           9/udp     # Discard
+discard           9/tcp     # Discard
+#                          Jon Postel <postel@isi.edu>
+#                10/tcp    Unassigned
+#                10/udp    Unassigned
+systat           11/udp     # Active Users
+

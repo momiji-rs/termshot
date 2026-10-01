@@ -1,0 +1,82 @@
+# VT behaviour cases: name, grid size, then the log as a printf(1) format
+# string (\033 is ESC; use %% for a percent sign). The screen termshot must
+# produce is in expected.txt, generated from tmux by tests/vt/oracle.sh.
+# Rows with tabs are pre-filled so tmux records no tab cells (capture-pane
+# would print them as \t).
+
+tab		10x4	abcdefghij\r\tx
+tab-last	10x4	abcdefghij\033[1;10H\tx
+bs		10x4	abc\b\bx
+bs-col0		10x4	\bx
+bs-last		10x4	\033[1;9Hab\bc
+hts		10x4	abcdefghij\033[3g\033[1;4H\033H\r\tx
+tbc		10x4	abcdefghij\033[1;9H\033[g\r\tx
+cbt		10x4	abcdefghij\033[1;10H\033[Zx
+cht		10x4	abcdefghij\r\033[2Ix
+cha		10x4	\033[5Gx\033[3`y\033[3dz\033[99G!
+cnl-cpl		10x4	ab\033[2Ex\033[1Fy
+hpr-vpr		10x4	\033[3ax\033[2ey
+ich		10x4	abcdef\033[1;3H\033[2@
+ich-overflow	10x4	abcdefghij\033[1;9H\033[99@
+dch		10x4	abcdef\033[1;2H\033[2P
+dch-overflow	10x4	abcdef\033[1;2H\033[99P
+ech		10x4	abcdef\033[1;2H\033[2Xz
+rep		10x4	ab\033[3b
+decsc		10x4	\033[2;2H\0337\033[4;4H\0338z
+scosc		10x4	\033[2;2H\033[s\033[4;4H\033[uz
+ind		10x4	ab\033Dc
+nel		10x4	ab\033Ec
+ri		10x4	\033[3;1H\033Mx
+ris		10x4	abc\033[2;2H\033cx
+vt-ff		10x4	a\013b\014c
+lf		10x4	ab\ncd
+ed0		10x4	ab\r\ncd\033[1;2H\033[J
+ed1		10x4	abcdef\r\nghij\033[2;2H\033[1J
+ed2		10x4	abc\033[2Jx
+el1		10x4	abcdef\033[1;4H\033[1K
+el2		10x4	abcdef\033[1;4H\033[2K
+cuf		10x4	ab\033[99Cx
+cup-clamp	10x4	\033[99;99Hx
+charset-esc	10x4	\033(Bok
+osc-esc		10x4	\033]0;title\033[2;2Hx
+
+# Screen model: autowrap, scrolling, margins, the alternate screen.
+wrap		10x4	abcdefghijKL
+wrap-pending-cr	10x4	abcdefghij\rX
+wrap-pending-lf	10x4	abcdefghij\nX
+wrap-pending-cup	10x4	abcdefghij\033[2;1HX
+wrap-pending-el	10x4	abcdefghij\033[K
+wrap-scroll	10x4	0123456789abcdefghijABCDEFGHIJklmnopqrstUV
+nowrap		10x4	\033[?7labcdefghijKL
+nowrap-back	10x4	\033[?7labcdefghijKL\033[?7h\rabcdefghijMN
+lf-scroll	10x4	a\r\nb\r\nc\r\nd\r\ne
+ind-scroll	10x4	\033[4;1Hx\033Dy
+nel-scroll	10x4	\033[4;1Hx\033Ey
+ri-scroll	10x4	a\r\nb\033[1;1H\033Mx
+region-lf	10x4	1\r\n2\r\n3\r\n4\033[2;3r\033[3;1H\n\nX
+region-ri	10x4	1\r\n2\r\n3\r\n4\033[2;3r\033[2;1H\033MX
+region-home	10x4	abc\033[2;3rx
+region-wrap	10x4	1\r\n2\r\n3\r\n4\033[2;3r\033[3;1Habcdefghijkl
+region-below	10x4	\033[1;2r\033[4;1Hx\nY
+region-cuu	10x4	\033[2;3r\033[3;1H\033[9Ax
+region-cud	10x4	\033[2;3r\033[2;1H\033[9Bx
+region-bad	10x4	1\r\n2\r\n3\r\n4\033[3;2r\033[4;1H\nX
+su		10x4	1\r\n2\r\n3\r\n4\033[2S
+sd		10x4	1\r\n2\r\n3\r\n4\033[1T
+su-region	10x4	1\r\n2\r\n3\r\n4\033[2;3r\033[1S
+il		10x4	1\r\n2\r\n3\r\n4\033[2;1H\033[1L
+il-col		10x4	1\r\n2x\r\n3\033[2;2H\033[LZ
+dl		10x4	1\r\n2\r\n3\r\n4\033[2;1H\033[1M
+il-region	10x4	1\r\n2\r\n3\r\n4\033[2;3r\033[2;1H\033[L
+il-outside	10x4	1\r\n2\r\n3\r\n4\033[2;3r\033[4;1H\033[L
+dl-many		10x4	1\r\n2\r\n3\r\n4\033[2;1H\033[99M
+origin		10x4	\033[2;3r\033[?6h\033[1;1Hx\033[9;9Hy
+origin-off	10x4	\033[2;3r\033[?6h\033[?6l\033[1;1Hx
+ed3		10x4	abc\033[3J
+alt		10x4	main\033[?1049halt
+alt-exit	10x4	main\033[?1049haltt\033[?1049lX
+alt-clear	10x4	\033[?1049hjunk\033[?1049l\033[?1049hok
+alt-47		10x4	main\033[?47hx\033[?47lY
+alt-1047	10x4	main\033[?1047hx\033[?1047lY
+alt-1048	10x4	ab\033[?1048h\033[3;3Hx\033[?1048lY
+rep-wrap	10x4	ab\033[12b

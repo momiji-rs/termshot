@@ -1,0 +1,33 @@
+[?1034h$ echo before-vi
+before-vi
+$ vi -u NONE -c "set nocp" /etc/services
+[?1049h[>4;2m[?1h=[?2004h[1;24r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[24;1H"/etc/services" [readonly] 13926 lines, 678260 bytes[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c[1;1H#
+# Network services, Internet style[2;35H[K[3;1H#[3;2H[K[4;1H# Note that it is presently the policy of IANA to assign a single well-known
+# port number for both TCP and UDP; hence, most entries here have two entries
+# even if the protocol doesn't support UDP operations.
+#
+# The latest IANA port assignments can be gotten from
+#
+#[7Chttp://www.iana.org/assignments/port-numbers
+#
+# The Well Known Ports are those from 0 through 1023.
+# The Registered Ports are those from 1024 through 49151
+# The Dynamic and/or Private Ports are those from 49152 through 65535
+#
+# $FreeBSD: src/etc/services,v 1.89 2002/12/17 23:59:10 eric Exp $
+#[7CFrom: @(#)services      5.8 (Berkeley) 5/9/91
+#
+# WELL KNOWN PORT NUMBERS
+#
+rtmp[14C1/ddp    #Routing Table Maintenance Protocol
+tcpmux[12C1/udp     # TCP Port Service Multiplexer
+tcpmux[12C1/tcp     # TCP Port Service Multiplexer[1;1H[?25h[?4m[?12$p[?25l[24;70H40G[1;1H[24;70H   [12;1H[1;1Hcompressnet[7C3/tcp     # Compression Process
+#                          Bernie Volz <VOLZ@PROCESS.COM>
+echo[14C4/ddp    #AppleTalk Echo Protocol
+#                 4/tcp    Unassigned[4;38H[K[5;3H                4/udp    Unassigned[5;38H[K[6;1Hrje               5/udp     # Remote Job Entry[6;47H[K[7;1Hrje[15C5/tcp     # Remote Job Entry
+#                          Jon Postel <postel@isi.edu>
+zip[15C6/ddp    #Zone Information Protocol[10;9H          6/tcp    Unassigned[10;38H[K[11;19H6/udp    Unassigned
+echo              7/udp     # Echo[12;35H[K[13;1Hecho              7/tcp     # Echo[13;35H[K[14;3H                         Jon Postel <postel@isi.edu>[14;55H[K[15;19H8/tcp    Unassigned
+#                 8/udp    Unassigned[16;38H[K[17;1Hdiscard           9/udp     # Discard[17;38H[K[18;1Hdiscard[11C9/tcp     # Discard
+#                          Jon Postel <postel@isi.edu>[20;18H10/tcp    Unassigned
+#   [13C10/udp    Unassigned[21;38H[K[22;1Hsystat[11C1[12CActive Users[22;43H[K[23;1Hsystat[11C1[12CActive Users[23;43H[K[12;1H[?25h[?25l[24;70Ho[12;1H[24;1H[31mW10: Warning: Changing a readonly file[m[24;39H[K[13;1H[24;1H[1m-- INSERT --[m[24;13H[K[13;23r[13;1H[L[1;24r[13;1H[?25h[?25ltyped in vi[?25h[24;1H[K[13;11H[?25l[24;70H^[[13;11H[?25h[?25l[24;70H  [13;12H[?25h

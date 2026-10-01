@@ -1,0 +1,24 @@
+$ ls -G /usr
+bin        libexec    sbin       standalone X11R6
+lib        local      share      X11
+$ less /etc/services
+$ echo after-less
+after-less
+$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
