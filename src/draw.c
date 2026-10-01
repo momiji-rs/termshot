@@ -23,6 +23,9 @@ typedef struct {
 
 _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 
+/* 2^27 pixels keeps the 4-byte rows plus filter bytes near 512 MiB, well under INT_MAX. */
+#define MAX_PIXELS (1 << 27)
+
 static uint8_t *g_img;
 static int g_w, g_h;
 
@@ -224,6 +227,13 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
     int height = rows * cell_h;
     fprintf(stderr, "advance %d units scale %.5f cell %dx%d baseline %d image %dx%d\n",
             adv, scale, cell_w, cell_h, baseline, width, height);
+    /* stb_image_write sizes its buffers with int: (width*4+1)*height must not wrap. */
+    if ((long long)width * height > MAX_PIXELS) {
+        free(ttf);
+        fprintf(stderr, "image %dx%d is over %d pixels; lower px, cols or rows\n",
+                width, height, MAX_PIXELS);
+        return 2;
+    }
 
     g_w = width;
     g_h = height;
