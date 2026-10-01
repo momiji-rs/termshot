@@ -17,11 +17,12 @@ upstream license intact when updating. `stb_truetype.h` is unchanged.
 - The renderer uses the existing `STBIW_CRC32` hook with portable slicing-by-eight
   IEEE CRC-32 (`src/png_crc.h`); the generic writer's default CRC is unchanged.
 
-`tests/codec.c` and `tests/codec.py` check 5,024 independent zlib/PNG round trips
+`tests/codec.c` independently decodes and checks 5,024 zlib/PNG round trips
 for each of the stock and custom compressors, including all PNG filters,
 1–4 channels, padded strides, vertical flipping, short inputs, DEFLATE window
-boundaries, Adler-32 block boundaries, random bytes, and repeated runs. They also
-compare the renderer's CRC with stb for aligned and unaligned inputs.
+boundaries, Adler-32 block boundaries, random bytes, and repeated runs. It also
+checks PNG chunk CRCs and zlib Adler-32 trailers, and compares the renderer's CRC
+with stb for aligned and unaligned inputs.
 Run `SANITIZE=1 ./tests/run.sh`
 after changes. `./test.sh` additionally compares both compressors byte for byte
 on 3,000 seeded inputs. Renderer pixel hashes provide end-to-end checks on macOS
