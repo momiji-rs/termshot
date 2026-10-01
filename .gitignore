@@ -4,3 +4,4 @@
 !docs/*.png
 /target/
 __pycache__/
+/dist/
