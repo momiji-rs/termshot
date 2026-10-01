@@ -26,7 +26,11 @@ typedef struct {
 
 _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 
-/* 2^27 pixels keeps the 4-byte rows plus filter bytes near 512 MiB, well under INT_MAX. */
+/* The canvas is RGB: alpha would always be 255, and an opaque RGBA PNG is
+   larger and blocks palette quantization in downstream optimizers. */
+#define BPP 3
+
+/* 2^27 pixels keeps the 3-byte rows plus filter bytes near 384 MiB, well under INT_MAX. */
 #define MAX_PIXELS (1 << 27)
 
 static uint8_t *g_img;
@@ -34,11 +38,10 @@ static int g_w, g_h;
 
 static void put(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if ((unsigned)x >= (unsigned)g_w || (unsigned)y >= (unsigned)g_h) return;
-    uint8_t *p = g_img + ((size_t)y * g_w + x) * 4;
+    uint8_t *p = g_img + ((size_t)y * g_w + x) * BPP;
     p[0] = r;
     p[1] = g;
     p[2] = b;
-    p[3] = 255;
 }
 
 static void fill_rect(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
@@ -47,13 +50,12 @@ static void fill_rect(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint
     if (x1 > g_w) x1 = g_w;
     if (y1 > g_h) y1 = g_h;
     for (int y = y0; y < y1; y++) {
-        uint8_t *row = g_img + ((size_t)y * g_w + x0) * 4;
+        uint8_t *row = g_img + ((size_t)y * g_w + x0) * BPP;
         for (int x = x0; x < x1; x++) {
             row[0] = r;
             row[1] = g;
             row[2] = b;
-            row[3] = 255;
-            row += 4;
+            row += BPP;
         }
     }
 }
@@ -161,7 +163,7 @@ static void blend(int dx, int dy, const unsigned char *bm, int gw, int gh,
             if ((unsigned)ix >= (unsigned)g_w) continue;
             unsigned char a = bm[y * gw + x];
             if (a == 0) continue;
-            uint8_t *p = g_img + ((size_t)iy * g_w + ix) * 4;
+            uint8_t *p = g_img + ((size_t)iy * g_w + ix) * BPP;
             if (a == 255) {
                 p[0] = r;
                 p[1] = g;
@@ -171,7 +173,6 @@ static void blend(int dx, int dy, const unsigned char *bm, int gw, int gh,
                 p[1] = (uint8_t)((g * a + p[1] * (255 - a) + 127) / 255);
                 p[2] = (uint8_t)((b * a + p[2] * (255 - a) + 127) / 255);
             }
-            p[3] = 255;
         }
     }
 }
@@ -230,7 +231,7 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
     int height = rows * cell_h;
     fprintf(stderr, "advance %d units scale %.5f cell %dx%d baseline %d image %dx%d\n",
             adv, scale, cell_w, cell_h, baseline, width, height);
-    /* stb_image_write sizes its buffers with int: (width*4+1)*height must not wrap. */
+    /* stb_image_write sizes its buffers with int: (width*BPP+1)*height must not wrap. */
     if ((long long)width * height > MAX_PIXELS) {
         free(ttf);
         fprintf(stderr, "image %dx%d is over %d pixels; lower px, cols or rows\n",
@@ -240,7 +241,7 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
 
     g_w = width;
     g_h = height;
-    g_img = (uint8_t *)malloc((size_t)width * height * 4);
+    g_img = (uint8_t *)malloc((size_t)width * height * BPP);
     if (!g_img) {
         free(ttf);
         return 2;
@@ -276,7 +277,10 @@ int draw_png(const Cell *cells, int cols, int rows, const char *font_path, doubl
         }
     }
 
-    int ok = stbi_write_png(out_path, width, height, 4, g_img, width * 4);
+    /* No row filter: on flat terminal colours it is both the smallest and the
+       fastest choice, ahead of stb's per-row heuristic. */
+    stbi_write_force_png_filter = 0;
+    int ok = stbi_write_png(out_path, width, height, BPP, g_img, width * BPP);
     free(g_img);
     g_img = NULL;
     free(ttf);
