@@ -1,6 +1,6 @@
-//! Pixel goldens. Renders the samples with ./termshot, decodes each PNG with
-//! tests/png_read.c (stb_image), and compares the sha256 of the RGBA pixels
-//! with tests/goldens.txt. Hashing pixels rather than file bytes keeps the
+//! Pixel goldens. Renders the samples and tests/fixtures/ with ./termshot,
+//! decodes each PNG with tests/png_read.c (stb_image), and compares the sha256
+//! of the RGBA pixels with tests/goldens.txt. Hashing pixels rather than file bytes keeps the
 //! goldens valid when the encoder changes but the image does not.
 //!
 //! Built and run by test.sh from the repo root:
@@ -15,8 +15,28 @@ const GOLDENS: &str = "tests/goldens.txt";
 const OUT: &str = "target/test";
 const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 const HEADER: &str = "# sha256 of decoded RGBA pixels, size, log, px. Rewrite with ./test.sh --update-goldens";
+// (log, px, cols, rows). A log is examples/<log>.pty or tests/fixtures/<log>.pty.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, u32); 4] = [("reply-sent", 46), ("reply-sent", 48), ("draft-ready", 46), ("draft-ready", 48)];
+const CASES: [(&str, &str, u32, u32); 18] = [
+    ("reply-sent", "46", 100, 30),
+    ("reply-sent", "48", 100, 30),
+    ("draft-ready", "46", 100, 30),
+    ("draft-ready", "48", 100, 30),
+    ("blank", "24", 20, 8),
+    ("geometry", "1", 12, 2),
+    ("geometry", "9", 12, 2),
+    ("geometry", "24", 12, 2),
+    ("geometry", "47.5", 12, 2),
+    ("geometry", "128", 12, 2),
+    ("geometry", "255", 12, 2),
+    ("clipping", "48", 5, 2),
+    ("cache-collisions", "16", 120, 4),
+    ("missing-glyphs", "16", 100, 1),
+    ("csi", "20", 20, 5),
+    ("sgr", "24", 40, 2),
+    ("control-strings", "24", 20, 4),
+    ("random-colors", "20", 40, 12),
+];
 
 extern "C" {
     fn png_read_rgba(path: *const i8, width: *mut i32, height: *mut i32) -> *mut u8;
@@ -93,15 +113,22 @@ fn sha256(data: &[u8]) -> String {
     h.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-fn render(log: &str, px: u32) -> Result<String, String> {
+fn render(log: &str, px: &str, cols: u32, rows: u32) -> Result<String, String> {
     let png = format!("{OUT}/{log}-{px}.png");
-    let status = Command::new("./termshot")
-        .args([&format!("examples/{log}.pty"), &png, FONT, &px.to_string()])
-        .stderr(std::process::Stdio::null())
-        .status()
+    let mut src = format!("examples/{log}.pty");
+    if fs::metadata(&src).is_err() {
+        src = format!("tests/fixtures/{log}.pty");
+    }
+    let output = Command::new("./termshot")
+        .args([&src, &png, FONT, px, &cols.to_string(), &rows.to_string()])
+        .env_remove("TERMSHOT_PROFILE")
+        .output()
         .map_err(|error| format!("./termshot: {error}"))?;
-    if !status.success() {
-        return Err(format!("./termshot {log} {px}: {status}"));
+    if !output.status.success() {
+        return Err(format!("./termshot {log} {px}: {}", output.status));
+    }
+    if String::from_utf8_lossy(&output.stderr).contains("termshot-profile ") {
+        return Err(format!("./termshot {log} {px}: profile records without TERMSHOT_PROFILE"));
     }
     let (width, height, rgba) = decode(&png)?;
     Ok(format!("{} {width}x{height} {log} {px}", sha256(&rgba)))
@@ -111,8 +138,8 @@ fn main() -> ExitCode {
     assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     let update = std::env::args().nth(1).as_deref() == Some("--update");
     let mut fresh = vec![HEADER.to_string()];
-    for (log, px) in CASES {
-        match render(log, px) {
+    for (log, px, cols, rows) in CASES {
+        match render(log, px, cols, rows) {
             Ok(line) => fresh.push(line),
             Err(error) => {
                 eprintln!("{error}");

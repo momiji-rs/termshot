@@ -92,6 +92,9 @@ check "verbose prints the image size" './termshot -v "$log" "$out/q.png" 2>&1 | 
 rm -f "$out/gone.png"
 ./termshot "$log" "$out/gone.png" "$font" 255 500 73 2>/dev/null || true
 check "failed run removes the file it created" '[ ! -e "$out/gone.png" ]'
+if [ -e /dev/full ]; then
+    check "short writes are reported" '! ./termshot "$log" /dev/full 2>/dev/null'
+fi
 [ "$fail" -eq 0 ] && echo "ok"
 
 echo "== goldens"
