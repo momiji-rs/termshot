@@ -83,7 +83,12 @@ def fixtures():
         yield f'geometry-{px}', (geometry + '\r\n\x1b[1m' + geometry).encode(), px, 12, 2
     yield 'clipping', 'jÁǺfW\r\n\x1b[1mÁjWWÁ\x1b[2;5Hf'.encode(), 48, 5, 2
     yield 'cache-collisions', (('AŁɁ́' * 30 + '\r\n') * 3 + 'AŁɁ́' * 30).encode(), 16, 120, 4
+    yield 'cache-collisions-1024', (('A\u0441\u0841\u0c41' * 30 + '\r\n') * 3 + 'A\u0441\u0841\u0c41' * 30).encode(), 16, 120, 4
     yield 'missing-glyphs', ('\U0010ffff\u0378 A' * 20).encode(), 16, 100, 1
+    corners = ''.join(f'\x1b[{1 + (i * 7) % 40};{1 + (i * 31) % 200}H'
+                      f'\x1b[{1 if i % 2 else 22};38;2;{i % 256};90;170m'
+                      + '╭╮╯╰'[i % 4] for i in range(400))
+    yield 'geometry-offsets', corners.encode(), 47.5, 200, 40
     yield 'csi', b'ABC\x1b[2;3Hxyz\x1b[s\x1b[1;1HX\x1b[uY\x1b[2D!\x1b[K\x1b[1Bz\x1b[2Cq\x1b[1Aw\x1b[0m.', 20, 20, 5
     yield 'sgr', b'\x1b[1;38;2;250;10;90;48;2;5;30;70mBold\x1b[22mThin\x1b[39;49mReset\x1b[m.\x1b[38;2;8mA\x1b[38;;1mB\x1b[;mC', 24, 40, 2
     yield 'control-strings', b'A\x1b]title\x07B\x1b]title\x1b\\C\x1bPdata\x1b\\D\x1b_hidden\x1b\\E\x1b[?25lF\x1b[2JFinal\x1b[', 24, 20, 4
@@ -98,7 +103,7 @@ def fixtures():
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--binary', type=Path, default=ROOT / 'termshot')
-    p.add_argument('--write-goldens', action='store_true', help='Only use with the main-at-8e1110e reference binary')
+    p.add_argument('--write-goldens', action='store_true', help='Only use with the documented, pinned baseline binary')
     args = p.parse_args()
     actual = {}
     env = {k: v for k, v in os.environ.items() if k != 'TERMSHOT_PROFILE'}

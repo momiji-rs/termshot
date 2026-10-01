@@ -31,6 +31,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Detailed font reading, validation, padding, and DEFLATE stage timings.
 - Benchmarks for high-resolution output, random colors, long ASCII input, and
   rounded boxes, with optional peak RSS measurements and exact PNG comparisons.
+- Repeated benchmarks with child CPU timings, paired speedup intervals, input
+  fingerprints, and real shell, less, and vi recordings.
+- Regression coverage for batched scrolling, larger glyph-cache collisions,
+  distant rounded corners, and compressor allocation failures.
 
 ### Changed
 
@@ -56,6 +60,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rounded-corner offsets within each render.
 - Speed up DEFLATE token emission, Adler-32, and PNG CRC-32 while preserving
   compressed bytes and pixels.
+- Skip ASCII rows that cannot survive the current run's scrolling, avoid
+  clearing rows before fully overwriting them, and simplify CSI digit saturation.
+- Retain up to 1,024 glyph bitmaps per render to reduce Unicode rasterization
+  without changing pixels.
+- Compare DEFLATE matches in 16-byte groups and flush bits with one capacity
+  check per token while retaining byte-identical output and failure handling.
+- Release input logs before rendering to reduce overlapping buffer lifetimes.
+- Replace the README's fixed latency headline with paired, versioned results
+  and document the source and limits of the historical “~20 ms” measurement.
 
 ### Fixed
 

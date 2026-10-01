@@ -51,6 +51,46 @@ fn ascii_runs_without_wrap_preserve_cursor_and_attributes() {
 }
 
 #[test]
+fn ascii_scroll_batches_match_individual_prints() {
+    for cols in [1, 2, 10, 31] {
+        for rows in [1, 2, 5] {
+            for wrap in [false, true] {
+                for alternate in [false, true] {
+                    for len in [0, 1, cols - 1, cols, cols * rows, cols * rows * 3 + 1, 4097] {
+                        let setup = || {
+                            let mut s = Screen::new(cols, rows);
+                            s.use_alternate(alternate, false);
+                            for _ in 0..cols * rows { s.print('!' as u32); }
+                            s.top = if rows > 2 { 1 } else { 0 };
+                            s.bottom = if rows > 2 { rows - 2 } else { rows - 1 };
+                            s.row = s.bottom;
+                            s.col = cols - 1;
+                            s.pending = true;
+                            s.autowrap = wrap;
+                            s.pen.fg = (1, 2, 3);
+                            s.pen.bg = (4, 5, 6);
+                            s.pen.attrs = BOLD | UNDERLINE | STRIKE;
+                            s.pen.dim = true;
+                            s.pen.reverse = true;
+                            s
+                        };
+                        let bytes: Vec<u8> = (0..len).map(|i| b'!' + (i % 94) as u8).collect();
+                        let (mut fast, mut reference) = (setup(), setup());
+                        fast.print_ascii(&bytes);
+                        for byte in bytes { reference.print(u32::from(byte)); }
+                        assert_eq!((fast.row, fast.col, fast.pending, fast.last),
+                                   (reference.row, reference.col, reference.pending, reference.last));
+                        for (a, b) in fast.into_cells().iter().zip(reference.into_cells()) {
+                            assert_eq!((a.ch, fg(a), bg(a), a.attrs), (b.ch, fg(&b), bg(&b), b.attrs));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn ascii_runs_stop_at_unicode_and_control_boundaries() {
     let g = grid("abéCD\x7fEF\rZ\nXY\x1b[2;8H!".as_bytes());
     assert_eq!(line(&g, 0), "ZbéCDEF   ");

@@ -5,8 +5,7 @@ Headless: no window, no terminal, no crates.io dependencies. The same source bui
 on macOS and Linux and writes the same pixels.
 
 termshot reads bytes a terminal already emitted, rebuilds the cell grid, and paints it.
-The screenshot below, 2200×1440, takes about 19 ms from start to finished file
-on the Apple M3 measured below.
+The screenshot below is 2200×1440.
 
 ![A 100 by 30 demo inbox, rasterized from examples/reply-sent.pty](docs/reply-sent.png)
 
@@ -41,27 +40,32 @@ text are drawn; italic and blink are not. Double-width characters are not interp
 
 ## Speed
 
-Times below cover one whole run of `./termshot examples/reply-sent.pty out.png <font> <px>`:
-process start, input, font validation, parse, rasterize, PNG encode, and file close.
+The latest comparison uses main at `bd726a6` (including the new CLI and color
+support) and the current optimizations. These are whole CLI runs, including startup, input, font validation,
+parsing, rendering, encoding, file close, and exit.
 
-| px | Image | PNG | Apple M3 median | p95 |
-| --- | --- | ---: | ---: | ---: |
-| 24 | 1100×720 | 79 KB | 7.14 ms | 10.48 ms |
-| 48 | 2200×1440 | 206 KB | 19.50 ms | 52.34 ms |
-| 128 | 5800×3840 | 955 KB | 35.78 ms | 50.72 ms |
+| Workload | Batch A: main → optimized (median ms) | Batch B: main → optimized (median ms) |
+| --- | ---: | ---: |
+| reply-sent | 9.49 → 9.03 | 9.14 → 8.80 |
+| ascii-overflow | 21.68 → 9.68 | 23.65 → 10.86 |
+| ansi-replay | 20.91 → 19.86 | 25.81 → 23.63 |
+| large | 46.52 → 43.21 | 41.77 → 38.51 |
+| unicode | 9.10 → 7.40 | 11.77 → 9.41 |
 
-Measured on macOS 26.3.1 with 24 GiB RAM, 2026-10-01: three warmups and 30 runs
-per case, interleaved with baseline binaries. These are warm-filesystem measurements
-on a shared machine. Current Linux timings have not been measured.
+Apple M3, 24 GiB RAM, macOS 26.3.1, measured 2026-10-01. Each batch uses five
+warmups and 40 interleaved runs per binary/workload, with different ordering seeds.
+The benchmarks use the explicit external font. All 15 workloads produce
+byte-identical PNGs. Stage profiling, child CPU time,
+and peak RSS are measured as well; both batches retain every sample and p95.
 
-The latest round reduces median latency by 1.26–2.10× across 12 workloads against
-main at `1eaf7dd`, with byte-identical PNGs. Painting directly into PNG scanlines
-removes a full image copy and buffer; faster DEFLATE emission, Adler-32, and CRC-32
-reduce encoding work. ASCII parsing, font validation, and repeated rounded corners
-also improve. At 48 px, measured peak RSS falls from 22.78 to 13.75 MiB.
+This round reduces work in ASCII scrolling, CSI parsing, glyph caching,
+and DEFLATE matching/emission. It also releases input storage before rendering.
+Small-case gains and tail latencies vary; the shared-machine measurements do not
+establish a universal millisecond figure or current Linux performance.
 
-See [performance measurements](docs/performance.md) for all workloads, per-stage
-timings, raw samples, memory usage, validation, and remaining bottlenecks.
+See [performance measurements](docs/performance.md) for all cases, paired
+confidence intervals, memory tradeoffs, rejected experiments, remaining
+bottlenecks, reproduction, and the origin of the historical “~20 ms” claim.
 
 ## Build
 
@@ -128,7 +132,7 @@ The font must be TrueType, meaning it has `glyf` outlines; CFF-based `.otf` font
 ```sh
 TERMSHOT_PROFILE=1 ./termshot examples/reply-sent.pty /tmp/reply.png \
   third_party/jetbrains-mono/JetBrainsMono-Regular.ttf
-python3 scripts/bench.py --binary current=./termshot --runs 15 \
+python3 scripts/bench.py --binary current=./termshot --runs 40 \
   --output /tmp/termshot-bench.json
 SANITIZE=1 ./tests/run.sh
 ```
@@ -137,7 +141,8 @@ Profiling writes two `termshot-profile` JSON records to stderr, covering input,
 parsing, font reading/validation/padding, drawing, PNG filtering, compression
 allocation/matching/emission/checksum, PNG packaging, and writing. The benchmark
 measures ordinary CLI runs separately from profiling and optional peak RSS runs;
-it records raw samples, median, p95, output size and hash, and toolchain details. Python 3 is needed only
+it records raw samples, means, medians, p95, child CPU time, paired comparisons,
+output size and hash, and toolchain details. Python 3 is needed only
 for benchmarks and tests.
 
 See [performance measurements](docs/performance.md) for the before/after results,

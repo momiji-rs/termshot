@@ -54,10 +54,20 @@
     "height": 60,
     "rgb_sha256": "d96125834a7d7dec615c79186bc1c8568192f2b0a801a6414bccf10ea88c1f13"
   },
+  "cache-collisions-1024": {
+    "width": 840,
+    "height": 60,
+    "rgb_sha256": "1ef7fd01d05afddcafac27daddd15843455dbb14d986b703a361aa14cfc1734f"
+  },
   "missing-glyphs": {
     "width": 700,
     "height": 15,
     "rgb_sha256": "3d164f13798664faa3e2fe76edf59789ca66041383e36815c6369ade419a6f0d"
+  },
+  "geometry-offsets": {
+    "width": 4400,
+    "height": 1920,
+    "rgb_sha256": "8937c2eabfa312c19371e6c017aab16aa94dcb97b123ff5e79b752788d8f1c9e"
   },
   "csi": {
     "width": 180,
