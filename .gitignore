@@ -1,0 +1,4 @@
+/termshot
+*.o
+*.png
+!docs/*.png
