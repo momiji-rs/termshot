@@ -134,6 +134,7 @@ fn pseudorandom_input_does_not_panic() {
     let pick = [
         0x1b, b'[', b']', b';', b':', b'0', b'2', b'5', b'9', b'3', b'8', b'H', b'A', b'B', b'C', b'D', b'K',
         b'J', b'm', b'?', b'(', b' ', 0x07, 0x18, b'\\', b'\n', b'\r', 0x7f, 0xc2, 0xe2, 0xed, 0xf4, 0x80,
+        0x08, 0x09, 0x0e, 0x0f, b'7', b'@', b'P', b'X', b'b', b'g', b'I', b'Z', b'G', b'd', b'c', b'q',
     ];
     let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut step = || {
@@ -282,4 +283,126 @@ fn c0_inside_csi_executes() {
 #[test]
 fn csi_with_intermediate_is_ignored() {
     assert_eq!(line(&grid(b"\x1b[2 qa"), 0), "a         ");
+}
+
+#[test]
+fn tab_moves_to_the_next_stop_or_the_last_column() {
+    assert_eq!(line(&grid(b"a\tb"), 0), "a       b ");
+    assert_eq!(at(&grid(b"\x1b[1;10H\tx"), 0, 9).ch, 'x' as u32);
+}
+
+#[test]
+fn backspace() {
+    assert_eq!(line(&grid(b"abc\x08\x08x"), 0), "axc       ");
+    assert_eq!(line(&grid(b"\x08x"), 0), "x         ");
+    // After printing in the last column the cursor sits there, so BS lands one left.
+    assert_eq!(line(&grid(b"\x1b[1;9Hab\x08c"), 0), "        cb");
+}
+
+#[test]
+fn tab_stops_can_be_set_and_cleared() {
+    assert_eq!(at(&grid(b"\x1b[3g\x1b[1;4H\x1bH\r\tx"), 0, 3).ch, 'x' as u32);
+    assert_eq!(at(&grid(b"\x1b[1;9H\x1b[g\r\tx"), 0, 9).ch, 'x' as u32);
+}
+
+#[test]
+fn tab_forward_and_back_by_count() {
+    assert_eq!(at(&grid(b"\x1b[2Ix"), 0, 9).ch, 'x' as u32);
+    assert_eq!(at(&grid(b"\x1b[1;10H\x1b[Zx"), 0, 8).ch, 'x' as u32);
+}
+
+#[test]
+fn absolute_column_and_row() {
+    let g = grid(b"\x1b[5Gx\x1b[3`y\x1b[3dz\x1b[99G!");
+    assert_eq!(at(&g, 0, 4).ch, 'x' as u32);
+    assert_eq!(at(&g, 0, 2).ch, 'y' as u32);
+    assert_eq!(at(&g, 2, 3).ch, 'z' as u32);
+    assert_eq!(at(&g, 2, 9).ch, '!' as u32);
+}
+
+#[test]
+fn next_and_previous_line() {
+    let g = grid(b"ab\x1b[2Ex\x1b[1Fy");
+    assert_eq!(at(&g, 2, 0).ch, 'x' as u32);
+    assert_eq!(at(&g, 1, 0).ch, 'y' as u32);
+}
+
+#[test]
+fn relative_column_and_row() {
+    let g = grid(b"\x1b[3ax\x1b[2ey");
+    assert_eq!(at(&g, 0, 3).ch, 'x' as u32);
+    assert_eq!(at(&g, 2, 4).ch, 'y' as u32);
+}
+
+#[test]
+fn insert_chars_shift_right_in_the_current_background() {
+    let g = grid(b"abcdef\x1b[1;3H\x1b[48;2;1;2;3m\x1b[2@");
+    assert_eq!(line(&g, 0), "ab  cdef  ");
+    assert_eq!(bg(at(&g, 0, 2)), (1, 2, 3));
+    assert_eq!(line(&grid(b"abcdefghij\x1b[1;9H\x1b[99@"), 0), "abcdefgh  ");
+}
+
+#[test]
+fn delete_chars_shift_left() {
+    assert_eq!(line(&grid(b"abcdef\x1b[1;2H\x1b[2P"), 0), "adef      ");
+    assert_eq!(line(&grid(b"abcdef\x1b[1;2H\x1b[99P"), 0), "a         ");
+}
+
+#[test]
+fn erase_chars_keeps_the_cursor() {
+    assert_eq!(line(&grid(b"abcdef\x1b[1;2H\x1b[2Xz"), 0), "az def    ");
+}
+
+#[test]
+fn repeat_the_last_character() {
+    assert_eq!(line(&grid(b"ab\x1b[3b"), 0), "abbbb     ");
+    // A huge count is capped instead of looping billions of times.
+    assert_eq!(line(&grid(b"x\x1b[4000000000b"), 0), "xxxxxxxxxx");
+    assert_eq!(line(&grid(b"\x1b[3b"), 0), "          ");
+}
+
+#[test]
+fn save_and_restore_keep_attributes() {
+    for (save, restore) in [(&b"\x1b7"[..], &b"\x1b8"[..]), (b"\x1b[s", b"\x1b[u")] {
+        let mut log = b"\x1b[38;2;1;2;3m\x1b[2;2H".to_vec();
+        log.extend_from_slice(save);
+        log.extend_from_slice(b"\x1b[0m\x1b[4;4H");
+        log.extend_from_slice(restore);
+        log.push(b'z');
+        let g = grid(&log);
+        assert_eq!(at(&g, 1, 1).ch, 'z' as u32);
+        assert_eq!(fg(at(&g, 1, 1)), (1, 2, 3));
+    }
+}
+
+#[test]
+fn dec_special_graphics() {
+    assert_eq!(line(&grid(b"\x1b(0lqk\x1b(Bq"), 0), "┌─┐q      ");
+    // G1 through SO and SI.
+    assert_eq!(line(&grid(b"\x1b)0\x0eq\x0fq"), 0), "─q        ");
+    // DECSC saves the character sets.
+    assert_eq!(line(&grid(b"\x1b(0\x1b7\x1b(B\x1b8q"), 0), "─         ");
+    // Other sets (UK, ESC ( A) draw as ASCII; extra intermediates designate nothing.
+    assert_eq!(line(&grid(b"\x1b(0\x1b(Aq\x1b(0\x1b($Bq"), 0), "q─        ");
+}
+
+#[test]
+fn index_next_line_and_reverse_index() {
+    assert_eq!(at(&grid(b"ab\x1bDc"), 1, 2).ch, 'c' as u32);
+    assert_eq!(at(&grid(b"ab\x1bEc"), 1, 0).ch, 'c' as u32);
+    assert_eq!(at(&grid(b"\x1b[3;1H\x1bMx"), 1, 0).ch, 'x' as u32);
+}
+
+#[test]
+fn full_reset() {
+    let g = grid(b"abc\x1b[2;2H\x1b[38;2;1;2;3m\x1b(0\x1bcxq");
+    assert_eq!(line(&g, 0), "xq        ");
+    assert_eq!(fg(at(&g, 0, 0)), DEFAULT_FG);
+}
+
+#[test]
+fn vt_and_ff_move_down() {
+    let g = grid(b"a\x0bb\x0cc");
+    assert_eq!(at(&g, 1, 1).ch, 'b' as u32);
+    assert_eq!(at(&g, 2, 2).ch, 'c' as u32);
 }

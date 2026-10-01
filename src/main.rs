@@ -59,6 +59,26 @@ extern "C" {
     ) -> i32;
 }
 
+/// A character set that G0 or G1 can hold.
+#[derive(Clone, Copy, PartialEq)]
+enum Charset {
+    Ascii,
+    /// DEC Special Graphics: ncurses draws boxes with it (ESC ( 0, then "lqk").
+    DecGraphics,
+}
+
+/// What DECSC (ESC 7) and CSI s save, and DECRC (ESC 8) and CSI u restore.
+#[derive(Clone, Copy)]
+struct Saved {
+    row: i32,
+    col: i32,
+    fg: (u8, u8, u8),
+    bg: (u8, u8, u8),
+    bold: bool,
+    charsets: [Charset; 2],
+    shifted: bool,
+}
+
 /// The grid and the terminal state that writes to it.
 struct Screen {
     cells: Vec<Cell>,
@@ -66,10 +86,17 @@ struct Screen {
     rows: usize,
     row: i32,
     col: i32,
-    saved: (i32, i32),
+    saved: Saved,
     fg: (u8, u8, u8),
     bg: (u8, u8, u8),
     bold: bool,
+    /// Tab stops, one per column; every 8th column at start.
+    tabs: Vec<bool>,
+    /// G0 and G1. SO shifts to G1, SI back to G0.
+    charsets: [Charset; 2],
+    shifted: bool,
+    /// The last printed character, which REP repeats.
+    last: Option<u32>,
 }
 
 impl Screen {
@@ -80,10 +107,102 @@ impl Screen {
             rows,
             row: 0,
             col: 0,
-            saved: (0, 0),
+            saved: Saved {
+                row: 0,
+                col: 0,
+                fg: DEFAULT_FG,
+                bg: DEFAULT_BG,
+                bold: false,
+                charsets: [Charset::Ascii; 2],
+                shifted: false,
+            },
             fg: DEFAULT_FG,
             bg: DEFAULT_BG,
             bold: false,
+            tabs: (0..cols).map(|c| c % 8 == 0).collect(),
+            charsets: [Charset::Ascii; 2],
+            shifted: false,
+            last: None,
+        }
+    }
+
+    /// The cursor column, with a cursor past the last column (after printing
+    /// there) counted as the last column, where a terminal keeps it.
+    fn column(&self) -> i32 {
+        self.col.clamp(0, self.last_col())
+    }
+
+    fn save_cursor(&mut self) {
+        self.saved = Saved {
+            row: self.row,
+            col: self.col,
+            fg: self.fg,
+            bg: self.bg,
+            bold: self.bold,
+            charsets: self.charsets,
+            shifted: self.shifted,
+        };
+    }
+
+    fn restore_cursor(&mut self) {
+        let s = self.saved;
+        (self.row, self.col, self.fg, self.bg, self.bold) = (s.row, s.col, s.fg, s.bg, s.bold);
+        (self.charsets, self.shifted) = (s.charsets, s.shifted);
+    }
+
+    /// C0 controls, at top level or inside a CSI.
+    fn control(&mut self, c: u8) {
+        match c {
+            0x08 => self.col = (self.column() - 1).max(0),
+            0x09 => self.tab_forward(1),
+            // LF, VT and FF all move down, as on a VT100.
+            0x0a..=0x0c => self.line_feed(),
+            0x0d => self.col = 0,
+            0x0e => self.shifted = true,
+            0x0f => self.shifted = false,
+            _ => {}
+        }
+    }
+
+    fn tab_forward(&mut self, n: i32) {
+        for _ in 0..n.min(self.cols as i32) {
+            let from = self.col.max(0) as usize + 1;
+            self.col = (from..self.cols).find(|&c| self.tabs[c]).unwrap_or(self.cols - 1) as i32;
+        }
+    }
+
+    fn tab_back(&mut self, n: i32) {
+        for _ in 0..n.min(self.cols as i32) {
+            let to = self.column() as usize;
+            self.col = (0..to).rev().find(|&c| self.tabs[c]).unwrap_or(0) as i32;
+        }
+    }
+
+    /// The cell index range of the cursor row, if the cursor is on the grid.
+    fn row_range(&self) -> Option<std::ops::Range<usize>> {
+        (0..self.rows as i32).contains(&self.row).then(|| {
+            let start = self.row as usize * self.cols;
+            start..start + self.cols
+        })
+    }
+
+    /// ICH: shift the rest of the line right by n, blanking the gap.
+    fn insert_chars(&mut self, n: usize) {
+        if let Some(line) = self.row_range() {
+            let at = line.start + self.column() as usize;
+            let n = n.min(line.end - at);
+            self.cells.copy_within(at..line.end - n, at + n);
+            self.erase(at, at + n);
+        }
+    }
+
+    /// DCH: shift the rest of the line left by n, blanking the end.
+    fn delete_chars(&mut self, n: usize) {
+        if let Some(line) = self.row_range() {
+            let at = line.start + self.column() as usize;
+            let n = n.min(line.end - at);
+            self.cells.copy_within(at + n..line.end, at);
+            self.erase(line.end - n, line.end);
         }
     }
 
@@ -96,6 +215,13 @@ impl Screen {
     }
 
     fn print(&mut self, ch: u32) {
+        let charset = self.charsets[usize::from(self.shifted)];
+        self.print_mapped(if charset == Charset::DecGraphics { dec_graphics(ch) } else { ch });
+    }
+
+    /// Print a character that has already been through the character set.
+    fn print_mapped(&mut self, ch: u32) {
+        self.last = Some(ch);
         if (0..self.rows as i32).contains(&self.row) && (0..self.cols as i32).contains(&self.col) {
             let (fg, bg) = (self.fg, self.bg);
             let cell = &mut self.cells[self.row as usize * self.cols + self.col as usize];
@@ -131,10 +257,9 @@ impl Screen {
         }
     }
 
-    /// The cursor as a cell index. A cursor past the last column (after
-    /// printing there) counts as the last column, where a terminal keeps it.
+    /// The cursor as a cell index.
     fn cursor_index(&self) -> usize {
-        self.row.max(0) as usize * self.cols + self.col.clamp(0, self.last_col()) as usize
+        self.row.max(0) as usize * self.cols + self.column() as usize
     }
 
     fn csi(&mut self, final_byte: u8, p: &Params) {
@@ -146,11 +271,44 @@ impl Screen {
                 self.col = (count(1) - 1).min(self.last_col());
             }
             b'A' => self.row = self.row.saturating_sub(count(0)).max(0),
-            b'B' => self.row = self.row.saturating_add(count(0)).min(self.last_row()),
-            b'C' => self.col = self.col.saturating_add(count(0)).min(self.last_col()),
-            b'D' => self.col = self.col.min(self.last_col()).saturating_sub(count(0)).max(0),
-            b's' => self.saved = (self.row, self.col),
-            b'u' => (self.row, self.col) = self.saved,
+            b'B' | b'e' => self.row = self.row.saturating_add(count(0)).min(self.last_row()),
+            b'C' | b'a' => self.col = self.col.saturating_add(count(0)).min(self.last_col()),
+            b'D' => self.col = self.column().saturating_sub(count(0)).max(0),
+            // CNL, CPL: down or up, to column 0.
+            b'E' => (self.row, self.col) = (self.row.saturating_add(count(0)).min(self.last_row()), 0),
+            b'F' => (self.row, self.col) = (self.row.saturating_sub(count(0)).max(0), 0),
+            // CHA, HPA: column; VPA: row.
+            b'G' | b'`' => self.col = (count(0) - 1).min(self.last_col()),
+            b'd' => self.row = (count(0) - 1).min(self.last_row()),
+            b'I' => self.tab_forward(count(0)),
+            b'Z' => self.tab_back(count(0)),
+            b'g' => match p.get(0, 0) {
+                0 => {
+                    let col = self.column() as usize;
+                    self.tabs[col] = false;
+                }
+                3 => self.tabs.fill(false),
+                _ => {}
+            },
+            b'@' => self.insert_chars(count(0) as usize),
+            b'P' => self.delete_chars(count(0) as usize),
+            b'X' => {
+                if let Some(line) = self.row_range() {
+                    let at = line.start + self.column() as usize;
+                    self.erase(at, (at + count(0) as usize).min(line.end));
+                }
+            }
+            // REP: repeat the last printed character. Capped at a screenful.
+            b'b' => {
+                if let Some(ch) = self.last {
+                    for _ in 0..(count(0) as usize).min(self.cols * self.rows) {
+                        self.print_mapped(ch);
+                    }
+                }
+            }
+            // xterm saves the same state for CSI s as for DECSC.
+            b's' => self.save_cursor(),
+            b'u' => self.restore_cursor(),
             b'm' => self.sgr(p),
             b'J' => {
                 let len = self.cells.len();
@@ -245,6 +403,21 @@ impl Screen {
     }
 }
 
+/// DEC Special Graphics: 0x5f..=0x7e become line drawing and symbols.
+fn dec_graphics(ch: u32) -> u32 {
+    const TABLE: [u32; 32] = [
+        0x00a0, // _ blank
+        0x25c6, 0x2592, 0x2409, 0x240c, 0x240d, 0x240a, 0x00b0, 0x00b1, // ` a b c d e f g
+        0x2424, 0x240b, 0x2518, 0x2510, 0x250c, 0x2514, 0x253c, 0x23ba, // h i j k l m n o
+        0x23bb, 0x2500, 0x23bc, 0x23bd, 0x251c, 0x2524, 0x2534, 0x252c, // p q r s t u v w
+        0x2502, 0x2264, 0x2265, 0x03c0, 0x2260, 0x00a3, 0x00b7, // x y z { | } ~
+    ];
+    match ch {
+        0x5f..=0x7e => TABLE[(ch - 0x5f) as usize],
+        _ => ch,
+    }
+}
+
 /// An RGB triple, or None when a component is over 255.
 fn rgb(params: &[Param]) -> Option<(u8, u8, u8)> {
     let c = |i: usize| u8::try_from(params[i].value.unwrap_or(0)).ok();
@@ -315,26 +488,48 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
                 b']' | b'P' | b'_' | b'^' | b'X' => i = skip_string(data, i),
                 // ESC ( B, ESC ) 0, ESC # 8: intermediates, then one final byte.
                 0x20..=0x2f => {
+                    let first = i;
                     while i < data.len() && (0x20..=0x2f).contains(&data[i]) {
                         i += 1;
                     }
                     if i < data.len() && (0x30..=0x7e).contains(&data[i]) {
+                        // ESC ( x designates G0, ESC ) x G1. '0' is DEC Special
+                        // Graphics; any other set is drawn as ASCII.
+                        if i == first && matches!(kind, b'(' | b')') {
+                            let set = if data[i] == b'0' { Charset::DecGraphics } else { Charset::Ascii };
+                            screen.charsets[usize::from(kind == b')')] = set;
+                        }
                         i += 1;
                     }
                 }
+                b'7' => screen.save_cursor(),
+                b'8' => screen.restore_cursor(),
+                // IND, NEL; RI moves up (scrolling is #6).
+                b'D' => screen.line_feed(),
+                b'E' => {
+                    screen.col = 0;
+                    screen.line_feed();
+                }
+                b'M' => screen.row = (screen.row - 1).max(0),
+                // HTS: set a tab stop at the cursor.
+                b'H' => {
+                    let col = screen.column() as usize;
+                    screen.tabs[col] = true;
+                }
+                // RIS: full reset.
+                b'c' => screen = Screen::new(cols, rows),
                 // CAN and SUB cancel the escape.
                 0x18 | 0x1a => {}
                 // Another ESC starts over; other C0 controls still execute.
                 0x00..=0x1f => i -= 1,
-                // Two-byte escapes (ESC 7, ESC =, ...) are not interpreted.
+                // Other two-byte escapes (ESC =, ESC >, ...) don't change the grid.
                 _ => {}
             }
             continue;
         }
         match b {
-            b'\n' => screen.line_feed(),
-            b'\r' => screen.col = 0,
-            0x00..=0x1f | 0x7f => {}
+            0x00..=0x1f => screen.control(b),
+            0x7f => {}
             _ => {
                 let (cp, n) = utf8_at(&data[i..]);
                 // C1 controls encoded as UTF-8 take no cell.
@@ -388,9 +583,8 @@ fn csi(screen: &mut Screen, data: &[u8], mut i: usize) -> usize {
             }
             0x1b => return i,
             0x18 | 0x1a => return i + 1,
-            b'\n' => screen.line_feed(),
-            b'\r' => screen.col = 0,
-            0x00..=0x1f | 0x7f => {}
+            0x00..=0x1f => screen.control(c),
+            0x7f => {}
             // A non-ASCII byte cannot be part of a CSI: abort and print it.
             _ => return i,
         }

@@ -25,8 +25,8 @@ We built it for TUI work, where the thing to check is what the screen ends up sh
 It is not a terminal emulator. It draws one final frame, not an animation. Colors come from
 24-bit SGR (`38;2;r;g;b` and `48;2;r;g;b`, or the `38:2::r:g:b` colon form); scrolling and the
 16 and 256 color palettes are not interpreted yet ([#6](https://github.com/solcreek/termshot/issues/6)).
-Cursor movement, erase in line and in display, and escape and string sequences are parsed the
-way a VT terminal does. A bare LF moves down without returning to column 0. Logs captured
+Cursor movement, tabs, erase, insert and delete of characters, save and restore of the cursor,
+DEC line drawing (`ESC ( 0`), and escape and string sequences are parsed the way xterm does. A bare LF moves down without returning to column 0. Logs captured
 through a PTY already have CR LF.
 
 ## Speed
