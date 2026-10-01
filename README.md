@@ -41,7 +41,7 @@ A frame costs milliseconds, which is cheap enough to render one per test or on e
 
 Each figure is the mean of 40 runs, measured 2026-10-01: hyperfine on macOS, a shell loop on Linux.
 
-Nearly all the time goes to PNG compression. termshot uses stb_image_write's deflate with a faster match search (`src/deflate.c`). The search writes exactly the bytes stock stb would, and `./test.sh` checks that on 3000 inputs. Together with RGB output and no PNG row filter, a run is 7.7× faster than one that uses stock stb at px 48, and 13× faster at px 128. Rendering the cells themselves takes a few milliseconds.
+Nearly all the time goes to PNG compression. termshot uses stb_image_write's deflate with a faster match search (`src/deflate.c`). The search writes exactly the bytes stock stb would for nonempty input, and `./test.sh` compares both implementations on 3000 inputs. An empty-input defect is fixed in both implementations. Together with RGB output and no PNG row filter, a run is 7.7× faster than one that uses stock stb at px 48, and 13× faster at px 128. Rendering the cells themselves takes a few milliseconds.
 
 ## Build
 
@@ -87,9 +87,31 @@ The font must be TrueType, meaning it has `glyf` outlines; CFF-based `.otf` font
 
 `examples/reply-sent.pty` and `examples/draft-ready.pty` are captures from the [crisp-tui](https://github.com/solcreek/crisp-tui) demo inbox. The customers and messages are fake. At pixel height 48 the image is 2200×1440.
 
+## Measure and test
+
+```sh
+TERMSHOT_PROFILE=1 ./termshot examples/reply-sent.pty /tmp/reply.png \
+  third_party/jetbrains-mono/JetBrainsMono-Regular.ttf
+python3 scripts/bench.py --binary current=./termshot --runs 15 \
+  --output /tmp/termshot-bench.json
+SANITIZE=1 ./tests/run.sh
+```
+
+Profiling writes two `termshot-profile` JSON records to stderr, covering input,
+parsing, font loading, drawing, PNG filtering, compression, and writing. The
+benchmark measures ordinary CLI runs separately from profiling and records raw
+samples, median, p95, output size, and toolchain details. Python 3 is needed only
+for benchmarks and tests.
+
+See [performance measurements](docs/performance.md) for the before/after results,
+baseline reproduction, timing boundaries, and remaining bottlenecks. Extended pixel tests compare against the renderer at `8e1110e`, including its
+terminal parsing fixes and portable floating-point settings.
+
+See [CHANGELOG.md](CHANGELOG.md) for notable changes.
+
 ## Vendored files
 
 The program is MIT. Two things next to it keep their own terms:
 
-- `third_party/stb/` is [stb](https://github.com/nothings/stb) `stb_truetype.h` 1.26 and `stb_image_write.h` 1.16, public domain. `stb_image.h` 2.30 is used only by the tests, to decode PNGs.
+- `third_party/stb/` is [stb](https://github.com/nothings/stb) `stb_truetype.h` 1.26 and `stb_image_write.h` 1.16, public domain. `stb_image.h` 2.30 is used only by the tests, to decode PNGs. Local writer hooks and fixes are documented in [CHANGES.md](third_party/stb/CHANGES.md).
 - `third_party/jetbrains-mono/` is JetBrains Mono Regular, [SIL Open Font License 1.1](third_party/jetbrains-mono/OFL.txt).

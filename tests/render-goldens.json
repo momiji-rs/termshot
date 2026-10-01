@@ -1,0 +1,82 @@
+{
+  "reply-sent": {
+    "width": 2200,
+    "height": 1440,
+    "rgb_sha256": "592e2b2b2c84544b6aa5c4ce7a8e5c863587ecbf1bd9a4b94778b5ca59ddd1cd"
+  },
+  "draft-ready": {
+    "width": 2200,
+    "height": 1440,
+    "rgb_sha256": "68a78567459380539ea500528611425c5202d721cf3216e7049352dca43f1e97"
+  },
+  "blank": {
+    "width": 220,
+    "height": 192,
+    "rgb_sha256": "24ad787909155485d9309033bb0705b8ecbbfea610e96694edba649330ad1e61"
+  },
+  "geometry-1": {
+    "width": 12,
+    "height": 4,
+    "rgb_sha256": "360905400ba087ca031c05f25a9b5f6a4268c42e02319553be5983ba673b0830"
+  },
+  "geometry-9": {
+    "width": 48,
+    "height": 18,
+    "rgb_sha256": "34e9952305c4452159297bf6bef640ef6172598f7fa03f0c227bf0ccd271386a"
+  },
+  "geometry-24": {
+    "width": 132,
+    "height": 48,
+    "rgb_sha256": "dc2bb9da5f604659e36359b5edee8d13d845abaa21ca75302bd2c07e249951fe"
+  },
+  "geometry-47.5": {
+    "width": 264,
+    "height": 96,
+    "rgb_sha256": "5f94982bf1a15b689c64af85f321b4792c41bac135532f15845d7d0a183b7105"
+  },
+  "geometry-128": {
+    "width": 696,
+    "height": 256,
+    "rgb_sha256": "04c14f6bcdef0c8b8e883de9f0c299bfa978a27b8e9dfd7198d879814b542dc9"
+  },
+  "geometry-255": {
+    "width": 1392,
+    "height": 510,
+    "rgb_sha256": "6aa34354dd533692d84d9313a235fbe67965dc688875808d405719fd7de1874e"
+  },
+  "clipping": {
+    "width": 110,
+    "height": 96,
+    "rgb_sha256": "c1d114bfba53476a42c976e4c13a0b669f00e1f4505c64e1fddd6fa3eac46eee"
+  },
+  "cache-collisions": {
+    "width": 840,
+    "height": 60,
+    "rgb_sha256": "84e5e111c6a8d1adfeab616104cf9a8e06aa308a5e55d0050b4ee10167c67e03"
+  },
+  "missing-glyphs": {
+    "width": 700,
+    "height": 15,
+    "rgb_sha256": "3d164f13798664faa3e2fe76edf59789ca66041383e36815c6369ade419a6f0d"
+  },
+  "csi": {
+    "width": 180,
+    "height": 100,
+    "rgb_sha256": "1b435376d38a771903354984f4ba3d4439432f984d3a0908fdee2ae35aba35f0"
+  },
+  "sgr": {
+    "width": 440,
+    "height": 48,
+    "rgb_sha256": "86828fe05fc3d7de657d26f010aa0c7681d5a402adcaed62ba88f7fd02a2b3d0"
+  },
+  "control-strings": {
+    "width": 220,
+    "height": 96,
+    "rgb_sha256": "dd623762f8afa58c8fb34fa4535f006991d93c869bc5654fba6feed24e019453"
+  },
+  "random-colors": {
+    "width": 360,
+    "height": 240,
+    "rgb_sha256": "568718af94c39d2e72228c90d12ab5bc7ed674aa56afa630e84d9d2721ac81f2"
+  }
+}

@@ -1,7 +1,7 @@
 /* zlib compressor for stb_image_write, plugged in with STBIW_ZLIB_COMPRESS.
    It is stb's own algorithm (public domain, Sean Barrett) and writes the same
    bytes; tests/deflate_diff.c checks that against stock stb. Only the search
-   is faster:
+   is faster (both implementations also fix an invalid empty-input stream):
 
    - stb scans a hash bucket oldest first and keeps a match when d >= best, so
      among equally long matches the newest wins. Scanning newest first and
@@ -10,6 +10,8 @@
      outside the window (entries are stored in position order).
    - Lazy matching asks only whether any match at i+1 is longer, so it is
      skipped when the current one cannot be beaten.
+   - Candidates that cannot beat the best length are rejected before comparing
+     their prefixes.
    - Matches are compared 8 bytes at a time.
    - Buckets are fixed arrays of positions instead of per-bucket stretchy
      buffers; stb caps a bucket at 2*quality entries anyway.
@@ -169,6 +171,8 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
         int best = 3, bestpos = -1;
         for (int j = n - 1; j >= 0; j--) {
             if (list[j] <= i - WINDOW) break;
+            /* A newer candidate already won ties. Only a longer match helps. */
+            if (bestpos >= 0 && data[list[j] + best] != data[i + best]) continue;
             int d = countm(data + list[j], data + i, limit);
             if (bestpos < 0 ? d >= best : d > best) {
                 best = d;
@@ -191,6 +195,7 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
                 int32_t *list1 = tab + (size_t)h1 * cap;
                 for (int j = cnt[h1] - 1; j >= 0; j--) {
                     if (list1[j] <= i - (WINDOW - 1)) break;
+                    if (data[list1[j] + best] != data[i + 1 + best]) continue;
                     if (countm(data + list1[j], data + i + 1, limit1) > best) {
                         bestpos = -1;
                         break;
@@ -223,7 +228,8 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
     free(cnt);
 
     /* Store uncompressed instead if compression was worse, as stb does. */
-    if (!o.failed && o.n > (size_t)data_len + 2 + ((data_len + 32766) / 32767) * 5) {
+    /* Empty input still needs the final fixed-Huffman block above. */
+    if (!o.failed && data_len > 0 && o.n > (size_t)data_len + 2 + ((data_len + 32766) / 32767) * 5) {
         o.n = 2;
         for (int j = 0; j < data_len;) {
             int blocklen = data_len - j > 32767 ? 32767 : data_len - j;

@@ -982,7 +982,8 @@ STBIWDEF unsigned char * stbi_zlib_compress(unsigned char *data, int data_len, i
    STBIW_FREE(hash_table);
 
    // store uncompressed instead if compression was worse
-   if (stbiw__sbn(out) > data_len + 2 + ((data_len+32766)/32767)*5) {
+   // termshot: retain the final compressed block for empty input.
+   if (data_len > 0 && stbiw__sbn(out) > data_len + 2 + ((data_len+32766)/32767)*5) {
       stbiw__sbn(out) = 2;  // truncate to DEFLATE 32K window and FLEVEL = 1
       for (j = 0; j < data_len;) {
          int blocklen = data_len - j;
@@ -1125,6 +1126,10 @@ static void stbiw__encode_png_line(unsigned char *pixels, int stride_bytes, int 
    }
 }
 
+// termshot: optional phase timing; no effect in other consumers.
+#ifndef STBIW_PNG_PROFILE
+#define STBIW_PNG_PROFILE(stage) ((void)0)
+#endif
 STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int stride_bytes, int x, int y, int n, int *out_len)
 {
    int force_filter = stbi_write_force_png_filter;
@@ -1141,6 +1146,7 @@ STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int s
       force_filter = -1;
    }
 
+   STBIW_PNG_PROFILE(0);
    filt = (unsigned char *) STBIW_MALLOC((x*n+1) * y); if (!filt) return 0;
    line_buffer = (signed char *) STBIW_MALLOC(x * n); if (!line_buffer) { STBIW_FREE(filt); return 0; }
    for (j=0; j < y; ++j) {
@@ -1173,13 +1179,15 @@ STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int s
       STBIW_MEMMOVE(filt+j*(x*n+1)+1, line_buffer, x*n);
    }
    STBIW_FREE(line_buffer);
+   STBIW_PNG_PROFILE(1);
    zlib = stbi_zlib_compress(filt, y*( x*n+1), &zlen, stbi_write_png_compression_level);
    STBIW_FREE(filt);
+   STBIW_PNG_PROFILE(2);
    if (!zlib) return 0;
 
    // each tag requires 12 bytes of overhead
    out = (unsigned char *) STBIW_MALLOC(8 + 12+13 + 12+zlen + 12);
-   if (!out) return 0;
+   if (!out) { STBIW_FREE(zlib); return 0; }
    *out_len = 8 + 12+13 + 12+zlen + 12;
 
    o=out;
@@ -1207,6 +1215,7 @@ STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int s
    stbiw__wpcrc(&o,0);
 
    STBIW_ASSERT(o == out + *out_len);
+   STBIW_PNG_PROFILE(3);
 
    return out;
 }

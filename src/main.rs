@@ -4,6 +4,7 @@
 use std::env;
 use std::fs;
 use std::process::ExitCode;
+use std::time::Instant;
 
 mod font;
 #[cfg(test)]
@@ -440,6 +441,8 @@ grid (default 100 30). SGR reset uses foreground #dbe7f7 on background #111823.
 ";
 
 fn main() -> ExitCode {
+    let started = Instant::now();
+    let profile = env::var_os("TERMSHOT_PROFILE").is_some();
     let mut args = env::args().skip(1);
     let Some(src) = args.next() else {
         eprintln!("{USAGE}");
@@ -487,6 +490,7 @@ fn main() -> ExitCode {
         },
         None => DEFAULT_ROWS,
     };
+    let read_started = Instant::now();
     let data = match fs::read(&src) {
         Ok(data) => data,
         Err(error) => {
@@ -494,6 +498,8 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
+    let font_started = Instant::now();
     let font = match font::load(&font_path) {
         Ok(font) => font,
         Err(error) => {
@@ -501,7 +507,10 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let font_load_ms = font_started.elapsed().as_secs_f64() * 1000.0;
+    let parse_started = Instant::now();
     let cells = parse(&data, cols, rows);
+    let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
     let out = match std::ffi::CString::new(dest) {
         Ok(out) => out,
         Err(_) => {
@@ -519,5 +528,8 @@ fn main() -> ExitCode {
             out.as_ptr(),
         )
     };
+    if profile {
+        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", started.elapsed().as_secs_f64() * 1000.0, data.len());
+    }
     ExitCode::from(code as u8)
 }

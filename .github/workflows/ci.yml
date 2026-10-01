@@ -19,6 +19,8 @@ jobs:
           cc --version
       - name: unit tests, cli checks, pixel goldens
         run: ./test.sh
+      - name: extended pixels, codec round trips, and profiling
+        run: SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh
       - name: keep renders on failure
         if: failure()
         uses: actions/upload-artifact@v4
