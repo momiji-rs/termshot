@@ -54,24 +54,13 @@ expect 2 examples/reply-sent.pty "$out/x.png" "$font" 255 500 73
 [ "$fail" -eq 0 ] && echo "ok"
 
 echo "== goldens"
-# px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-goldens=tests/goldens.txt
-fresh="$out/goldens.txt"
-echo "# sha256 of decoded RGBA pixels, size, log, px. Rewrite with ./test.sh --update-goldens" > "$fresh"
-for log in reply-sent draft-ready; do
-    for px in 46 48; do
-        png="$out/$log-$px.png"
-        ./termshot "examples/$log.pty" "$png" "$font" "$px" 2>/dev/null
-        echo "$(python3 tests/pixel_hash.py "$png") $log $px" >> "$fresh"
-    done
-done
+# The decoder is test-only, so it is built without sanitizers or our warnings.
+cc -c tests/png_read.c -o "$out/png_read.o" -O2 -I third_party/stb
+rustc --edition 2021 tests/golden.rs -o "$out/golden" -C opt-level=2 \
+    -C link-arg="$PWD/$out/png_read.o" -C link-arg=-lm
 if [ "$mode" = update ]; then
-    cp "$fresh" "$goldens"
-    echo "updated $goldens"
-elif diff -u "$goldens" "$fresh"; then
-    echo "ok"
+    "$out/golden" --update
 else
-    echo "FAIL pixels changed; renders are in $out/"
-    fail=1
+    "$out/golden" || fail=1
 fi
 exit "$fail"
