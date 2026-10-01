@@ -7,6 +7,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- 16 and 256 colors (xterm's palette, including `38;5;n` and `38:5:n`),
+  dim, underline, double underline (`21`, `4:2`), strike-through, reverse
+  video and hidden text.
 - A built-in font: `termshot <log> <out.png>` needs no other files.
 - Options `--font`, `--px`, `--size COLSxROWS`, `--verbose`, `--help` and
   `--version`, with `-` for stdin and stdout. The original positional form

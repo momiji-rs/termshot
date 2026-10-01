@@ -28,10 +28,70 @@ struct Cell {
     br: u8,
     bg: u8,
     bb: u8,
-    bold: u8,
+    /// BOLD, UNDERLINE, DOUBLE_UNDERLINE and STRIKE bits; draw.c draws them.
+    attrs: u8,
 }
 
 const _: () = assert!(std::mem::size_of::<Cell>() == 12);
+
+const BOLD: u8 = 1;
+const UNDERLINE: u8 = 2;
+const DOUBLE_UNDERLINE: u8 = 4;
+const STRIKE: u8 = 8;
+
+/// The colours and attributes SGR sets, applied to each printed character.
+/// Reverse, dim and conceal change the cell's colours as it is printed.
+#[derive(Clone, Copy)]
+struct Pen {
+    fg: (u8, u8, u8),
+    bg: (u8, u8, u8),
+    attrs: u8,
+    dim: bool,
+    reverse: bool,
+    conceal: bool,
+}
+
+impl Pen {
+    const DEFAULT: Pen = Pen { fg: DEFAULT_FG, bg: DEFAULT_BG, attrs: 0, dim: false, reverse: false, conceal: false };
+
+    /// A blank cell in this pen's colours, ready for a character.
+    fn cell(&self) -> Cell {
+        let (mut fg, bg) = if self.reverse { (self.bg, self.fg) } else { (self.fg, self.bg) };
+        if self.dim {
+            // Two thirds of the way from the background to the text colour.
+            let mix = |f: u8, b: u8| ((2 * u16::from(f) + u16::from(b)) / 3) as u8;
+            fg = (mix(fg.0, bg.0), mix(fg.1, bg.1), mix(fg.2, bg.2));
+        }
+        if self.conceal {
+            fg = bg;
+        }
+        Cell { ch: ' ' as u32, fr: fg.0, fg: fg.1, fb: fg.2, br: bg.0, bg: bg.1, bb: bg.2, attrs: self.attrs }
+    }
+}
+
+/// xterm's default 256-colour palette: 16 named colours, a 6x6x6 cube and
+/// 24 greys.
+fn palette(n: u32) -> Option<(u8, u8, u8)> {
+    const NAMED: [(u8, u8, u8); 16] = [
+        (0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0),
+        (0, 0, 238), (205, 0, 205), (0, 205, 205), (229, 229, 229),
+        (127, 127, 127), (255, 0, 0), (0, 255, 0), (255, 255, 0),
+        (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
+    ];
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    match n {
+        0..=15 => Some(NAMED[n as usize]),
+        16..=231 => {
+            let i = (n - 16) as usize;
+            Some((LEVELS[i / 36], LEVELS[i / 6 % 6], LEVELS[i % 6]))
+        }
+        232..=255 => {
+            let v = (8 + 10 * (n - 232)) as u8;
+            Some((v, v, v))
+        }
+        _ => None,
+    }
+}
 
 impl Cell {
     fn blank() -> Self {
@@ -43,7 +103,7 @@ impl Cell {
             br: DEFAULT_BG.0,
             bg: DEFAULT_BG.1,
             bb: DEFAULT_BG.2,
-            bold: 0,
+            attrs: 0,
         }
     }
 }
@@ -77,9 +137,7 @@ struct Saved {
     col: usize,
     pending: bool,
     origin: bool,
-    fg: (u8, u8, u8),
-    bg: (u8, u8, u8),
-    bold: bool,
+    pen: Pen,
     charsets: [Charset; 2],
     shifted: bool,
 }
@@ -90,9 +148,7 @@ impl Saved {
         col: 0,
         pending: false,
         origin: false,
-        fg: DEFAULT_FG,
-        bg: DEFAULT_BG,
-        bold: false,
+        pen: Pen::DEFAULT,
         charsets: [Charset::Ascii; 2],
         shifted: false,
     };
@@ -125,9 +181,7 @@ struct Screen {
     top: usize,
     bottom: usize,
     saved: [Saved; 2],
-    fg: (u8, u8, u8),
-    bg: (u8, u8, u8),
-    bold: bool,
+    pen: Pen,
     /// Tab stops, one per column; every 8th column at start.
     tabs: Vec<bool>,
     /// G0 and G1. SO shifts to G1, SI back to G0.
@@ -155,9 +209,7 @@ impl Screen {
             top: 0,
             bottom: rows - 1,
             saved: [Saved::HOME; 2],
-            fg: DEFAULT_FG,
-            bg: DEFAULT_BG,
-            bold: false,
+            pen: Pen::DEFAULT,
             tabs: (0..cols).map(|c| c % 8 == 0).collect(),
             charsets: [Charset::Ascii; 2],
             shifted: false,
@@ -171,9 +223,7 @@ impl Screen {
             col: self.col,
             pending: self.pending,
             origin: self.origin,
-            fg: self.fg,
-            bg: self.bg,
-            bold: self.bold,
+            pen: self.pen,
             charsets: self.charsets,
             shifted: self.shifted,
         };
@@ -182,7 +232,7 @@ impl Screen {
     fn restore_cursor(&mut self) {
         let s = self.saved[usize::from(self.on_alternate)];
         (self.row, self.col, self.pending, self.origin) = (s.row, s.col, s.pending, s.origin);
-        (self.fg, self.bg, self.bold) = (s.fg, s.bg, s.bold);
+        self.pen = s.pen;
         (self.charsets, self.shifted) = (s.charsets, s.shifted);
     }
 
@@ -387,18 +437,8 @@ impl Screen {
             self.col = 0;
             self.index();
         }
-        let (fg, bg) = (self.fg, self.bg);
         let at = self.cursor_index();
-        self.cells[at] = Cell {
-            ch,
-            fr: fg.0,
-            fg: fg.1,
-            fb: fg.2,
-            br: bg.0,
-            bg: bg.1,
-            bb: bg.2,
-            bold: u8::from(self.bold),
-        };
+        self.cells[at] = Cell { ch, ..self.pen.cell() };
         if self.col < self.last_col() {
             self.col += 1;
         } else if self.autowrap {
@@ -418,11 +458,7 @@ impl Screen {
         if let Some(byte) = text.last() {
             self.last = Some(u32::from(*byte));
         }
-        let mut cell = Cell {
-            ch: 0, fr: self.fg.0, fg: self.fg.1, fb: self.fg.2,
-            br: self.bg.0, bg: self.bg.1, bb: self.bg.2,
-            bold: u8::from(self.bold),
-        };
+        let mut cell = self.pen.cell();
         while !text.is_empty() {
             if self.pending {
                 self.col = 0;
@@ -460,8 +496,8 @@ impl Screen {
         let to = to.min(self.cells.len());
         if from < to {
             let mut blank = Cell::blank();
-            (blank.fr, blank.fg, blank.fb) = self.fg;
-            (blank.br, blank.bg, blank.bb) = self.bg;
+            (blank.fr, blank.fg, blank.fb) = self.pen.fg;
+            (blank.br, blank.bg, blank.bb) = self.pen.bg;
             self.cells[from..to].fill(blank);
         }
     }
@@ -607,30 +643,64 @@ impl Screen {
                 end += 1;
             }
             if end > k + 1 {
-                // Colon form: 38:2:[colour space]:r:g:b. Any other parameter
-                // with subparameters (38:5:n, 4:3 curly underline) is skipped.
-                if v == 38 || v == 48 {
-                    let subs = &p.list[k + 1..end];
-                    if subs[0].value == Some(2) {
-                        let rgb = match subs.len() {
+                // Colon forms: 38:2:[colour space]:r:g:b, 38:5:n, and 4:n
+                // underline styles (0 off, 2 double, any other single).
+                // Other parameters with subparameters are skipped.
+                let subs = &p.list[k + 1..end];
+                match (v, subs[0].value) {
+                    (38 | 48, Some(2)) => {
+                        let color = match subs.len() {
                             4 => rgb(&subs[1..4]),
                             n if n >= 5 => rgb(&subs[2..5]),
                             _ => None,
                         };
-                        if let Some(color) = rgb {
+                        if let Some(color) = color {
                             self.set_color(v, color);
                         }
                     }
+                    (38 | 48, Some(5)) => {
+                        if let Some(color) = subs.get(1).and_then(|n| palette(n.value.unwrap_or(0))) {
+                            self.set_color(v, color);
+                        }
+                    }
+                    (4, style) => {
+                        self.pen.attrs &= !(UNDERLINE | DOUBLE_UNDERLINE);
+                        match style.unwrap_or(0) {
+                            0 => {}
+                            2 => self.pen.attrs |= DOUBLE_UNDERLINE,
+                            _ => self.pen.attrs |= UNDERLINE,
+                        }
+                    }
+                    _ => {}
                 }
                 k = end;
                 continue;
             }
+            let pen = &mut self.pen;
             match v {
-                0 => self.reset_attributes(),
-                1 => self.bold = true,
-                22 => self.bold = false,
-                39 => self.fg = DEFAULT_FG,
-                49 => self.bg = DEFAULT_BG,
+                0 => *pen = Pen::DEFAULT,
+                1 => pen.attrs |= BOLD,
+                2 => pen.dim = true,
+                4 => pen.attrs = pen.attrs & !DOUBLE_UNDERLINE | UNDERLINE,
+                7 => pen.reverse = true,
+                8 => pen.conceal = true,
+                9 => pen.attrs |= STRIKE,
+                21 => pen.attrs = pen.attrs & !UNDERLINE | DOUBLE_UNDERLINE,
+                22 => {
+                    pen.attrs &= !BOLD;
+                    pen.dim = false;
+                }
+                24 => pen.attrs &= !(UNDERLINE | DOUBLE_UNDERLINE),
+                27 => pen.reverse = false,
+                28 => pen.conceal = false,
+                29 => pen.attrs &= !STRIKE,
+                30..=37 => pen.fg = palette(v - 30).unwrap(),
+                40..=47 => pen.bg = palette(v - 40).unwrap(),
+                90..=97 => pen.fg = palette(v - 90 + 8).unwrap(),
+                100..=107 => pen.bg = palette(v - 100 + 8).unwrap(),
+                39 => pen.fg = DEFAULT_FG,
+                49 => pen.bg = DEFAULT_BG,
+                // Italic (3, 23), blink (5, 6, 25) and the rest are not drawn.
                 38 | 48 => match p.get(k + 1, 0) {
                     2 if k + 4 < p.len => {
                         if let Some(color) = rgb(&p.list[k + 2..k + 5]) {
@@ -638,9 +708,13 @@ impl Screen {
                         }
                         k += 4;
                     }
-                    // 256-colour index: consumed so n is not read as an SGR.
-                    // The palette itself is #6.
-                    5 if k + 2 < p.len => k += 2,
+                    5 if k + 2 < p.len => {
+                        if let Some(color) = palette(p.get(k + 2, 0)) {
+                            self.set_color(v, color);
+                        }
+                        k += 2;
+                    }
+                    // Too few parameters to know what follows: stop here.
                     _ => return,
                 },
                 _ => {}
@@ -650,16 +724,14 @@ impl Screen {
     }
 
     fn reset_attributes(&mut self) {
-        self.fg = DEFAULT_FG;
-        self.bg = DEFAULT_BG;
-        self.bold = false;
+        self.pen = Pen::DEFAULT;
     }
 
     fn set_color(&mut self, which: u32, color: (u8, u8, u8)) {
         if which == 38 {
-            self.fg = color;
+            self.pen.fg = color;
         } else {
-            self.bg = color;
+            self.pen.bg = color;
         }
     }
 }

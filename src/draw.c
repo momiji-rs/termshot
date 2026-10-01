@@ -36,10 +36,16 @@ typedef struct {
     uint32_t ch;
     uint8_t fr, fg, fb;
     uint8_t br, bg, bb;
-    uint8_t bold;
+    uint8_t attrs;
 } Cell;
 
 _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
+
+/* Cell.attrs bits, as in src/main.rs. */
+#define ATTR_BOLD 1
+#define ATTR_UNDERLINE 2
+#define ATTR_DOUBLE_UNDERLINE 4
+#define ATTR_STRIKE 8
 
 /* The canvas is RGB: alpha would always be 255, and an opaque RGBA PNG is
    larger and blocks palette quantization in downstream optimizers. */
@@ -313,7 +319,7 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
             uint32_t cp = cell->ch;
             if (cp == 0 || cp == ' ') continue;
             double tick = now_ms();
-            int geometry = paint_geometry(cv, c, r, cell_w, cell_h, cp, cell->bold, cell->fr, cell->fg, cell->fb);
+            int geometry = paint_geometry(cv, c, r, cell_w, cell_h, cp, cell->attrs & ATTR_BOLD, cell->fr, cell->fg, cell->fb);
             geometry_ms += now_ms() - tick;
             if (geometry) continue;
             tick = now_ms();
@@ -352,9 +358,34 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
             int dx = c * cell_w + entry->ix0;
             int dy = r * cell_h + baseline + entry->iy0;
             blend(cv, dx, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
-            if (cell->bold) blend(cv, dx + 1, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
+            if (cell->attrs & ATTR_BOLD) blend(cv, dx + 1, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
             blend_ms += now_ms() - tick;
 
+        }
+    }
+
+    /* Underlines and strike-through, over the glyphs, as thick as box-drawing
+       strokes and kept inside the cell. */
+    int line_t = cell_w / 12 < 1 ? 1 : cell_w / 12;
+    int under_y = baseline + (cell_h - baseline) / 3;
+    if (under_y > cell_h - line_t) under_y = cell_h - line_t;
+    int double_y = under_y + 3 * line_t <= cell_h ? under_y : cell_h - 3 * line_t;
+    if (double_y < 0) double_y = 0;
+    int strike_y = baseline - baseline * 3 / 10;
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            const Cell *cell = &cells[r * cols + c];
+            if (!(cell->attrs & (ATTR_UNDERLINE | ATTR_DOUBLE_UNDERLINE | ATTR_STRIKE))) continue;
+            int x0 = c * cell_w, x1 = x0 + cell_w, y = r * cell_h;
+            if (cell->attrs & ATTR_DOUBLE_UNDERLINE) {
+                fill_rect(cv, x0, y + double_y, x1, y + double_y + line_t, cell->fr, cell->fg, cell->fb);
+                fill_rect(cv, x0, y + double_y + 2 * line_t, x1, y + double_y + 3 * line_t, cell->fr, cell->fg, cell->fb);
+            } else if (cell->attrs & ATTR_UNDERLINE) {
+                fill_rect(cv, x0, y + under_y, x1, y + under_y + line_t, cell->fr, cell->fg, cell->fb);
+            }
+            if (cell->attrs & ATTR_STRIKE) {
+                fill_rect(cv, x0, y + strike_y, x1, y + strike_y + line_t, cell->fr, cell->fg, cell->fb);
+            }
         }
     }
 

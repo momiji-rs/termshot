@@ -46,8 +46,8 @@ fn ascii_runs_without_wrap_preserve_cursor_and_attributes() {
     assert_eq!(line(&g, 0), "abcdefgh!p");
     assert_eq!(line(&g, 1), "plain     ");
     assert_eq!(fg(at(&g, 0, 8)), (1, 2, 3));
-    assert_eq!(at(&g, 0, 8).bold, 1);
-    assert_eq!(at(&g, 1, 0).bold, 0);
+    assert_eq!(at(&g, 0, 8).attrs & BOLD, BOLD);
+    assert_eq!(at(&g, 1, 0).attrs & BOLD, 0);
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn save_and_restore_cursor() {
 fn private_and_unknown_csi_are_skipped() {
     let g = grid(b"\x1b[?25l\x1b[>4;1m\x1b[=1c\x1b[<0u\x1b[5ra\x1b[6n");
     assert_eq!(line(&g, 0), "a         ");
-    assert_eq!(at(&g, 0, 0).bold, 0);
+    assert_eq!(at(&g, 0, 0).attrs & BOLD, 0);
 }
 
 #[test]
@@ -140,12 +140,12 @@ fn sgr_truecolor_bold_and_resets() {
     let g = grid(b"\x1b[1;38;2;10;20;30;48;2;40;50;60ma\x1b[22mb\x1b[39mc\x1b[49md\x1b[1me\x1b[mf");
     assert_eq!(fg(at(&g, 0, 0)), (10, 20, 30));
     assert_eq!(bg(at(&g, 0, 0)), (40, 50, 60));
-    assert_eq!(at(&g, 0, 0).bold, 1);
-    assert_eq!(at(&g, 0, 1).bold, 0);
+    assert_eq!(at(&g, 0, 0).attrs & BOLD, BOLD);
+    assert_eq!(at(&g, 0, 1).attrs & BOLD, 0);
     assert_eq!(fg(at(&g, 0, 2)), DEFAULT_FG);
     assert_eq!(bg(at(&g, 0, 3)), DEFAULT_BG);
-    assert_eq!(at(&g, 0, 4).bold, 1);
-    assert_eq!(at(&g, 0, 5).bold, 0);
+    assert_eq!(at(&g, 0, 4).attrs & BOLD, BOLD);
+    assert_eq!(at(&g, 0, 5).attrs & BOLD, 0);
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn del_is_not_printed() {
 
 #[test]
 fn indexed_colour_does_not_set_bold() {
-    assert_eq!(at(&grid(b"\x1b[38;5;1ma"), 0, 0).bold, 0);
+    assert_eq!(at(&grid(b"\x1b[38;5;1ma"), 0, 0).attrs & BOLD, 0);
 }
 
 #[test]
@@ -288,7 +288,7 @@ fn sgr_colon_truecolor() {
 #[test]
 fn sgr_other_subparameters_are_skipped() {
     let g = grid(b"\x1b[1;4:3ma");
-    assert_eq!(at(&g, 0, 0).bold, 1);
+    assert_eq!(at(&g, 0, 0).attrs & BOLD, BOLD);
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn sgr_component_over_255_is_ignored() {
 fn esc_aborts_a_string_sequence() {
     let g = grid(b"\x1b]0;title\x1b[1ma\x1b]0;t\x18b");
     assert_eq!(line(&g, 0), "ab        ");
-    assert_eq!(at(&g, 0, 0).bold, 1);
+    assert_eq!(at(&g, 0, 0).attrs & BOLD, BOLD);
 }
 
 #[test]
@@ -443,6 +443,60 @@ fn vt_and_ff_move_down() {
     let g = grid(b"a\x0bb\x0cc");
     assert_eq!(at(&g, 1, 1).ch, 'b' as u32);
     assert_eq!(at(&g, 2, 2).ch, 'c' as u32);
+}
+
+#[test]
+fn sgr_16_colours() {
+    let g = grid(b"\x1b[31ma\x1b[42mb\x1b[91mc\x1b[103md\x1b[39;49me");
+    assert_eq!(fg(at(&g, 0, 0)), (205, 0, 0));
+    assert_eq!(bg(at(&g, 0, 1)), (0, 205, 0));
+    assert_eq!(fg(at(&g, 0, 2)), (255, 0, 0));
+    assert_eq!(bg(at(&g, 0, 3)), (255, 255, 0));
+    assert_eq!((fg(at(&g, 0, 4)), bg(at(&g, 0, 4))), (DEFAULT_FG, DEFAULT_BG));
+}
+
+#[test]
+fn sgr_256_colours() {
+    let g = grid(b"\x1b[38;5;196ma\x1b[48;5;232mb\x1b[38;5;21mc\x1b[38:5:46md\x1b[38;5;300me");
+    assert_eq!(fg(at(&g, 0, 0)), (255, 0, 0)); // cube 5,0,0
+    assert_eq!(bg(at(&g, 0, 1)), (8, 8, 8)); // first grey
+    assert_eq!(fg(at(&g, 0, 2)), (0, 0, 255)); // cube 0,0,5
+    assert_eq!(fg(at(&g, 0, 3)), (0, 255, 0)); // colon form
+    assert_eq!(fg(at(&g, 0, 4)), (0, 255, 0)); // 300 is not a colour: unchanged
+}
+
+#[test]
+fn sgr_reverse_swaps_the_cell_colours() {
+    let g = grid(b"\x1b[7ma\x1b[27mb\x1b[31;44;7mc");
+    assert_eq!((fg(at(&g, 0, 0)), bg(at(&g, 0, 0))), (DEFAULT_BG, DEFAULT_FG));
+    assert_eq!((fg(at(&g, 0, 1)), bg(at(&g, 0, 1))), (DEFAULT_FG, DEFAULT_BG));
+    assert_eq!((fg(at(&g, 0, 2)), bg(at(&g, 0, 2))), ((0, 0, 238), (205, 0, 0)));
+}
+
+#[test]
+fn sgr_dim_and_conceal() {
+    let g = grid(b"\x1b[2ma\x1b[22mb\x1b[8mc\x1b[28md");
+    // Two thirds of the way from the background to the text colour.
+    assert_eq!(fg(at(&g, 0, 0)), (151, 162, 176));
+    assert_eq!(fg(at(&g, 0, 1)), DEFAULT_FG);
+    assert_eq!(fg(at(&g, 0, 2)), DEFAULT_BG);
+    assert_eq!(fg(at(&g, 0, 3)), DEFAULT_FG);
+}
+
+#[test]
+fn sgr_underline_and_strike() {
+    let g = grid(b"\x1b[4ma\x1b[21mb\x1b[4:3mc\x1b[4:0md\x1b[9me\x1b[24;29mf\x1b[1;4;9mg\x1b[22mh");
+    let attrs: Vec<u8> = (0..8).map(|c| at(&g, 0, c).attrs).collect();
+    assert_eq!(
+        attrs,
+        [UNDERLINE, DOUBLE_UNDERLINE, UNDERLINE, 0, STRIKE, 0, BOLD | UNDERLINE | STRIKE, UNDERLINE | STRIKE]
+    );
+}
+
+#[test]
+fn erased_cells_take_colours_but_not_attributes() {
+    let g = grid(b"\x1b[4;9;7;48;2;1;2;3m\x1b[2J");
+    assert!(g.iter().all(|c| c.attrs == 0 && bg(c) == (1, 2, 3)));
 }
 
 /// Decode a printf(1) format string the way tests/vt/oracle.sh feeds it to

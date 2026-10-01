@@ -34,8 +34,9 @@ It draws one final frame, not an animation. The screen model follows xterm and c
 sessions. A bare LF moves down without returning to column 0, as in a terminal; logs captured
 through a PTY already have CR LF.
 
-Colors come from 24-bit SGR (`38;2;r;g;b`, `48;2;r;g;b`, or the `38:2::r:g:b` colon form). The
-16 and 256 color palettes and double-width characters are not interpreted yet
+Colors are the 16 and 256 color palettes (xterm's defaults) and 24-bit color, in the `;` and
+`:` forms. Bold, dim, underline, double underline, strike-through, reverse video and hidden
+text are drawn; italic and blink are not. Double-width characters are not interpreted yet
 ([#6](https://github.com/solcreek/termshot/issues/6)).
 
 ## Speed
