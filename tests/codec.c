@@ -1,6 +1,6 @@
 /* Round-trip the encoders through an independent decoder. stb_image inflates
    and unfilters; it checks neither the Adler-32 trailer nor chunk CRCs, so
-   those are checked here with bitwise reference implementations. */
+   those are checked here with independent reference implementations. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +32,10 @@ static void fail(const char *what, char kind, uint32_t len) {
 static uint32_t be32(const unsigned char *p) {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
+static void put_be32(unsigned char *p, uint32_t n) {
+    p[0] = (unsigned char)(n >> 24); p[1] = (unsigned char)(n >> 16);
+    p[2] = (unsigned char)(n >> 8); p[3] = (unsigned char)n;
+}
 static uint32_t crc_bitwise(const unsigned char *p, uint32_t len) {
     uint32_t crc = ~0u;
     for (uint32_t i = 0; i < len; i++) {
@@ -56,23 +60,84 @@ static void check_zlib(const unsigned char *raw, uint32_t len, unsigned char *pa
     if (!out || (uint32_t)out_len != len || memcmp(out, raw, len)) fail("inflate", 'Z', len);
     free(out);
 }
-static void check_png(const unsigned char *raw, uint32_t len, unsigned char *png, int size, int width, int height,
-                      int channels) {
-    if (size < 8 || memcmp(png, "\x89PNG\r\n\x1a\n", 8)) fail("signature", 'P', len);
+/* Return the failing check so negative cases exercise this same validator. */
+static const char *check_png(const unsigned char *raw, uint32_t len, const unsigned char *png, int size,
+                             int width, int height, int channels) {
+    if (size < 8 || memcmp(png, "\x89PNG\r\n\x1a\n", 8)) return "signature";
     int pos = 8, ended = 0;
+    int idat_size = 0;
     while (pos < size) {
-        if (ended || size - pos < 12) fail("chunk layout", 'P', len);
+        if (ended || size - pos < 12) return "chunk layout";
         uint32_t body = be32(png + pos);
-        if (body > (uint32_t)(size - pos - 12)) fail("chunk length", 'P', len);
-        if (crc_bitwise(png + pos + 4, body + 4) != be32(png + pos + 8 + body)) fail("chunk crc", 'P', len);
+        if (body > (uint32_t)(size - pos - 12)) return "chunk length";
+        if (crc_bitwise(png + pos + 4, body + 4) != be32(png + pos + 8 + body)) return "chunk crc";
+        if (!memcmp(png + pos + 4, "IDAT", 4)) idat_size += (int)body;
         ended = !memcmp(png + pos + 4, "IEND", 4);
         pos += (int)body + 12;
     }
-    if (!ended) fail("missing IEND", 'P', len);
+    if (!ended) return "missing IEND";
+    if (idat_size < 6) return "short IDAT zlib stream";
+    unsigned char *idat = malloc((size_t)idat_size);
+    if (!idat) return "IDAT allocation";
+    int copied = 0;
+    for (pos = 8; pos < size;) {
+        int body = (int)be32(png + pos);
+        if (!memcmp(png + pos + 4, "IDAT", 4)) {
+            memcpy(idat + copied, png + pos + 8, (size_t)body);
+            copied += body;
+        }
+        pos += body + 12;
+    }
+    /* Adler-32 covers filtered scanlines, including each filter byte, not the
+       reconstructed pixels. The trailer may span several IDAT chunks. */
+    int filtered_len;
+    char *filtered = stbi_zlib_decode_malloc((const char *)idat, idat_size, &filtered_len);
+    const char *error = NULL;
+    if (!filtered || filtered_len < 0 || (uint64_t)filtered_len != ((uint64_t)width * channels + 1) * height)
+        error = "IDAT inflate";
+    else if (be32(idat + idat_size - 4) != adler32((const unsigned char *)filtered, (uint32_t)filtered_len))
+        error = "IDAT adler-32";
+    free(filtered);
+    free(idat);
+    if (error) return error;
     int w, h, n;
     unsigned char *pixels = stbi_load_from_memory(png, size, &w, &h, &n, 0);
-    if (!pixels || w != width || h != height || n != channels || memcmp(pixels, raw, len)) fail("decode", 'P', len);
+    if (!pixels || w != width || h != height || n != channels || memcmp(pixels, raw, len)) error = "decode";
     stbi_image_free(pixels);
+    return error;
+}
+static void check_png_integrity(const unsigned char *raw, uint32_t len, unsigned char *png, int size,
+                                int width, int height, int channels) {
+    /* stb writes one IDAT. Split it inside its Adler trailer, so validation
+       must concatenate chunks even to read the checksum. */
+    int pos = 8;
+    while (pos < size && memcmp(png + pos + 4, "IDAT", 4)) pos += (int)be32(png + pos) + 12;
+    if (pos >= size || be32(png + pos) < 6) fail("missing test IDAT", 'P', len);
+    int body = (int)be32(png + pos), first = body - 2;
+    unsigned char *split = malloc((size_t)size + 12);
+    if (!split) fail("test allocation", 'P', len);
+    memcpy(split, png, (size_t)pos);
+    put_be32(split + pos, (uint32_t)first);
+    memcpy(split + pos + 4, png + pos + 4, (size_t)first + 4);
+    put_be32(split + pos + 8 + first, crc_bitwise(split + pos + 4, (uint32_t)first + 4));
+    int next = pos + first + 12;
+    put_be32(split + next, 2);
+    memcpy(split + next + 4, "IDAT", 4);
+    memcpy(split + next + 8, png + pos + 8 + first, 2);
+    put_be32(split + next + 10, crc_bitwise(split + next + 4, 6));
+    memcpy(split + next + 14, png + pos + body + 12, (size_t)(size - pos - body - 12));
+    const char *error = check_png(raw, len, split, size + 12, width, height, channels);
+    if (error) fail(error, 'P', len);
+
+    /* A corrupt Adler trailer with a correct chunk CRC must still fail. */
+    split[next + 9] ^= 1;
+    put_be32(split + next + 10, crc_bitwise(split + next + 4, 6));
+    error = check_png(raw, len, split, size + 12, width, height, channels);
+    if (!error || strcmp(error, "IDAT adler-32")) fail("bad IDAT Adler accepted or misdiagnosed", 'P', len);
+    split[next + 9] ^= 1; /* Restore the trailer but leave the CRC wrong. */
+    error = check_png(raw, len, split, size + 12, width, height, channels);
+    if (!error || strcmp(error, "chunk crc")) fail("bad chunk CRC accepted or misdiagnosed", 'P', len);
+    free(split);
 }
 int main(void) {
     const int big[] = {5551, 5552, 5553, 32766, 32767, 32768, 32769, 65535, 65536, 100000};
@@ -112,7 +177,9 @@ int main(void) {
                 int size;
                 unsigned char *encoded = stbi_write_png_to_mem(data, stride, width, height, n, &size);
                 if (!encoded) fail("encode", 'P', (uint32_t)len);
-                check_png(expected, (uint32_t)len, encoded, size, width, height, n);
+                const char *error = check_png(expected, (uint32_t)len, encoded, size, width, height, n);
+                if (error) fail(error, 'P', (uint32_t)len);
+                check_png_integrity(expected, (uint32_t)len, encoded, size, width, height, n);
                 free(encoded);
                 count++;
             }
@@ -123,5 +190,6 @@ int main(void) {
         return 1;
     }
     printf("%d codec round trips passed\n", count);
+    puts("48 PNG integrity cases passed (split IDAT, bad Adler-32, bad chunk CRC)");
     return 0;
 }

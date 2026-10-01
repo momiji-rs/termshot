@@ -211,8 +211,8 @@ It emits two JSON records prefixed `termshot-profile ` on stderr. Clocks are
 opt-in for the new fine-grained stages; timing hooks use thread-local storage,
 and rendering buffers and caches belong to each render. The extended suite
 checks eight concurrent profiled renders for identical pixels and finite timings.
-Python 3 is needed only for the optional benchmark scripts, not the build or
-the tests.
+Python 3 is needed only for optional development scripts, including benchmarks
+and `scripts/generate-crc32.py`, not the build or the tests.
 
 ## Validation and remaining bottlenecks
 
