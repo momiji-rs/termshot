@@ -1,11 +1,10 @@
 # Performance measurements
 
-Third optimization round, measured on 2026-10-01 against **main at `bd726a6`**
-(including the built-in font, CLI, and expanded color/text attributes after PR #10).
-That baseline already includes optimized parsing, checked
-fonts, glyph caching, RGB scanlines painted directly into the compressor input,
-faster DEFLATE, Adler-32, and CRC-32. All comparisons below measure additional
-changes; earlier reports remain in Git history.
+Third optimization round, remeasured on 2026-10-01 against **main at `c44d83c`**
+(the merge of PR #11). Both builds include the current CLI, complete box/block
+geometry, wide and combining characters, and fallback-font support. The tests
+now use native C/Rust harnesses. All comparisons below measure the additional
+optimizations in this PR; earlier reports remain in Git history.
 
 ## Method and limits
 
@@ -42,21 +41,21 @@ Batch A, median / p95 elapsed milliseconds:
 
 | Workload | Main | Optimized | PNG bytes (both) |
 | --- | ---: | ---: | ---: |
-| reply-sent | 9.49 / 10.40 | 9.03 / 10.14 | 205,774 |
-| draft-ready | 9.86 / 11.13 | 9.57 / 10.65 | 200,974 |
-| reply-24px | 5.70 / 6.29 | 5.55 / 6.16 | 79,300 |
-| reply-128px | 32.67 / 37.91 | 30.92 / 34.04 | 954,758 |
-| real-shell | 6.41 / 7.03 | 6.11 / 6.82 | 110,521 |
-| real-less | 5.71 / 7.28 | 5.62 / 6.97 | 85,779 |
-| real-vi | 8.02 / 9.23 | 7.66 / 10.08 | 187,698 |
-| blank | 5.92 / 6.69 | 5.61 / 6.37 | 95,468 |
-| color-grid | 18.47 / 20.98 | 17.53 / 18.42 | 649,294 |
-| ascii-overflow | 21.68 / 27.01 | 9.68 / 15.01 | 34,560 |
-| rounded-boxes | 17.12 / 19.52 | 16.89 / 17.96 | 141,124 |
-| dense | 13.29 / 14.29 | 12.32 / 13.62 | 361,204 |
-| ansi-replay | 20.91 / 24.29 | 19.86 / 23.77 | 205,774 |
-| large | 46.52 / 57.40 | 43.21 / 53.07 | 1,362,101 |
-| unicode | 9.10 / 9.97 | 7.40 / 8.18 | 154,584 |
+| reply-sent | 9.09 / 9.79 | 8.66 / 9.38 | 205,783 |
+| draft-ready | 9.82 / 14.06 | 9.38 / 12.33 | 200,967 |
+| reply-24px | 5.91 / 8.56 | 5.66 / 7.23 | 79,295 |
+| reply-128px | 32.40 / 37.63 | 30.50 / 36.24 | 954,758 |
+| real-shell | 6.37 / 7.15 | 6.16 / 6.74 | 110,521 |
+| real-less | 5.86 / 7.19 | 5.82 / 7.44 | 85,779 |
+| real-vi | 8.41 / 17.34 | 8.10 / 13.86 | 187,698 |
+| blank | 5.97 / 6.46 | 5.79 / 6.40 | 95,468 |
+| color-grid | 19.51 / 23.50 | 18.27 / 22.73 | 649,294 |
+| ascii-overflow | 17.02 / 18.39 | 6.34 / 6.95 | 34,560 |
+| rounded-boxes | 16.47 / 22.16 | 16.10 / 24.23 | 140,976 |
+| dense | 12.48 / 13.08 | 11.76 / 12.50 | 361,204 |
+| ansi-replay | 21.11 / 24.33 | 20.13 / 22.09 | 205,783 |
+| large | 43.36 / 52.46 | 39.98 / 45.98 | 1,362,101 |
+| unicode | 9.71 / 10.31 | 7.84 / 8.27 | 157,153 |
 
 The two sample logs, blank screen, dense ASCII, and rounded boxes use 100×30
 cells at 48 px. Sample variants use 24 and 128 px. Real shell, less, and vi logs
@@ -78,31 +77,26 @@ They are not cross-platform guarantees or a correction for systematic bias.
 
 | Workload | Batch A paired speedup [95% interval] | Batch B paired speedup [95% interval] |
 | --- | ---: | ---: |
-| reply-sent | 1.054× [1.033, 1.070] | 1.032× [1.024, 1.051] |
-| draft-ready | 1.050× [1.024, 1.071] | 1.036× [1.029, 1.048] |
-| reply-24px | 1.029× [1.003, 1.050] | 1.018× [0.975, 1.052] |
-| reply-128px | 1.073× [1.054, 1.090] | 1.049× [1.021, 1.080] |
-| real-shell | 1.056× [1.033, 1.066] | 1.058× [1.033, 1.084] |
-| real-less | 1.014× [0.990, 1.051] | 1.043× [0.989, 1.083] |
-| real-vi | 1.045× [1.016, 1.074] | 1.008× [0.959, 1.065] |
-| blank | 1.039× [1.005, 1.073] | 1.014× [0.932, 1.099] |
-| color-grid | 1.059× [1.049, 1.072] | 1.085× [1.050, 1.100] |
-| ascii-overflow | 2.337× [2.157, 2.484] | 2.064× [1.923, 2.244] |
-| rounded-boxes | 1.019× [1.005, 1.054] | 1.000× [0.906, 1.113] |
-| dense | 1.076× [1.051, 1.101] | 1.051× [0.975, 1.128] |
-| ansi-replay | 1.046× [1.027, 1.060] | 1.057× [1.014, 1.096] |
-| large | 1.069× [1.054, 1.096] | 1.098× [1.084, 1.112] |
-| unicode | 1.246× [1.190, 1.258] | 1.216× [1.185, 1.257] |
+| reply-sent | 1.048× [1.031, 1.064] | 1.048× [1.040, 1.064] |
+| draft-ready | 1.042× [1.026, 1.064] | 1.044× [1.028, 1.069] |
+| reply-24px | 1.030× [1.012, 1.063] | 1.029× [1.018, 1.071] |
+| reply-128px | 1.064× [1.043, 1.073] | 1.057× [1.034, 1.088] |
+| real-shell | 1.040× [1.021, 1.056] | 1.043× [1.015, 1.069] |
+| real-less | 1.016× [1.002, 1.031] | 1.025× [1.018, 1.039] |
+| real-vi | 1.054× [1.026, 1.083] | 1.035× [1.019, 1.059] |
+| blank | 1.019× [1.003, 1.046] | 1.045× [1.010, 1.062] |
+| color-grid | 1.054× [1.032, 1.066] | 1.053× [1.044, 1.064] |
+| ascii-overflow | 2.691× [2.629, 2.745] | 2.710× [2.679, 2.730] |
+| rounded-boxes | 1.035× [1.016, 1.042] | 1.035× [1.017, 1.046] |
+| dense | 1.066× [1.050, 1.082] | 1.066× [1.045, 1.079] |
+| ansi-replay | 1.050× [1.035, 1.070] | 1.063× [1.043, 1.068] |
+| large | 1.086× [1.070, 1.113] | 1.091× [1.079, 1.102] |
+| unicode | 1.245× [1.226, 1.254] | 1.227× [1.217, 1.236] |
 
-The long ASCII and Unicode workloads show the largest gains. Small-case and
-resolution-specific comparisons are more variable; some
-intervals cross 1.0. Tail latency does not improve uniformly. Claims are based on
-the repeated comparisons and stage evidence, not whichever run has the lowest
-absolute time.
-
-For example, batch B's blank-screen median rises from 10.09 to 10.78 ms;
-its paired interval spans 1.0. Real-shell's median falls from 6.59 to 6.21 ms,
-but p95 rises from 9.18 to 14.82 ms. Both outcomes remain in the report.
+Long ASCII and Unicode workloads benefit most from skipping overwritten rows
+and retaining glyphs. Small-case comparisons remain variable; some intervals
+cross 1.0. Tail latency does not improve uniformly. All samples are retained,
+and claims rely on both batches and stage evidence rather than the lowest time.
 
 ## CPU and memory
 
@@ -111,29 +105,29 @@ Batch A medians. CPU is milliseconds per process; RSS is process peak MiB
 
 | Workload | Child CPU: main → optimized (ms) | Peak RSS: main → optimized (MiB) |
 | --- | ---: | ---: |
-| reply-sent | 8.13 → 7.67 | 13.58 → 13.56 |
-| draft-ready | 8.33 → 7.96 | 13.55 → 13.58 |
-| reply-24px | 4.53 → 4.34 | 6.69 → 6.69 |
-| reply-128px | 30.31 → 28.18 | 69.12 → 69.11 |
-| real-shell | 5.27 → 5.03 | 10.11 → 10.16 |
-| real-less | 4.60 → 4.49 | 10.05 → 10.06 |
-| real-vi | 6.80 → 6.42 | 10.27 → 10.28 |
-| blank | 4.70 → 4.48 | 12.34 → 12.36 |
-| color-grid | 17.16 → 16.16 | 7.97 → 7.89 |
-| ascii-overflow | 19.27 → 7.20 | 10.14 → 7.88 |
-| rounded-boxes | 15.56 → 15.19 | 12.58 → 12.59 |
-| dense | 11.77 → 10.81 | 13.58 → 13.59 |
-| ansi-replay | 19.02 → 18.14 | 18.05 → 18.08 |
-| large | 43.34 → 39.56 | 65.98 → 66.03 |
-| unicode | 8.00 → 6.23 | 7.14 → 7.03 |
+| reply-sent | 7.79 → 7.39 | 13.64 → 13.67 |
+| draft-ready | 8.32 → 7.93 | 13.64 → 13.64 |
+| reply-24px | 4.66 → 4.44 | 6.72 → 6.73 |
+| reply-128px | 30.09 → 28.01 | 69.22 → 69.20 |
+| real-shell | 5.27 → 5.08 | 10.20 → 10.17 |
+| real-less | 4.77 → 4.65 | 10.09 → 10.11 |
+| real-vi | 7.17 → 6.86 | 10.34 → 10.31 |
+| blank | 4.87 → 4.63 | 12.39 → 12.39 |
+| color-grid | 17.92 → 16.90 | 7.38 → 7.31 |
+| ascii-overflow | 15.74 → 5.16 | 10.20 → 7.92 |
+| rounded-boxes | 14.86 → 14.57 | 12.59 → 12.61 |
+| dense | 11.16 → 10.50 | 13.61 → 13.64 |
+| ansi-replay | 19.58 → 18.60 | 18.12 → 18.16 |
+| large | 40.70 → 37.26 | 66.05 → 66.06 |
+| unicode | 8.56 → 6.67 | 7.23 → 7.20 |
 
 Input bytes are now freed after parsing, before raster/compressor allocation.
-For the long ASCII workload this reduces peak RSS from 10.14 to 7.88 MiB.
+For the long ASCII workload peak RSS changes from 10.20 to 7.92 MiB.
 The ANSI replay's peak RSS barely changes: freeing a live buffer does not promise
 an equal reduction in maximum resident memory, which also reflects earlier
 allocations and allocator retention. `parse_ms` includes the input-buffer release.
 
-Glyph cache metadata increases from 8 to 32 KiB on 64-bit builds; up to 1,024
+Glyph cache metadata increases from 12 to 48 KiB on 64-bit builds; up to 1,024
 coverage bitmaps are retained per render instead of 256. Large or diverse fonts
 can therefore use more cache memory even though the measured Unicode workload
 has fewer allocations and slightly lower RSS. Cache collisions still evict and
@@ -147,30 +141,30 @@ ordinary CLI measurements.
 
 | Stage | Main (ms) | Optimized (ms) |
 | --- | ---: | ---: |
-| `input_read_ms` | 0.0336 | 0.0250 |
-| `parse_ms` | 0.0569 | 0.0534 |
-| `font_load_ms` | 0.2353 | 0.2337 |
-| `font_read_ms` | 0.0560 | 0.0546 |
-| `font_check_ms` | 0.1028 | 0.1022 |
-| `font_padding_ms` | 0.0719 | 0.0722 |
-| `font_setup_ms` | 0.0010 | 0.0010 |
+| `input_read_ms` | 0.0308 | 0.0231 |
+| `parse_ms` | 0.0611 | 0.0594 |
+| `font_load_ms` | 0.2219 | 0.2254 |
+| `font_read_ms` | 0.0499 | 0.0537 |
+| `font_check_ms` | 0.1033 | 0.1037 |
+| `font_padding_ms` | 0.0675 | 0.0692 |
+| `font_setup_ms` | 0.0020 | 0.0020 |
 | `allocate_ms` | 0.0030 | 0.0030 |
-| `background_ms` | 0.8610 | 0.8760 |
-| `foreground_ms` | 0.6540 | 0.6580 |
-| `geometry_ms` | 0.0605 | 0.0650 |
-| `glyph_ms` | 0.2590 | 0.2545 |
-| `blend_ms` | 0.2740 | 0.2800 |
+| `background_ms` | 0.8600 | 0.8720 |
+| `foreground_ms` | 0.6525 | 0.6605 |
+| `geometry_ms` | 0.0695 | 0.0710 |
+| `glyph_ms` | 0.2585 | 0.2590 |
+| `blend_ms` | 0.2675 | 0.2760 |
 | `png_filter_ms` | 0.0000 | 0.0000 |
-| `png_deflate_ms` | 4.1250 | 3.7625 |
-| `deflate_allocate_ms` | 0.0050 | 0.0050 |
-| `deflate_match_emit_ms` | 3.2065 | 2.8475 |
+| `png_deflate_ms` | 4.1355 | 3.7605 |
+| `deflate_allocate_ms` | 0.0040 | 0.0040 |
+| `deflate_match_emit_ms` | 3.2280 | 2.8505 |
 | `deflate_finalize_ms` | 0.0010 | 0.0010 |
-| `deflate_checksum_ms` | 0.8810 | 0.8770 |
-| `png_pack_ms` | 0.1080 | 0.1080 |
-| `png_encode_ms` | 4.2335 | 3.8720 |
-| `output_write_ms` | 0.1800 | 0.1880 |
+| `deflate_checksum_ms` | 0.8825 | 0.9105 |
+| `png_pack_ms` | 0.1080 | 0.1115 |
+| `png_encode_ms` | 4.2475 | 3.8705 |
+| `output_write_ms` | 0.1500 | 0.1735 |
 | `cleanup_ms` | 0.0010 | 0.0010 |
-| `total_ms` | 6.3291 | 5.9941 |
+| `total_ms` | 6.2940 | 6.0362 |
 
 Timing boundaries and nesting are unchanged from the previous round:
 
@@ -204,19 +198,20 @@ must not be presented as optimizations to those stages.
   retaining at least one full scrolling region of actual writes. Avoid clearing
   a row immediately before overwriting every cell. Attributes, pending wrap,
   disabled wrapping, alternate screens, margins, and REP state are preserved.
-  Long-ASCII parsing: **11.943 → 1.343 ms**.
+  Long-ASCII parsing: **11.841 → 1.290 ms**.
 - Accumulate CSI digits in a wide integer and clamp once, preserving the same
   saturating u32 value with fewer overflow checks. Combined parser changes take
-  ANSI replay parsing from **9.244 → 8.549 ms**.
+  ANSI replay parsing from **10.415 → 9.776 ms**.
 - Increase the bounded glyph cache to 1,024 slots. The Unicode workload goes
-  from 1,119 rasterizations / zero cache hits to 307 rasterizations / 2,200 hits;
-  glyph time is **2.235 → 0.791 ms**. Cache-collision fixtures
-  still exercise eviction at the new size, including missing glyphs.
+  from 1,027 rasterizations / 0 cache hits to
+  284 rasterizations / 1,888 hits; glyph time is **2.279 → 0.815 ms**.
+  Cache-collision fixtures still exercise eviction at the new size, including
+  missing glyphs. Wide-glyph cache keys retain main's behavior.
 - Flush DEFLATE bits in a bounded four-byte store, with one capacity check per
   token instead of per emitted byte. Compare matches in bounded 16-byte groups
   plus tails, preserving the first differing byte, match ordering, and stream
-  bytes. Sample match/emission time is **3.207 → 2.848 ms**;
-  the large case is **20.538 → 16.751 ms**. Allocation
+  bytes. Sample match/emission time is **3.228 → 2.851 ms**;
+  the large case is **19.470 → 16.006 ms**. Allocation
   failures still drain logical bits and return failure without leaking or looping.
 - Release input storage before rendering; retain its length for profiling.
 
@@ -239,32 +234,41 @@ that stage from 8.901 to 5.693 ms in a separate comparison batch.
 The uniform formula was removed; the final blending code matches the baseline.
 This is why the complete benchmark was repeated after integrating main.
 
-Remaining batch-A costs include **3.872 ms** of sample PNG encoding,
-**8.549 ms** of ANSI parsing, and
-**6.711 ms** of rounded-grid geometry.
-The large image still spends **5.482 ms** painting backgrounds and
-**5.662 ms** blending. Optimizing small I/O and font stages further was
+Remaining batch-A costs include **3.870 ms** of sample PNG encoding,
+**9.776 ms** of ANSI parsing, and **6.171 ms** of rounded-grid geometry.
+The large image still spends **5.434 ms** painting backgrounds and
+**5.372 ms** blending. Optimizing small I/O and font stages further was
 not justified by these profiles. More glyphs than the cache can hold, different
-fonts, cold storage, and other architectures remain outside these measurements.
-No absolute optimum or universal latency is claimed.
+fonts, fallback-font rendering, cold storage, and other architectures remain
+outside these measurements. No absolute optimum or universal latency is claimed.
+
+An integration check also reproduced main's existing panic when printing a
+wide character (`界`) on a single-column screen (`--size 1x1`). The unchanged
+baseline and this branch share that limitation; wide-character differential
+coverage here uses grids with at least two columns.
 
 ## Validation and reproduction
 
 Local macOS validation passed:
 
-- `SANITIZE=1 ./test.sh`: 76 unit tests, 3,000 byte-identical compressor
-  comparisons, CLI checks, and portable pixel goldens.
+- `SANITIZE=1 ./test.sh`: 83 unit tests passed (the manual POC helper remains
+  ignored), 3,000 byte-identical compressor comparisons, 36,901 box/block checks,
+  56 glyph-placement checks, CLI checks, and 20 native pixel goldens.
 - `SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh`: 5,024 independent
-  PNG/zlib round trips per compressor, 11 injected allocation failures,
-  aligned/unaligned CRC checks, 18 pixel fixtures, and 8 concurrent profiled renders.
-- A new parser test compares batch writes with individual prints across screen
+  PNG/zlib round trips per compressor, 48 PNG integrity cases per compressor,
+  11 injected allocation failures, aligned/unaligned CRC checks, and 8 concurrent
+  profiled renders. The PNG cases check split IDAT streams, incorrect Adler-32
+  trailers with valid chunk CRCs, and incorrect chunk CRCs.
+- The parser test compares batch writes with individual prints across screen
   sizes, scrolling margins, wrap states, alternate screens, and run lengths.
-  Another 10,000 generated streams match every output cell against `bd726a6`;
-  5,000 font mutations retain the same acceptance/rejection result.
-- New collision and distant-geometry fixtures were generated using `05f3319`
-  and checked against `bd726a6`; all existing pixel hashes remain unchanged.
-  Both benchmark batches match all 15 complete PNG hashes. The baseline build
-  helper was exercised.
+  It also checks combining-character targets and overwrites of existing wide
+  characters on grids with room for them. Another 10,000 generated streams,
+  including wide/combining characters and long ASCII runs, match every output
+  cell against `c44d83c`; 5,000 font mutations retain the same acceptance result.
+- The two new collision/distant-geometry fixtures are stored in `tests/fixtures/`
+  and run by `tests/golden.rs`. Their goldens come from an independent build of
+  `c44d83c`; all 18 existing native goldens remain unchanged. Both benchmark
+  batches match all 15 complete PNG hashes. The baseline helper was exercised.
 
 Linux and Rust 1.70 execution have not been repeated locally this round. The
 existing CI covers Linux/macOS, sanitizers, and the minimum Rust version; it has
@@ -289,14 +293,15 @@ python3 scripts/bench.py \
 
 `--case` narrows workloads and is repeatable. Peak RSS uses `/usr/bin/time -l`
 on macOS and `-v` on Linux, normalized to bytes. The default baseline is now
-`bd726a6`, which already has all stage timers and embeds the bundled font.
+`c44d83c`, which already has all stage timers and embeds the bundled font.
 Older instrumented baselines can still be built using explicit `--revision`
 and `--profile-patch` options.
 
 `TERMSHOT_PROFILE` is enabled by presence, including `0`, and emits two
 `termshot-profile ` JSON records to stderr. Timers are thread-local and rendering
-buffers/caches are per-call. Python is needed for benchmarks and extended tests,
-not the build or `./test.sh`.
+buffers/caches are per-call. Python is needed only for optional development
+scripts, including benchmarks and `scripts/generate-crc32.py`, not the build
+or tests.
 
 ## Where the historical “~20 ms” came from
 

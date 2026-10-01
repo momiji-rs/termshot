@@ -8,6 +8,9 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 mod font;
+mod unicode;
+#[rustfmt::skip]
+mod unicode_tables;
 #[cfg(test)]
 mod draw_tests;
 #[cfg(test)]
@@ -38,6 +41,10 @@ const BOLD: u8 = 1;
 const UNDERLINE: u8 = 2;
 const DOUBLE_UNDERLINE: u8 = 4;
 const STRIKE: u8 = 8;
+/// The first cell of a double-width character; draw.c spans its glyph over two.
+const WIDE: u8 = 16;
+/// The second cell of a double-width character: ch is 0 and nothing is drawn.
+const TAIL: u8 = 32;
 
 /// The colours and attributes SGR sets, applied to each printed character.
 /// Reverse, dim and conceal change the cell's colours as it is printed.
@@ -115,6 +122,8 @@ extern "C" {
         rows: i32,
         // A font that passed font::check, followed by its zero padding.
         font: *const u8,
+        // Another such font for the characters the first lacks, or null.
+        fallback: *const u8,
         font_size: f64,
         out_path: *const i8,
         verbose: i32,
@@ -189,6 +198,8 @@ struct Screen {
     shifted: bool,
     /// The last printed character, which REP repeats.
     last: Option<u32>,
+    /// Where it went (a storage index), for combining marks that follow.
+    last_at: Option<usize>,
 }
 
 impl Screen {
@@ -214,6 +225,7 @@ impl Screen {
             charsets: [Charset::Ascii; 2],
             shifted: false,
             last: None,
+            last_at: None,
         }
     }
 
@@ -299,6 +311,7 @@ impl Screen {
         let n = n.min(line.end - at);
         self.cells.copy_within(at..line.end - n, at + n);
         self.erase(at, at + n);
+        self.mend_row(self.row);
     }
 
     /// DCH: shift the rest of the line left by n, blanking the end.
@@ -308,6 +321,7 @@ impl Screen {
         let n = n.min(line.end - at);
         self.cells.copy_within(at + n..line.end, at);
         self.erase(line.end - n, line.end);
+        self.mend_row(self.row);
     }
 
     /// Move rows top..=bottom up by n, blanking the n rows that open at the bottom.
@@ -414,6 +428,7 @@ impl Screen {
         std::mem::swap(&mut self.cells, &mut self.other);
         std::mem::swap(&mut self.map, &mut self.other_map);
         self.on_alternate = on;
+        self.last_at = None;
         self.pending = false;
     }
 
@@ -431,18 +446,87 @@ impl Screen {
     }
 
     /// Print a character that has already been through the character set.
+    /// Wide characters take two cells; zero-width ones combine with the
+    /// character before them.
     fn print_mapped(&mut self, ch: u32) {
+        let width = unicode::width(ch);
+        if width == 0 {
+            self.combine(ch);
+            return;
+        }
         self.last = Some(ch);
         if self.pending {
             self.col = 0;
             self.index();
         }
-        let at = self.cursor_index();
-        self.cells[at] = Cell { ch, ..self.pen.cell() };
-        if self.col < self.last_col() {
-            self.col += 1;
-        } else if self.autowrap {
-            self.pending = true;
+        if width == 2 && self.col == self.last_col() {
+            // No room for both halves. xterm leaves the last column as it is
+            // and wraps; without autowrap the character is dropped.
+            if !self.autowrap {
+                return;
+            }
+            self.col = 0;
+            self.index();
+        }
+        let line = self.line(self.row);
+        let at = line.start + self.col;
+        self.split_wide(&line, at);
+        let mut cell = Cell { ch, ..self.pen.cell() };
+        if width == 2 {
+            self.split_wide(&line, at + 1);
+            cell.attrs |= WIDE;
+            self.cells[at + 1] = Cell { ch: 0, attrs: cell.attrs & !WIDE | TAIL, ..cell };
+        }
+        self.cells[at] = cell;
+        self.last_at = Some(at);
+        if self.col + width <= self.last_col() {
+            self.col += width;
+        } else {
+            self.col = self.last_col();
+            self.pending = self.autowrap;
+        }
+    }
+
+    /// A zero-width character: compose it with the last printed character if
+    /// Unicode has a precomposed form (e + U+0301 is é); otherwise drop it.
+    /// A cell holds one code point, so other combinations can't be kept.
+    fn combine(&mut self, mark: u32) {
+        if let Some(at) = self.last_at {
+            if let Some(composed) = unicode::compose(self.cells[at].ch, mark) {
+                self.cells[at].ch = composed;
+            }
+        }
+    }
+
+    /// Before cell i of a row is overwritten: if it is half of a wide
+    /// character, blank the other half.
+    fn split_wide(&mut self, line: &std::ops::Range<usize>, i: usize) {
+        let attrs = self.cells[i].attrs;
+        if attrs & TAIL != 0 && i > line.start {
+            self.unwide(i - 1);
+        }
+        if attrs & WIDE != 0 && i + 1 < line.end {
+            self.unwide(i + 1);
+        }
+    }
+
+    fn unwide(&mut self, i: usize) {
+        let cell = &mut self.cells[i];
+        cell.ch = ' ' as u32;
+        cell.attrs &= !(WIDE | TAIL);
+    }
+
+    /// After an edit that can cut a wide character in two (ICH, DCH, ECH,
+    /// EL, ED), blank any half whose partner is gone.
+    fn mend_row(&mut self, r: usize) {
+        let line = self.line(r);
+        for i in line.clone() {
+            let attrs = self.cells[i].attrs;
+            if attrs & WIDE != 0 && (i + 1 >= line.end || self.cells[i + 1].attrs & TAIL == 0) {
+                self.unwide(i);
+            } else if attrs & TAIL != 0 && (i == line.start || self.cells[i - 1].attrs & WIDE == 0) {
+                self.unwide(i);
+            }
         }
     }
 
@@ -484,6 +568,11 @@ impl Screen {
             }
             let count = text.len().min(self.cols - self.col);
             let start = self.cursor_index();
+            // Only the run's ends can cut a wide character in two.
+            let line = self.line(self.row);
+            self.split_wide(&line, start);
+            self.split_wide(&line, start + count - 1);
+            self.last_at = Some(start + count - 1);
             for (dest, byte) in self.cells[start..start + count].iter_mut().zip(text) {
                 cell.ch = u32::from(*byte);
                 *dest = cell;
@@ -499,7 +588,10 @@ impl Screen {
                     if let Some(byte) = text.last() {
                         cell.ch = u32::from(*byte);
                         let at = self.cursor_index();
+                        let line = self.line(self.row);
+                        self.split_wide(&line, at);
                         self.cells[at] = cell;
+                        self.last_at = Some(at);
                     }
                     break;
                 }
@@ -634,6 +726,10 @@ impl Screen {
                 }
             }
             _ => {}
+        }
+        // Erasing part of a wide character erases all of it.
+        if matches!(final_byte, b'X' | b'J' | b'K') {
+            self.mend_row(self.row);
         }
     }
 
@@ -1008,6 +1104,9 @@ Use - as <log> to read stdin, and - as <out.png> to write stdout.
 
 options:
   -f, --font FILE   TrueType font (default: built-in JetBrains Mono)
+      --fallback-font FILE
+                    TrueType font for the characters the first lacks, such
+                    as CJK or emoji; others are drawn as an empty box
   -p, --px N        font pixel height, above 0 and below 256 (default 48)
   -s, --size CxR    grid size in columns x rows, up to 500x200 (default 100x30)
   -v, --verbose     print the cell and image size to stderr
@@ -1026,6 +1125,7 @@ struct Options {
     log: String,
     out: String,
     font: Option<String>,
+    fallback_font: Option<String>,
     px: f64,
     cols: usize,
     rows: usize,
@@ -1071,7 +1171,7 @@ fn option_value(
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter();
     let mut positional = Vec::new();
-    let (mut font, mut px, mut size, mut verbose) = (None, None, None, false);
+    let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
     let mut options_done = false;
     while let Some(arg) = args.next() {
         if options_done || arg == "-" || !arg.starts_with('-') {
@@ -1101,6 +1201,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "-V" | "--version" => return Ok(Command::Version),
             "-v" | "--verbose" => verbose = true,
             "-f" | "--font" => font = Some(option_value(&name, attached, &mut args)?),
+            "--fallback-font" => fallback_font = Some(option_value(&name, attached, &mut args)?),
             "-p" | "--px" => px = Some(parse_px(&option_value(&name, attached, &mut args)?)?),
             "-s" | "--size" => size = Some(parse_size(&option_value(&name, attached, &mut args)?)?),
             _ => return Err(format!("unknown option {arg}")),
@@ -1135,7 +1236,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         legacy_cols.unwrap_or(DEFAULT_COLS),
         legacy_rows.unwrap_or(DEFAULT_ROWS),
     ));
-    Ok(Command::Render(Options { log, out, font, px: px.unwrap_or(48.0), cols, rows, verbose }))
+    Ok(Command::Render(Options { log, out, font, fallback_font, px: px.unwrap_or(48.0), cols, rows, verbose }))
 }
 
 /// Print an error the way every failure path reports it, and pick the status.
@@ -1219,6 +1320,10 @@ fn main() -> ExitCode {
         Ok(font) => font,
         Err(error) => return cleanup(1, error),
     };
+    let fallback = match options.fallback_font.as_deref().map(font::load).transpose() {
+        Ok(fallback) => fallback,
+        Err(error) => return cleanup(1, error),
+    };
     let font_load_ms = font_started.elapsed().as_secs_f64() * 1000.0;
 
     let parse_started = Instant::now();
@@ -1237,6 +1342,7 @@ fn main() -> ExitCode {
             options.cols as i32,
             options.rows as i32,
             font.as_ptr(),
+            fallback.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
             options.px,
             out.as_ptr(),
             i32::from(options.verbose),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned bd726a6 reference, optionally with a profiling patch."""
+"""Build the pinned c44d83c reference, optionally with a profiling patch."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -7,7 +7,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('destination', type=Path, help='new, empty build directory')
-p.add_argument('--revision', default='bd726a6')
+p.add_argument('--revision', default='c44d83c')
 p.add_argument('--profile-patch', type=Path, help='optional instrumentation patch for older revisions')
 a = p.parse_args()
 dest = a.destination.resolve()

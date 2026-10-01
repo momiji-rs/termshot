@@ -80,3 +80,22 @@ alt-47		10x4	main\033[?47hx\033[?47lY
 alt-1047	10x4	main\033[?1047hx\033[?1047lY
 alt-1048	10x4	ab\033[?1048h\033[3;3Hx\033[?1048lY
 rep-wrap	10x4	ab\033[12b
+
+# Wide and combining characters (CJK, emoji, accents). Logs are UTF-8 bytes.
+wide		10x4	a\344\270\255b
+wide-wrap	10x4	\033[1;10H\344\270\255x
+wide-fill	10x4	\033[1;9H\344\270\255x
+wide-nowrap	10x4	\033[?7l\033[1;10H\344\270\255
+wide-tail	10x4	\344\270\255\033[1;2Hx
+wide-lead	10x4	\344\270\255\033[1;1Hx
+wide-shift	10x4	\344\270\255\344\270\255\033[1;2H\346\226\207
+wide-ascii	10x4	\344\270\255\344\270\255\033[1;2Hab
+wide-el		10x4	\344\270\255\346\226\207\033[1;2H\033[K
+wide-ech	10x4	\344\270\255x\033[1;1H\033[X
+wide-dch	10x4	\344\270\255x\033[1;1H\033[P
+wide-ich	10x4	aaaaaaaa\344\270\255\033[1;1H\033[@
+emoji		10x4	\360\237\230\200!
+hangul		10x4	\355\225\234\352\270\200
+fullwidth	10x4	\357\274\241\357\274\242
+combine		10x4	e\314\201a\314\210x
+zwj		10x4	a\342\200\215b
