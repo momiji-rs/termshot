@@ -1,0 +1,10 @@
+# Cases where termshot follows xterm and tmux (3.7c) does something else.
+# Their screens in expected.txt are written by hand; oracle.sh --update keeps them.
+bs-last: BS with the cursor parked on the last column moves to the one before it; tmux stays on the last column
+cht: tmux does not implement CHT (CSI I)
+hpr-vpr: tmux does not implement HPR (CSI a) or VPR (CSI e)
+ich-overflow: ICH past the end of the line blanks the rest of it; tmux leaves the line unchanged
+wrap-pending-lf: LF clears the pending wrap, as in xterm, so X lands in the last column of the next row; tmux keeps the wrap pending
+wrap-pending-el: with a wrap pending the cursor is on the last column and EL erases it; tmux treats the cursor as past the edge
+alt-1048: tmux does not implement mode 1048 (save and restore the cursor)
+rep-wrap: REP repeats the character as if it had been sent again, wrapping; tmux stops at the end of the line

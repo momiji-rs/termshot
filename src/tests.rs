@@ -135,6 +135,7 @@ fn pseudorandom_input_does_not_panic() {
         0x1b, b'[', b']', b';', b':', b'0', b'2', b'5', b'9', b'3', b'8', b'H', b'A', b'B', b'C', b'D', b'K',
         b'J', b'm', b'?', b'(', b' ', 0x07, 0x18, b'\\', b'\n', b'\r', 0x7f, 0xc2, 0xe2, 0xed, 0xf4, 0x80,
         0x08, 0x09, 0x0e, 0x0f, b'7', b'@', b'P', b'X', b'b', b'g', b'I', b'Z', b'G', b'd', b'c', b'q',
+        b'r', b'S', b'T', b'L', b'M', b'h', b'l', b'?', b'1', b'4', b'6',
     ];
     let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut step = || {
@@ -405,4 +406,106 @@ fn vt_and_ff_move_down() {
     let g = grid(b"a\x0bb\x0cc");
     assert_eq!(at(&g, 1, 1).ch, 'b' as u32);
     assert_eq!(at(&g, 2, 2).ch, 'c' as u32);
+}
+
+/// Decode a printf(1) format string the way tests/vt/oracle.sh feeds it to
+/// printf: backslash escapes, octal \NNN (1-3 digits) and %%.
+fn printf_bytes(format: &str) -> Vec<u8> {
+    let b = format.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], b.get(i + 1).copied()) {
+            (b'\\', Some(c @ b'0'..=b'7')) => {
+                let mut value = u32::from(c - b'0');
+                let mut j = i + 2;
+                while j < b.len() && j < i + 4 && (b'0'..=b'7').contains(&b[j]) {
+                    value = value * 8 + u32::from(b[j] - b'0');
+                    j += 1;
+                }
+                out.push(value as u8);
+                i = j;
+                continue;
+            }
+            (b'\\', Some(c)) => out.push(match c {
+                b'a' => 7,
+                b'b' => 8,
+                b'f' => 12,
+                b'n' => 10,
+                b'r' => 13,
+                b't' => 9,
+                b'v' => 11,
+                other => other,
+            }),
+            (b'%', Some(b'%')) => out.push(b'%'),
+            (c, _) => {
+                out.push(c);
+                i += 1;
+                continue;
+            }
+        }
+        i += 2;
+    }
+    out
+}
+
+/// Every case in tests/vt/cases.txt renders the screen in expected.txt, which
+/// tmux produced (tests/vt/oracle.sh) except for the documented deviations.
+#[test]
+fn vt_cases_match_the_reference_screens() {
+    let cases = fs::read_to_string("tests/vt/cases.txt").unwrap();
+    let expected = fs::read_to_string("tests/vt/expected.txt").unwrap();
+    let mut failures = Vec::new();
+    let mut count = 0;
+    for line in cases.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')) {
+        let mut fields = line.split_whitespace();
+        let (name, size) = (fields.next().unwrap(), fields.next().unwrap());
+        let input = line[line.find(size).unwrap() + size.len()..].trim_start();
+        let (cols, rows) = size.split_once('x').unwrap();
+        let (cols, rows): (usize, usize) = (cols.parse().unwrap(), rows.parse().unwrap());
+        let g = parse(&printf_bytes(input), cols, rows);
+        let got: Vec<String> = (0..rows)
+            .map(|r| {
+                let row: String = g[r * cols..(r + 1) * cols].iter().map(|c| char::from_u32(c.ch).unwrap_or('?')).collect();
+                row.trim_end().to_string()
+            })
+            .collect();
+        let header = format!("== {name}");
+        let want: Vec<&str> = expected
+            .lines()
+            .skip_while(|l| *l != header)
+            .skip(1)
+            .take_while(|l| !l.starts_with("== "))
+            .collect();
+        count += 1;
+        if want.len() != rows || got.iter().zip(&want).any(|(g, w)| g != w) {
+            failures.push(format!("{name}:\n  got  {got:?}\n  want {want:?}"));
+        }
+    }
+    assert!(count > 30, "only {count} cases read");
+    assert!(failures.is_empty(), "{} of {count} cases differ:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// Real sessions recorded from tmux (tests/vt/record.sh): termshot renders
+/// each log to the screen tmux showed at the end.
+#[test]
+fn real_sessions_match_tmux() {
+    let (cols, rows) = (80, 24);
+    for name in ["shell", "less", "vi"] {
+        let log = fs::read(format!("tests/vt/real/{name}.log")).unwrap();
+        let want = fs::read_to_string(format!("tests/vt/real/{name}.txt")).unwrap();
+        let g = parse(&log, cols, rows);
+        let got: String = (0..rows)
+            .map(|r| {
+                let row: String = g[r * cols..(r + 1) * cols].iter().map(|c| char::from_u32(c.ch).unwrap_or('?')).collect();
+                row.trim_end().to_string() + "\n"
+            })
+            .collect();
+        assert!(got == want, "{name}: termshot shows\n{got}\ntmux showed\n{want}");
+    }
+}
+
+#[test]
+fn printf_decoding() {
+    assert_eq!(printf_bytes(r"a\tb\033[1m\0337\\%%\n"), b"a\tb\x1b[1m\x1b7\\%\n");
 }

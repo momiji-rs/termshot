@@ -68,10 +68,13 @@ enum Charset {
 }
 
 /// What DECSC (ESC 7) and CSI s save, and DECRC (ESC 8) and CSI u restore.
+/// The main and alternate screens each keep one.
 #[derive(Clone, Copy)]
 struct Saved {
-    row: i32,
-    col: i32,
+    row: usize,
+    col: usize,
+    pending: bool,
+    origin: bool,
     fg: (u8, u8, u8),
     bg: (u8, u8, u8),
     bold: bool,
@@ -79,14 +82,47 @@ struct Saved {
     shifted: bool,
 }
 
+impl Saved {
+    const HOME: Saved = Saved {
+        row: 0,
+        col: 0,
+        pending: false,
+        origin: false,
+        fg: DEFAULT_FG,
+        bg: DEFAULT_BG,
+        bold: false,
+        charsets: [Charset::Ascii; 2],
+        shifted: false,
+    };
+}
+
 /// The grid and the terminal state that writes to it.
+///
+/// The cursor is always on the grid. After a character is printed in the
+/// last column the cursor stays there with a wrap pending; the next printed
+/// character wraps first, and most other controls cancel the wrap (xterm's
+/// model).
 struct Screen {
+    /// Rows of cells in storage order; `map` gives the storage row of each
+    /// screen row, so scrolling rotates `map` instead of moving cells.
     cells: Vec<Cell>,
+    map: Vec<usize>,
+    /// The other screen: the alternate one while on the main one, and back.
+    other: Vec<Cell>,
+    other_map: Vec<usize>,
+    on_alternate: bool,
     cols: usize,
     rows: usize,
-    row: i32,
-    col: i32,
-    saved: Saved,
+    row: usize,
+    col: usize,
+    pending: bool,
+    autowrap: bool,
+    /// DECOM: cursor rows count from the top margin and stay inside the margins.
+    origin: bool,
+    /// The scrolling region, inclusive rows.
+    top: usize,
+    bottom: usize,
+    saved: [Saved; 2],
     fg: (u8, u8, u8),
     bg: (u8, u8, u8),
     bold: bool,
@@ -103,19 +139,20 @@ impl Screen {
     fn new(cols: usize, rows: usize) -> Self {
         Self {
             cells: vec![Cell::blank(); cols * rows],
+            map: (0..rows).collect(),
+            other: vec![Cell::blank(); cols * rows],
+            other_map: (0..rows).collect(),
+            on_alternate: false,
             cols,
             rows,
             row: 0,
             col: 0,
-            saved: Saved {
-                row: 0,
-                col: 0,
-                fg: DEFAULT_FG,
-                bg: DEFAULT_BG,
-                bold: false,
-                charsets: [Charset::Ascii; 2],
-                shifted: false,
-            },
+            pending: false,
+            autowrap: true,
+            origin: false,
+            top: 0,
+            bottom: rows - 1,
+            saved: [Saved::HOME; 2],
             fg: DEFAULT_FG,
             bg: DEFAULT_BG,
             bold: false,
@@ -126,16 +163,12 @@ impl Screen {
         }
     }
 
-    /// The cursor column, with a cursor past the last column (after printing
-    /// there) counted as the last column, where a terminal keeps it.
-    fn column(&self) -> i32 {
-        self.col.clamp(0, self.last_col())
-    }
-
     fn save_cursor(&mut self) {
-        self.saved = Saved {
+        self.saved[usize::from(self.on_alternate)] = Saved {
             row: self.row,
             col: self.col,
+            pending: self.pending,
+            origin: self.origin,
             fg: self.fg,
             bg: self.bg,
             bold: self.bold,
@@ -145,73 +178,199 @@ impl Screen {
     }
 
     fn restore_cursor(&mut self) {
-        let s = self.saved;
-        (self.row, self.col, self.fg, self.bg, self.bold) = (s.row, s.col, s.fg, s.bg, s.bold);
+        let s = self.saved[usize::from(self.on_alternate)];
+        (self.row, self.col, self.pending, self.origin) = (s.row, s.col, s.pending, s.origin);
+        (self.fg, self.bg, self.bold) = (s.fg, s.bg, s.bold);
         (self.charsets, self.shifted) = (s.charsets, s.shifted);
     }
 
     /// C0 controls, at top level or inside a CSI.
     fn control(&mut self, c: u8) {
         match c {
-            0x08 => self.col = (self.column() - 1).max(0),
+            0x08 => {
+                self.col = self.col.saturating_sub(1);
+                self.pending = false;
+            }
             0x09 => self.tab_forward(1),
-            // LF, VT and FF all move down, as on a VT100.
-            0x0a..=0x0c => self.line_feed(),
-            0x0d => self.col = 0,
+            // LF, VT and FF all index, as on a VT100.
+            0x0a..=0x0c => self.index(),
+            0x0d => {
+                self.col = 0;
+                self.pending = false;
+            }
             0x0e => self.shifted = true,
             0x0f => self.shifted = false,
             _ => {}
         }
     }
 
-    fn tab_forward(&mut self, n: i32) {
-        for _ in 0..n.min(self.cols as i32) {
-            let from = self.col.max(0) as usize + 1;
-            self.col = (from..self.cols).find(|&c| self.tabs[c]).unwrap_or(self.cols - 1) as i32;
+    fn tab_forward(&mut self, n: usize) {
+        self.pending = false;
+        for _ in 0..n.min(self.cols) {
+            self.col = (self.col + 1..self.cols).find(|&c| self.tabs[c]).unwrap_or(self.cols - 1);
         }
     }
 
-    fn tab_back(&mut self, n: i32) {
-        for _ in 0..n.min(self.cols as i32) {
-            let to = self.column() as usize;
-            self.col = (0..to).rev().find(|&c| self.tabs[c]).unwrap_or(0) as i32;
+    fn tab_back(&mut self, n: usize) {
+        self.pending = false;
+        for _ in 0..n.min(self.cols) {
+            self.col = (0..self.col).rev().find(|&c| self.tabs[c]).unwrap_or(0);
         }
     }
 
-    /// The cell index range of the cursor row, if the cursor is on the grid.
-    fn row_range(&self) -> Option<std::ops::Range<usize>> {
-        (0..self.rows as i32).contains(&self.row).then(|| {
-            let start = self.row as usize * self.cols;
-            start..start + self.cols
-        })
+    /// The cell index range of screen row r.
+    fn line(&self, r: usize) -> std::ops::Range<usize> {
+        let stored = self.map[r];
+        stored * self.cols..(stored + 1) * self.cols
+    }
+
+    /// Blank screen rows [from, to).
+    fn erase_rows(&mut self, from: usize, to: usize) {
+        for r in from..to {
+            let line = self.line(r);
+            self.erase(line.start, line.end);
+        }
+    }
+
+    /// The cells in screen order.
+    fn into_cells(self) -> Vec<Cell> {
+        if self.map.iter().enumerate().all(|(r, &stored)| r == stored) {
+            return self.cells;
+        }
+        (0..self.rows).flat_map(|r| self.cells[self.line(r)].iter().copied()).collect()
     }
 
     /// ICH: shift the rest of the line right by n, blanking the gap.
     fn insert_chars(&mut self, n: usize) {
-        if let Some(line) = self.row_range() {
-            let at = line.start + self.column() as usize;
-            let n = n.min(line.end - at);
-            self.cells.copy_within(at..line.end - n, at + n);
-            self.erase(at, at + n);
-        }
+        let line = self.line(self.row);
+        let at = line.start + self.col;
+        let n = n.min(line.end - at);
+        self.cells.copy_within(at..line.end - n, at + n);
+        self.erase(at, at + n);
     }
 
     /// DCH: shift the rest of the line left by n, blanking the end.
     fn delete_chars(&mut self, n: usize) {
-        if let Some(line) = self.row_range() {
-            let at = line.start + self.column() as usize;
-            let n = n.min(line.end - at);
-            self.cells.copy_within(at + n..line.end, at);
-            self.erase(line.end - n, line.end);
+        let line = self.line(self.row);
+        let at = line.start + self.col;
+        let n = n.min(line.end - at);
+        self.cells.copy_within(at + n..line.end, at);
+        self.erase(line.end - n, line.end);
+    }
+
+    /// Move rows top..=bottom up by n, blanking the n rows that open at the bottom.
+    fn scroll_up(&mut self, top: usize, bottom: usize, n: usize) {
+        let n = n.min(bottom + 1 - top);
+        self.map[top..=bottom].rotate_left(n);
+        self.erase_rows(bottom + 1 - n, bottom + 1);
+    }
+
+    /// Move rows top..=bottom down by n, blanking the n rows that open at the top.
+    fn scroll_down(&mut self, top: usize, bottom: usize, n: usize) {
+        let n = n.min(bottom + 1 - top);
+        self.map[top..=bottom].rotate_right(n);
+        self.erase_rows(top, top + n);
+    }
+
+    /// LF, IND: down a row, scrolling the region at its bottom margin.
+    fn index(&mut self) {
+        self.pending = false;
+        if self.row == self.bottom {
+            self.scroll_up(self.top, self.bottom, 1);
+        } else if self.row + 1 < self.rows {
+            self.row += 1;
         }
     }
 
-    fn last_row(&self) -> i32 {
-        self.rows as i32 - 1
+    /// RI: up a row, scrolling the region down at its top margin.
+    fn reverse_index(&mut self) {
+        self.pending = false;
+        if self.row == self.top {
+            self.scroll_down(self.top, self.bottom, 1);
+        } else {
+            self.row = self.row.saturating_sub(1);
+        }
     }
 
-    fn last_col(&self) -> i32 {
-        self.cols as i32 - 1
+    fn in_margins(&self) -> bool {
+        (self.top..=self.bottom).contains(&self.row)
+    }
+
+    /// Rows a cursor-addressing sequence can reach: the margins in origin mode.
+    fn addressable_rows(&self) -> (usize, usize) {
+        if self.origin {
+            (self.top, self.bottom)
+        } else {
+            (0, self.rows - 1)
+        }
+    }
+
+    /// Move to a 1-based row as CUP and VPA give it, honouring origin mode.
+    fn go_to_row(&mut self, n: usize) {
+        let (first, last) = self.addressable_rows();
+        self.row = (first + n - 1).min(last);
+    }
+
+    fn home(&mut self) {
+        self.row = self.addressable_rows().0;
+        self.col = 0;
+    }
+
+    fn set_mode(&mut self, mode: u32, on: bool) {
+        match mode {
+            6 => {
+                self.origin = on;
+                self.home();
+            }
+            7 => self.autowrap = on,
+            47 | 1047 => self.use_alternate(on, mode == 1047 && !on),
+            1048 => {
+                if on {
+                    self.save_cursor();
+                } else {
+                    self.restore_cursor();
+                }
+            }
+            // Save the cursor, switch, and clear the alternate screen; back and
+            // restore on the way out.
+            1049 if on => {
+                if !self.on_alternate {
+                    self.save_cursor();
+                    self.use_alternate(true, false);
+                    self.erase_rows(0, self.rows);
+                }
+            }
+            1049 => {
+                if self.on_alternate {
+                    self.use_alternate(false, false);
+                    self.restore_cursor();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Switch to the alternate screen or back. clear_first blanks the
+    /// alternate screen before leaving it (mode 1047).
+    fn use_alternate(&mut self, on: bool, clear_first: bool) {
+        if on == self.on_alternate {
+            return;
+        }
+        if clear_first {
+            self.erase_rows(0, self.rows);
+        }
+        std::mem::swap(&mut self.cells, &mut self.other);
+        std::mem::swap(&mut self.map, &mut self.other_map);
+        self.on_alternate = on;
+        self.pending = false;
+    }
+
+    fn last_row(&self) -> usize {
+        self.rows - 1
+    }
+
+    fn last_col(&self) -> usize {
+        self.cols - 1
     }
 
     fn print(&mut self, ch: u32) {
@@ -222,31 +381,32 @@ impl Screen {
     /// Print a character that has already been through the character set.
     fn print_mapped(&mut self, ch: u32) {
         self.last = Some(ch);
-        if (0..self.rows as i32).contains(&self.row) && (0..self.cols as i32).contains(&self.col) {
-            let (fg, bg) = (self.fg, self.bg);
-            let cell = &mut self.cells[self.row as usize * self.cols + self.col as usize];
-            *cell = Cell {
-                ch,
-                fr: fg.0,
-                fg: fg.1,
-                fb: fg.2,
-                br: bg.0,
-                bg: bg.1,
-                bb: bg.2,
-                bold: u8::from(self.bold),
-            };
+        if self.pending {
+            self.col = 0;
+            self.index();
         }
-        self.col = self.col.saturating_add(1);
+        let (fg, bg) = (self.fg, self.bg);
+        let at = self.cursor_index();
+        self.cells[at] = Cell {
+            ch,
+            fr: fg.0,
+            fg: fg.1,
+            fb: fg.2,
+            br: bg.0,
+            bg: bg.1,
+            bb: bg.2,
+            bold: u8::from(self.bold),
+        };
+        if self.col < self.last_col() {
+            self.col += 1;
+        } else if self.autowrap {
+            self.pending = true;
+        }
     }
 
-    /// LF moves down only. A PTY with ONLCR (the default) already turned the
-    /// program's newline into CR LF, so a bare LF in a log is a TUI moving down.
-    fn line_feed(&mut self) {
-        self.row = self.row.saturating_add(1);
-    }
-
-    /// Blank cells [from, to), row-major and clamped to the grid. Erased cells
-    /// take the current background, as on terminals with back-colour erase.
+    /// Blank cells [from, to) of storage, which callers keep within one row.
+    /// Erased cells take the current background, as on terminals with
+    /// back-colour erase.
     fn erase(&mut self, from: usize, to: usize) {
         let to = to.min(self.cells.len());
         if from < to {
@@ -257,51 +417,85 @@ impl Screen {
         }
     }
 
-    /// The cursor as a cell index.
+    /// The cursor as a cell index in storage.
     fn cursor_index(&self) -> usize {
-        self.row.max(0) as usize * self.cols + self.column() as usize
+        self.line(self.row).start + self.col
     }
 
     fn csi(&mut self, final_byte: u8, p: &Params) {
-        // Cursor moves treat a missing or zero count as 1.
-        let count = |index: usize| p.get(index, 1).max(1).min(i32::MAX as u32) as i32;
+        // Counts treat a missing or zero parameter as 1. The grid is at most
+        // 500x200, so capping at u16 changes nothing and keeps sums small.
+        let count = |index: usize| p.get(index, 1).clamp(1, u32::from(u16::MAX)) as usize;
+        // Everything but SGR, REP and the cursor save/restore pair cancels a
+        // pending wrap; EL and ED then erase from the last column.
+        if !matches!(final_byte, b'm' | b'b' | b's' | b'u') {
+            self.pending = false;
+        }
+        // CUU and CUD stop at a margin when the cursor starts on its side of it.
+        let up_limit = if self.row >= self.top { self.top } else { 0 };
+        let down_limit = if self.row <= self.bottom { self.bottom } else { self.last_row() };
         match final_byte {
             b'H' | b'f' => {
-                self.row = (count(0) - 1).min(self.last_row());
+                self.go_to_row(count(0));
                 self.col = (count(1) - 1).min(self.last_col());
             }
-            b'A' => self.row = self.row.saturating_sub(count(0)).max(0),
-            b'B' | b'e' => self.row = self.row.saturating_add(count(0)).min(self.last_row()),
-            b'C' | b'a' => self.col = self.col.saturating_add(count(0)).min(self.last_col()),
-            b'D' => self.col = self.column().saturating_sub(count(0)).max(0),
+            b'A' => self.row = self.row.saturating_sub(count(0)).max(up_limit),
+            b'B' | b'e' => self.row = (self.row + count(0)).min(down_limit),
+            b'C' | b'a' => self.col = (self.col + count(0)).min(self.last_col()),
+            b'D' => self.col = self.col.saturating_sub(count(0)),
             // CNL, CPL: down or up, to column 0.
-            b'E' => (self.row, self.col) = (self.row.saturating_add(count(0)).min(self.last_row()), 0),
-            b'F' => (self.row, self.col) = (self.row.saturating_sub(count(0)).max(0), 0),
+            b'E' => (self.row, self.col) = ((self.row + count(0)).min(down_limit), 0),
+            b'F' => (self.row, self.col) = (self.row.saturating_sub(count(0)).max(up_limit), 0),
             // CHA, HPA: column; VPA: row.
             b'G' | b'`' => self.col = (count(0) - 1).min(self.last_col()),
-            b'd' => self.row = (count(0) - 1).min(self.last_row()),
+            b'd' => self.go_to_row(count(0)),
             b'I' => self.tab_forward(count(0)),
             b'Z' => self.tab_back(count(0)),
             b'g' => match p.get(0, 0) {
                 0 => {
-                    let col = self.column() as usize;
+                    let col = self.col;
                     self.tabs[col] = false;
                 }
                 3 => self.tabs.fill(false),
                 _ => {}
             },
-            b'@' => self.insert_chars(count(0) as usize),
-            b'P' => self.delete_chars(count(0) as usize),
+            b'@' => self.insert_chars(count(0)),
+            b'P' => self.delete_chars(count(0)),
             b'X' => {
-                if let Some(line) = self.row_range() {
-                    let at = line.start + self.column() as usize;
-                    self.erase(at, (at + count(0) as usize).min(line.end));
+                let at = self.cursor_index();
+                let end = self.line(self.row).end;
+                self.erase(at, (at + count(0)).min(end));
+            }
+            // IL, DL: only inside the margins; the column stays (as in tmux).
+            b'L' if self.in_margins() => {
+                let n = count(0);
+                self.scroll_down(self.row, self.bottom, n);
+            }
+            b'M' if self.in_margins() => {
+                let n = count(0);
+                self.scroll_up(self.row, self.bottom, n);
+            }
+            // SU, SD scroll the region; CSI T with more parameters is mouse tracking.
+            b'S' => self.scroll_up(self.top, self.bottom, count(0)),
+            b'T' if p.len <= 1 => self.scroll_down(self.top, self.bottom, count(0)),
+            // DECSTBM: set the margins, ignored unless top < bottom; homes the cursor.
+            b'r' => {
+                // 0 or missing means the default: the first and the last row.
+                let top = p.get(0, 1).max(1) as usize - 1;
+                let bottom = match p.get(1, 0) as usize {
+                    0 => self.rows,
+                    b => b.min(self.rows),
+                } - 1;
+                if top < bottom {
+                    (self.top, self.bottom) = (top, bottom);
+                    self.home();
                 }
             }
-            // REP: repeat the last printed character. Capped at a screenful.
+            // REP: repeat the last printed character, wrapping like any other
+            // printing. Capped at a screenful.
             b'b' => {
                 if let Some(ch) = self.last {
-                    for _ in 0..(count(0) as usize).min(self.cols * self.rows) {
+                    for _ in 0..count(0).min(self.cols * self.rows) {
                         self.print_mapped(ch);
                     }
                 }
@@ -311,25 +505,43 @@ impl Screen {
             b'u' => self.restore_cursor(),
             b'm' => self.sgr(p),
             b'J' => {
-                let len = self.cells.len();
+                let (cursor, line) = (self.cursor_index(), self.line(self.row));
                 match p.get(0, 0) {
-                    0 => self.erase(self.cursor_index(), len),
-                    1 => self.erase(0, self.cursor_index() + 1),
-                    2 | 3 => self.erase(0, len),
+                    0 => {
+                        self.erase(cursor, line.end);
+                        self.erase_rows(self.row + 1, self.rows);
+                    }
+                    1 => {
+                        self.erase_rows(0, self.row);
+                        self.erase(line.start, cursor + 1);
+                    }
+                    2 => self.erase_rows(0, self.rows),
+                    // 3 clears only the scrollback, which termshot does not keep.
                     _ => {}
                 }
             }
-            b'K' if (0..self.rows as i32).contains(&self.row) => {
-                let start = self.row as usize * self.cols;
+            b'K' => {
+                let line = self.line(self.row);
                 let cursor = self.cursor_index();
                 match p.get(0, 0) {
-                    0 => self.erase(cursor, start + self.cols),
-                    1 => self.erase(start, cursor + 1),
-                    2 => self.erase(start, start + self.cols),
+                    0 => self.erase(cursor, line.end),
+                    1 => self.erase(line.start, cursor + 1),
+                    2 => self.erase(line.start, line.end),
                     _ => {}
                 }
             }
             _ => {}
+        }
+    }
+
+    /// DECSET / DECRST: CSI ? Pm h and CSI ? Pm l.
+    fn private_csi(&mut self, final_byte: u8, p: &Params) {
+        if matches!(final_byte, b'h' | b'l') {
+            for k in 0..p.len {
+                if let Some(mode) = p.list[k].value {
+                    self.set_mode(mode, final_byte == b'h');
+                }
+            }
         }
     }
 
@@ -504,16 +716,16 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
                 }
                 b'7' => screen.save_cursor(),
                 b'8' => screen.restore_cursor(),
-                // IND, NEL; RI moves up (scrolling is #6).
-                b'D' => screen.line_feed(),
+                // IND, NEL, RI.
+                b'D' => screen.index(),
                 b'E' => {
                     screen.col = 0;
-                    screen.line_feed();
+                    screen.index();
                 }
-                b'M' => screen.row = (screen.row - 1).max(0),
+                b'M' => screen.reverse_index(),
                 // HTS: set a tab stop at the cursor.
                 b'H' => {
-                    let col = screen.column() as usize;
+                    let col = screen.col;
                     screen.tabs[col] = true;
                 }
                 // RIS: full reset.
@@ -542,7 +754,7 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
         }
         i += 1;
     }
-    screen.cells
+    screen.into_cells()
 }
 
 /// Parse one CSI sequence whose parameters start at i, apply it, and return
@@ -552,7 +764,8 @@ fn csi(screen: &mut Screen, data: &[u8], mut i: usize) -> usize {
     let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
     let mut current = Param::default();
     let mut any = false;
-    let mut private = false;
+    // The private marker (one of < = > ?) when the sequence starts with one.
+    let mut private = None;
     let mut intermediate = false;
     let mut malformed = false;
     let start = i;
@@ -569,15 +782,19 @@ fn csi(screen: &mut Screen, data: &[u8], mut i: usize) -> usize {
                 current = Param { value: None, sub: c == b':' };
                 any = true;
             }
-            b'<'..=b'?' if i == start => private = true,
+            b'<'..=b'?' if i == start => private = Some(c),
             b'<'..=b'?' => malformed = true,
             0x20..=0x2f => intermediate = true,
             0x40..=0x7e => {
                 if any {
                     params.push(current);
                 }
-                if !(private || intermediate || malformed) {
-                    screen.csi(c, &params);
+                if !(intermediate || malformed) {
+                    match private {
+                        None => screen.csi(c, &params),
+                        Some(b'?') => screen.private_csi(c, &params),
+                        Some(_) => {}
+                    }
                 }
                 return i + 1;
             }

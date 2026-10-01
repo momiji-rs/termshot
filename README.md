@@ -22,12 +22,20 @@ We built it for TUI work, where the thing to check is what the screen ends up sh
 - **Bug reports.** Ask for the raw log, not a phone photo of the screen, and render it at your
   end.
 
-It is not a terminal emulator. It draws one final frame, not an animation. Colors come from
-24-bit SGR (`38;2;r;g;b` and `48;2;r;g;b`, or the `38:2::r:g:b` colon form); scrolling and the
-16 and 256 color palettes are not interpreted yet ([#6](https://github.com/solcreek/termshot/issues/6)).
-Cursor movement, tabs, erase, insert and delete of characters, save and restore of the cursor,
-DEC line drawing (`ESC ( 0`), and escape and string sequences are parsed the way xterm does. A bare LF moves down without returning to column 0. Logs captured
+It draws one final frame, not an animation. The screen model follows xterm and covers:
+
+- autowrap, scrolling, scroll regions, inserting and deleting lines, and the alternate screen
+  that full-screen programs use (`vi`, `less`)
+- cursor movement, tabs, erase, inserting and deleting characters, saving the cursor, and DEC
+  line drawing (`ESC ( 0`)
+
+`tests/vt/` checks this against tmux, on short cases and on recorded `ls`, `less` and `vi`
+sessions. A bare LF moves down without returning to column 0, as in a terminal; logs captured
 through a PTY already have CR LF.
+
+Colors come from 24-bit SGR (`38;2;r;g;b`, `48;2;r;g;b`, or the `38:2::r:g:b` colon form). The
+16 and 256 color palettes and double-width characters are not interpreted yet
+([#6](https://github.com/solcreek/termshot/issues/6)).
 
 ## Speed
 
