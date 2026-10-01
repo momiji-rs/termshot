@@ -7,7 +7,7 @@
 //!   golden             check
 //!   golden --update    rewrite tests/goldens.txt
 
-use std::ffi::{CStr, CString};
+use std::ffi::{c_char, CStr, CString};
 use std::fs;
 use std::process::{Command, ExitCode};
 
@@ -39,8 +39,8 @@ const CASES: [(&str, &str, u32, u32); 18] = [
 ];
 
 extern "C" {
-    fn png_read_rgba(path: *const i8, width: *mut i32, height: *mut i32) -> *mut u8;
-    fn png_read_error() -> *const i8;
+    fn png_read_rgba(path: *const c_char, width: *mut i32, height: *mut i32) -> *mut u8;
+    fn png_read_error() -> *const c_char;
     fn png_read_free(pixels: *mut u8);
 }
 
