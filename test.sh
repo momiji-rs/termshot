@@ -36,6 +36,12 @@ cc tests/deflate_diff.c src/deflate.c -o "$out/deflate_diff" -O2 -Wno-deprecated
     -I third_party/stb ${CFLAGS:-}
 "$out/deflate_diff"
 
+echo "== box drawing and blocks"
+# shellcheck disable=SC2086
+cc tests/boxes.c src/deflate.c -o "$out/boxes" -O2 -ffp-contract=off -Wno-deprecated-declarations \
+    -I src -I third_party/stb -lm ${CFLAGS:-}
+"$out/boxes"
+
 echo "== cli"
 fail=0
 expect() {

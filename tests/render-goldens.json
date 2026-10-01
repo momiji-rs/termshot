@@ -2,12 +2,12 @@
   "reply-sent": {
     "width": 2200,
     "height": 1440,
-    "rgb_sha256": "592e2b2b2c84544b6aa5c4ce7a8e5c863587ecbf1bd9a4b94778b5ca59ddd1cd"
+    "rgb_sha256": "b4e1b4b3e37aaf71791c57d1981f545badc66df77b94e91163abf2aa894e50c3"
   },
   "draft-ready": {
     "width": 2200,
     "height": 1440,
-    "rgb_sha256": "68a78567459380539ea500528611425c5202d721cf3216e7049352dca43f1e97"
+    "rgb_sha256": "cd7d1b590663620d931f8f6c7260e6c9505df4d4c8b259f5a3797ea9069d65d1"
   },
   "blank": {
     "width": 220,
@@ -17,32 +17,32 @@
   "geometry-1": {
     "width": 12,
     "height": 4,
-    "rgb_sha256": "f5d15331424f753810df93818035ec09c437a272c28293958457e13df0d19574"
+    "rgb_sha256": "908a9633e1719286ce503cd1777cbfd306bbcd824ebea01458fee77663f9febf"
   },
   "geometry-9": {
     "width": 48,
     "height": 18,
-    "rgb_sha256": "e2e6f181d800fd677dc0714d5f2efadcca540a0264442ef8b4ad37682f7a719b"
+    "rgb_sha256": "c653e6d84b1072a48f75c6da265ab51ef4b9a0e6eff97992b94d9a9754798ff4"
   },
   "geometry-24": {
     "width": 132,
     "height": 48,
-    "rgb_sha256": "83ba3baf3b68003e37df93cc3621a5403a62529440d36490de8b4fc5290442af"
+    "rgb_sha256": "3b83e0bc448c718124265b0703ba7890c93a58dce8f224d346c804dc141dc430"
   },
   "geometry-47.5": {
     "width": 264,
     "height": 96,
-    "rgb_sha256": "f2ce1586fe79779635833ef6dde3a744101c0f4cbb64f60df965dce304f78c5e"
+    "rgb_sha256": "d26a8e3f2d75f7ac309dd5a436da0884f0fde5e2a765f2a6bb49610886b602b1"
   },
   "geometry-128": {
     "width": 696,
     "height": 256,
-    "rgb_sha256": "c390b494e402ccf8589b7c78f3db639ae9346205f796d09f2361b48fbb8f3033"
+    "rgb_sha256": "3dd86e155db327318080e2541ff5ae570a399b9e6f814366be5ed7cbc37cb754"
   },
   "geometry-255": {
     "width": 1392,
     "height": 510,
-    "rgb_sha256": "3a0eb2cb3ce43baeb0275c03355e3b3b15ebb4e0a1244652c0a85e401020190c"
+    "rgb_sha256": "3fc914cb0c659d1a6992a177c8ce8764c93a68fb3c5f26c98fa52e155a699179"
   },
   "clipping": {
     "width": 110,
@@ -77,6 +77,6 @@
   "random-colors": {
     "width": 360,
     "height": 240,
-    "rgb_sha256": "568718af94c39d2e72228c90d12ab5bc7ed674aa56afa630e84d9d2721ac81f2"
+    "rgb_sha256": "ca47380bc947d030ccdb2c595b1082db17e29f46c191e8a9b620e7aacb25e5b1"
   }
 }
