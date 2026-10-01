@@ -80,9 +80,9 @@ def fixtures():
     yield 'blank', b'', 24, 20, 8
     geometry = '─│┌┐└┘╭╮╯╰▀█'
     for px in (1, 9, 24, 47.5, 128, 255):
-        yield f'geometry-{px}', (geometry + '\n\x1b[1m' + geometry).encode(), px, 12, 2
-    yield 'clipping', 'jÁǺfW\n\x1b[1mÁjWWÁ\x1b[2;5Hf'.encode(), 48, 5, 2
-    yield 'cache-collisions', (('AŁɁ́' * 30 + '\n') * 4).encode(), 16, 120, 4
+        yield f'geometry-{px}', (geometry + '\r\n\x1b[1m' + geometry).encode(), px, 12, 2
+    yield 'clipping', 'jÁǺfW\r\n\x1b[1mÁjWWÁ\x1b[2;5Hf'.encode(), 48, 5, 2
+    yield 'cache-collisions', (('AŁɁ́' * 30 + '\r\n') * 3 + 'AŁɁ́' * 30).encode(), 16, 120, 4
     yield 'missing-glyphs', ('\U0010ffff\u0378 A' * 20).encode(), 16, 100, 1
     yield 'csi', b'ABC\x1b[2;3Hxyz\x1b[s\x1b[1;1HX\x1b[uY\x1b[2D!\x1b[K\x1b[1Bz\x1b[2Cq\x1b[1Aw\x1b[0m.', 20, 20, 5
     yield 'sgr', b'\x1b[1;38;2;250;10;90;48;2;5;30;70mBold\x1b[22mThin\x1b[39;49mReset\x1b[m.\x1b[38;2;8mA\x1b[38;;1mB\x1b[;mC', 24, 40, 2
