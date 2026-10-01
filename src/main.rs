@@ -5,6 +5,9 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
+mod font;
+#[cfg(test)]
+mod draw_tests;
 #[cfg(test)]
 mod tests;
 
@@ -48,7 +51,8 @@ extern "C" {
         cells: *const Cell,
         cols: i32,
         rows: i32,
-        font_path: *const i8,
+        // A font that passed font::check, followed by its zero padding.
+        font: *const u8,
         font_size: f64,
         out_path: *const i8,
     ) -> i32;
@@ -490,14 +494,14 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let cells = parse(&data, cols, rows);
-    let font = match std::ffi::CString::new(font_path) {
+    let font = match font::load(&font_path) {
         Ok(font) => font,
-        Err(_) => {
-            eprintln!("font path contains a nul");
-            return ExitCode::from(2);
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(1);
         }
     };
+    let cells = parse(&data, cols, rows);
     let out = match std::ffi::CString::new(dest) {
         Ok(out) => out,
         Err(_) => {
