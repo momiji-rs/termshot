@@ -6,6 +6,14 @@
 //! made up) are covered by zero padding after the data.
 
 use std::fs;
+use std::time::Instant;
+
+#[derive(Default)]
+pub struct LoadTimings {
+    pub read_ms: f64,
+    pub check_ms: f64,
+    pub padding_ms: f64,
+}
 
 /// stb's reads past a checked table start reach at most about 460 KB
 /// (format 4: 16-bit offset + 2 * (16-bit codepoint delta) past 6 * 16-bit
@@ -20,6 +28,20 @@ const MAX_COMPOSITE_DEPTH: u32 = 16;
 pub fn load(path: &str) -> Result<Vec<u8>, String> {
     let data = fs::read(path).map_err(|error| format!("{path}: {error}"))?;
     prepare(data).map_err(|reason| format!("{path}: not a usable TrueType font: {reason}"))
+}
+
+/// The same validation as load(), with separate clocks only when requested.
+pub fn load_profiled(path: &str, timings: &mut LoadTimings) -> Result<Vec<u8>, String> {
+    let started = Instant::now();
+    let mut data = fs::read(path).map_err(|error| format!("{path}: {error}"))?;
+    timings.read_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let started = Instant::now();
+    check(&data).map_err(|reason| format!("{path}: not a usable TrueType font: {reason}"))?;
+    timings.check_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let started = Instant::now();
+    data.resize(data.len() + PADDING, 0);
+    timings.padding_ms = started.elapsed().as_secs_f64() * 1000.0;
+    Ok(data)
 }
 
 /// Check font bytes and append the padding.
@@ -178,8 +200,11 @@ fn check_glyph(glyph: &[u8], glyph_count: usize) -> Result<Vec<usize>, String> {
         let points = last_end.map_or(0, |end| end as usize + 1);
         let instructions = u16_at(glyph, 10 + 2 * contours)? as usize;
         let mut at = 12 + 2 * contours + instructions;
-        let mut flags = Vec::with_capacity(points);
-        while flags.len() < points {
+        // Each flag run contributes fixed X/Y byte counts. Sum the runs
+        // directly instead of allocating and rereading a flag per point.
+        let mut remaining = points;
+        let mut coordinates = 0usize;
+        while remaining > 0 {
             let flag = *glyph.get(at).ok_or("flags run past the glyph")?;
             at += 1;
             let mut repeat = 1;
@@ -187,13 +212,13 @@ fn check_glyph(glyph: &[u8], glyph_count: usize) -> Result<Vec<usize>, String> {
                 repeat += *glyph.get(at).ok_or("flags run past the glyph")? as usize;
                 at += 1;
             }
-            for _ in 0..repeat.min(points - flags.len()) {
-                flags.push(flag);
-            }
+            let run = repeat.min(remaining);
+            let x = if flag & 2 != 0 { 1 } else if flag & 16 != 0 { 0 } else { 2 };
+            let y = if flag & 4 != 0 { 1 } else if flag & 32 != 0 { 0 } else { 2 };
+            coordinates += run * (x + y);
+            remaining -= run;
         }
-        let xs: usize = flags.iter().map(|f| if f & 2 != 0 { 1 } else if f & 16 != 0 { 0 } else { 2 }).sum();
-        let ys: usize = flags.iter().map(|f| if f & 4 != 0 { 1 } else if f & 32 != 0 { 0 } else { 2 }).sum();
-        if at + xs + ys > glyph.len() {
+        if at + coordinates > glyph.len() {
             return Err("coordinates run past the glyph".into());
         }
         Ok(Vec::new())
@@ -311,4 +336,35 @@ fn check_cmap(cmap: &[u8], glyph_count: usize) -> Result<(), String> {
         format => return Err(format!("cmap format {format} is not supported")),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn simple(flags: &[u8], coordinates: usize) -> Vec<u8> {
+        let mut glyph = vec![0; 14];
+        glyph[1] = 1; // one contour
+        glyph[11] = 2; // three points; no instructions
+        glyph.extend_from_slice(flags);
+        glyph.resize(glyph.len() + coordinates, 0);
+        glyph
+    }
+
+    #[test]
+    fn repeated_flags_require_all_coordinate_bytes() {
+        // Three repeated points: short X, long Y => nine coordinate bytes.
+        assert!(check_glyph(&simple(&[0x0a, 2], 9), 1).is_ok());
+        assert!(check_glyph(&simple(&[0x0a, 2], 8), 1).is_err());
+        // A truncated repeat count is not an empty coordinate run.
+        assert!(check_glyph(&simple(&[0x0a], 0), 1).is_err());
+    }
+
+    #[test]
+    fn mixed_flags_and_zero_coordinate_runs_are_checked() {
+        // Both coordinates unchanged, both short, both long: 0 + 2 + 4 bytes.
+        assert!(check_glyph(&simple(&[0x30, 0x06, 0x00], 6), 1).is_ok());
+        assert!(check_glyph(&simple(&[0x30, 0x06, 0x00], 5), 1).is_err());
+        assert!(check_glyph(&simple(&[0x38, 2], 0), 1).is_ok());
+    }
 }

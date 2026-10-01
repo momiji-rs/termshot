@@ -1,7 +1,7 @@
 /* zlib compressor for stb_image_write, plugged in with STBIW_ZLIB_COMPRESS.
    It is stb's own algorithm (public domain, Sean Barrett) and writes the same
-   bytes; tests/deflate_diff.c checks that against stock stb. Only the search
-   is faster (both implementations also fix an invalid empty-input stream):
+   bytes; tests/deflate_diff.c checks that against stock stb. Search, emission,
+   and checksums are faster (both implementations fix an invalid empty stream):
 
    - stb scans a hash bucket oldest first and keeps a match when d >= best, so
      among equally long matches the newest wins. Scanning newest first and
@@ -15,12 +15,25 @@
    - Matches are compared 8 bytes at a time.
    - Buckets are fixed arrays of positions instead of per-bucket stretchy
      buffers; stb caps a bucket at 2*quality entries anyway.
-   - Adler-32 is unrolled. Allocation failures return NULL, as stb's
+   - Length/distance indexes are calculated directly and each token is emitted
+     in one operation. Independent Adler-32 reductions permit vectorization.
+   - Allocation failures return NULL, as stb's
      hash-table failure does, instead of asserting. */
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include "deflate_profile.h"
+
+_Thread_local DeflateProfile termshot_deflate_profile;
+
+static double profile_now(void) {
+    if (!termshot_deflate_profile.enabled) return 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
+}
 
 #define ZHASH 16384
 #define WINDOW 32768
@@ -30,7 +43,7 @@ typedef struct {
     unsigned char *p;
     size_t n, cap;
     int failed;
-    unsigned int bitbuf;
+    uint64_t bitbuf;
     int bitcount;
 } Out;
 
@@ -50,7 +63,7 @@ static void put_byte(Out *o, unsigned char b) {
 }
 
 static void add_bits(Out *o, unsigned int code, int bits) {
-    o->bitbuf |= code << o->bitcount;
+    o->bitbuf |= (uint64_t)code << o->bitcount;
     o->bitcount += bits;
     while (o->bitcount >= 8) {
         put_byte(o, (unsigned char)o->bitbuf);
@@ -66,6 +79,17 @@ static unsigned int bitrev(unsigned int code, int bits) {
         code >>= 1;
     }
     return r;
+}
+
+/* Callers pass nonzero values. Compilers map this to a leading-zero count. */
+static unsigned int log2_floor(unsigned int value) {
+#if defined(__GNUC__) || defined(__clang__)
+    return 31u - (unsigned int)__builtin_clz(value);
+#else
+    unsigned int result = 0;
+    while (value >>= 1) result++;
+    return result;
+#endif
 }
 
 /* Fixed Huffman codes, as in stb. */
@@ -114,17 +138,18 @@ static uint32_t adler32(const unsigned char *d, size_t len) {
     while (len) {
         size_t block = len < 5552 ? len : 5552; /* largest n with no 32-bit overflow */
         len -= block;
-        while (block >= 8) {
-            s1 += d[0]; s2 += s1;
-            s1 += d[1]; s2 += s1;
-            s1 += d[2]; s2 += s1;
-            s1 += d[3]; s2 += s1;
-            s1 += d[4]; s2 += s1;
-            s1 += d[5]; s2 += s1;
-            s1 += d[6]; s2 += s1;
-            s1 += d[7]; s2 += s1;
-            d += 8;
-            block -= 8;
+        /* Independent reductions let the compiler vectorize the weighted
+           checksum; expanding s2's recurrence gives 32*s1 + sum((32-k)*d[k]). */
+        while (block >= 32) {
+            uint32_t sum = 0, weighted = 0;
+            for (unsigned k = 0; k < 32; k++) {
+                sum += d[k];
+                weighted += (32 - k) * d[k];
+            }
+            s2 += 32 * s1 + weighted;
+            s1 += sum;
+            d += 32;
+            block -= 32;
         }
         while (block--) {
             s1 += *d++;
@@ -137,6 +162,7 @@ static uint32_t adler32(const unsigned char *d, size_t len) {
 }
 
 unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality) {
+    double started = profile_now();
     static const unsigned short lengthc[] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27,
                                              31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 259};
     static const unsigned char lengtheb[] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
@@ -162,6 +188,7 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
     add_bits(&o, 1, 1); /* BFINAL = 1 */
     add_bits(&o, 1, 2); /* BTYPE = 1, fixed Huffman */
 
+    double allocated = profile_now();
     int i = 0;
     while (i < data_len - 3) {
         unsigned int h = zhash(data + i);
@@ -207,14 +234,28 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
         if (bestpos >= 0) {
             int d = i - bestpos;
             int j;
-            for (j = 0; best > lengthc[j + 1] - 1; j++) {
+            if (best <= 10) j = best - 3;
+            else if (best == MAX_MATCH) j = 28;
+            else {
+                unsigned int magnitude = log2_floor((unsigned int)best - 3);
+                j = (int)(4 * (magnitude - 1) + (((unsigned int)best - 3) >> (magnitude - 2) & 3));
             }
-            huff(&o, j + 257);
-            if (lengtheb[j]) add_bits(&o, best - lengthc[j], lengtheb[j]);
-            for (j = 0; d > distc[j + 1] - 1; j++) {
+            unsigned int bits = j <= 22 ? 7 : 8;
+            unsigned int code = j <= 22 ? bitrev((unsigned int)j + 1, 7) : bitrev(0xc0u + j - 23, 8);
+            code |= (unsigned int)(best - lengthc[j]) << bits;
+            bits += lengtheb[j];
+            if (d <= 4) j = d - 1;
+            else {
+                unsigned int magnitude = log2_floor((unsigned int)d - 1);
+                j = (int)(2 * magnitude + (((unsigned int)d - 1) >> (magnitude - 1) & 1));
             }
-            add_bits(&o, bitrev(j, 5), 5);
-            if (disteb[j]) add_bits(&o, d - distc[j], disteb[j]);
+            code |= bitrev((unsigned int)j, 5) << bits;
+            bits += 5;
+            code |= (unsigned int)(d - distc[j]) << bits;
+            bits += disteb[j];
+            /* A complete length/distance token fits in 31 bits. The 64-bit
+               accumulator also holds the previous token's trailing bits. */
+            add_bits(&o, code, (int)bits);
             i += best;
         } else {
             huff(&o, data[i]);
@@ -224,6 +265,7 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
     for (; i < data_len; i++) huff(&o, data[i]);
     huff(&o, 256); /* end of block */
     while (o.bitcount) add_bits(&o, 0, 1);
+    double matched = profile_now();
     free(tab);
     free(cnt);
 
@@ -243,6 +285,7 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
         }
     }
 
+    double finalized = profile_now();
     uint32_t adler = adler32(data, (size_t)data_len);
     put_byte(&o, (unsigned char)(adler >> 24));
     put_byte(&o, (unsigned char)(adler >> 16));
@@ -253,5 +296,11 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
         return NULL;
     }
     *out_len = (int)o.n;
+    if (termshot_deflate_profile.enabled) {
+        termshot_deflate_profile.allocate_ms = allocated - started;
+        termshot_deflate_profile.match_emit_ms = matched - allocated;
+        termshot_deflate_profile.finalize_ms = finalized - matched;
+        termshot_deflate_profile.checksum_ms = profile_now() - finalized;
+    }
     return o.p;
 }

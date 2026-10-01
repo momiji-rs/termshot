@@ -113,6 +113,29 @@ impl Screen {
         self.col = self.col.saturating_add(1);
     }
 
+    /// A printable ASCII run shares attributes and stays on the same row.
+    /// Clip once, including runs extending beyond the grid, but advance the
+    /// logical cursor by the entire run just as individual print() calls do.
+    fn print_ascii(&mut self, text: &[u8]) {
+        if (0..self.rows as i32).contains(&self.row) && self.col >= 0 {
+            let start = self.col as usize;
+            let end = start.saturating_add(text.len()).min(self.cols);
+            if start < end {
+                let offset = self.row as usize * self.cols;
+                let mut cell = Cell {
+                    ch: 0, fr: self.fg.0, fg: self.fg.1, fb: self.fg.2,
+                    br: self.bg.0, bg: self.bg.1, bb: self.bg.2,
+                    bold: u8::from(self.bold),
+                };
+                for (dest, byte) in self.cells[offset + start..offset + end].iter_mut().zip(text) {
+                    cell.ch = u32::from(*byte);
+                    *dest = cell;
+                }
+            }
+        }
+        self.col = self.col.saturating_add(i32::try_from(text.len()).unwrap_or(i32::MAX));
+    }
+
     /// LF moves down only. A PTY with ONLCR (the default) already turned the
     /// program's newline into CR LF, so a bare LF in a log is a TUI moving down.
     fn line_feed(&mut self) {
@@ -302,16 +325,26 @@ fn skip_string(data: &[u8], mut i: usize) -> usize {
 
 fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
     let mut screen = Screen::new(cols, rows);
+    // Reuse the fixed parameter buffer across sequences; only len needs resetting.
+    let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
     let mut i = 0;
     while i < data.len() {
         let b = data[i];
+        if (0x20..0x7f).contains(&b) {
+            let start = i;
+            while i < data.len() && (0x20..0x7f).contains(&data[i]) {
+                i += 1;
+            }
+            screen.print_ascii(&data[start..i]);
+            continue;
+        }
         if b == 0x1b {
             let Some(&kind) = data.get(i + 1) else {
                 break;
             };
             i += 2;
             match kind {
-                b'[' => i = csi(&mut screen, data, i),
+                b'[' => i = csi(&mut screen, &mut params, data, i),
                 b']' | b'P' | b'_' | b'^' | b'X' => i = skip_string(data, i),
                 // ESC ( B, ESC ) 0, ESC # 8: intermediates, then one final byte.
                 0x20..=0x2f => {
@@ -353,8 +386,8 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
 /// Parse one CSI sequence whose parameters start at i, apply it, and return
 /// where parsing resumes. C0 controls inside it execute in place; ESC aborts
 /// it and starts the next sequence; CAN and SUB abort it.
-fn csi(screen: &mut Screen, data: &[u8], mut i: usize) -> usize {
-    let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
+fn csi(screen: &mut Screen, params: &mut Params, data: &[u8], mut i: usize) -> usize {
+    params.len = 0;
     let mut current = Param::default();
     let mut any = false;
     let mut private = false;
@@ -382,7 +415,7 @@ fn csi(screen: &mut Screen, data: &[u8], mut i: usize) -> usize {
                     params.push(current);
                 }
                 if !(private || intermediate || malformed) {
-                    screen.csi(c, &params);
+                    screen.csi(c, params);
                 }
                 return i + 1;
             }
@@ -500,7 +533,13 @@ fn main() -> ExitCode {
     };
     let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
     let font_started = Instant::now();
-    let font = match font::load(&font_path) {
+    let mut font_timings = font::LoadTimings::default();
+    let loaded = if profile {
+        font::load_profiled(&font_path, &mut font_timings)
+    } else {
+        font::load(&font_path)
+    };
+    let font = match loaded {
         Ok(font) => font,
         Err(error) => {
             eprintln!("{error}");
@@ -529,7 +568,7 @@ fn main() -> ExitCode {
         )
     };
     if profile {
-        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", started.elapsed().as_secs_f64() * 1000.0, data.len());
+        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0, data.len());
     }
     ExitCode::from(code as u8)
 }

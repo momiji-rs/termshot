@@ -41,6 +41,31 @@ fn prints_and_advances() {
 }
 
 #[test]
+fn ascii_runs_clip_without_losing_cursor_or_attributes() {
+    let g = grid(b"\x1b[1;38;2;1;2;3mabcdefghijklmnop\x1b[1D!\x1b[22m\r\nplain");
+    assert_eq!(line(&g, 0), "abcdefgh!j");
+    assert_eq!(line(&g, 1), "plain     ");
+    assert_eq!(fg(at(&g, 0, 8)), (1, 2, 3));
+    assert_eq!(at(&g, 0, 8).bold, 1);
+    assert_eq!(at(&g, 1, 0).bold, 0);
+}
+
+#[test]
+fn ascii_runs_stop_at_unicode_and_control_boundaries() {
+    let g = grid("abéCD\x7fEF\rZ\nXY\x1b[2;8H!".as_bytes());
+    assert_eq!(line(&g, 0), "ZbéCDEF   ");
+    assert_eq!(line(&g, 1), " XY    !  ");
+}
+
+#[test]
+fn csi_parameters_do_not_leak_across_sequences_or_aborts() {
+    let g = grid(b"\x1b[38;2;1;2;3mA\x1b[mB\x1b[3;9Hc\x1b[123;456\x1b[Hd\x1b[;He");
+    assert_eq!(line(&g, 0), "eB        ");
+    assert_eq!(fg(at(&g, 0, 1)), DEFAULT_FG);
+    assert_eq!(at(&g, 2, 8).ch, 'c' as u32);
+}
+
+#[test]
 fn cr_and_lf() {
     let g = grid(b"ab\r\ncd\rX");
     assert_eq!(line(&g, 0), "ab        ");

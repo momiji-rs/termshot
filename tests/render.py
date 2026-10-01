@@ -117,7 +117,10 @@ def main():
             profile = {key: value for record in records for key, value in record.items()}
             assert all(math.isfinite(v) and v >= 0 for v in profile.values())
             assert profile['font_load_ms'] > 0
-            assert 'font_read_ms' not in profile
+            assert profile['font_read_ms'] >= 0
+            assert profile['font_check_ms'] >= 0
+            assert profile['font_padding_ms'] >= 0
+            assert sum(profile[k] for k in ('font_read_ms', 'font_check_ms', 'font_padding_ms')) <= profile['font_load_ms'] + 0.00001
             assert profile['png_bytes'] == out.stat().st_size
             assert profile['input_bytes'] == src.stat().st_size
             assert profile['pixel_bytes'] == actual[name]['width'] * actual[name]['height'] * 3

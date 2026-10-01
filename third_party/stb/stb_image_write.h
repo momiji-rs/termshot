@@ -1130,14 +1130,60 @@ static void stbiw__encode_png_line(unsigned char *pixels, int stride_bytes, int 
 #ifndef STBIW_PNG_PROFILE
 #define STBIW_PNG_PROFILE(stage) ((void)0)
 #endif
+// termshot: borrow scanlines that already include their PNG filter bytes.
+// This separates packaging from filtering so the renderer can fill them in place.
+static unsigned char *stbiw__write_png_from_filtered(unsigned char *filt, int x, int y, int n, int *out_len)
+{
+   int ctype[5] = { -1, 0, 4, 2, 6 };
+   unsigned char sig[8] = { 137,80,78,71,13,10,26,10 };
+   unsigned char *out, *o, *zlib;
+   int zlen;
+   STBIW_PNG_PROFILE(1);
+   zlib = stbi_zlib_compress(filt, y*( x*n+1), &zlen, stbi_write_png_compression_level);
+   STBIW_PNG_PROFILE(2);
+   if (!zlib) return 0;
+
+   // each tag requires 12 bytes of overhead
+   out = (unsigned char *) STBIW_MALLOC(8 + 12+13 + 12+zlen + 12);
+   if (!out) { STBIW_FREE(zlib); return 0; }
+   *out_len = 8 + 12+13 + 12+zlen + 12;
+
+   o=out;
+   STBIW_MEMMOVE(o,sig,8); o+= 8;
+   stbiw__wp32(o, 13); // header length
+   stbiw__wptag(o, "IHDR");
+   stbiw__wp32(o, x);
+   stbiw__wp32(o, y);
+   *o++ = 8;
+   *o++ = STBIW_UCHAR(ctype[n]);
+   *o++ = 0;
+   *o++ = 0;
+   *o++ = 0;
+   stbiw__wpcrc(&o,13);
+
+   stbiw__wp32(o, zlen);
+   stbiw__wptag(o, "IDAT");
+   STBIW_MEMMOVE(o, zlib, zlen);
+   o += zlen;
+   STBIW_FREE(zlib);
+   stbiw__wpcrc(&o, zlen);
+
+   stbiw__wp32(o,0);
+   stbiw__wptag(o, "IEND");
+   stbiw__wpcrc(&o,0);
+
+   STBIW_ASSERT(o == out + *out_len);
+   STBIW_PNG_PROFILE(3);
+
+   return out;
+}
+
 STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int stride_bytes, int x, int y, int n, int *out_len)
 {
    int force_filter = stbi_write_force_png_filter;
-   int ctype[5] = { -1, 0, 4, 2, 6 };
-   unsigned char sig[8] = { 137,80,78,71,13,10,26,10 };
-   unsigned char *out,*o, *filt, *zlib;
+   unsigned char *out, *filt;
    signed char *line_buffer;
-   int j,zlen;
+   int j;
 
    if (stride_bytes == 0)
       stride_bytes = x * n;
@@ -1179,44 +1225,8 @@ STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int s
       STBIW_MEMMOVE(filt+j*(x*n+1)+1, line_buffer, x*n);
    }
    STBIW_FREE(line_buffer);
-   STBIW_PNG_PROFILE(1);
-   zlib = stbi_zlib_compress(filt, y*( x*n+1), &zlen, stbi_write_png_compression_level);
+   out = stbiw__write_png_from_filtered(filt, x, y, n, out_len);
    STBIW_FREE(filt);
-   STBIW_PNG_PROFILE(2);
-   if (!zlib) return 0;
-
-   // each tag requires 12 bytes of overhead
-   out = (unsigned char *) STBIW_MALLOC(8 + 12+13 + 12+zlen + 12);
-   if (!out) { STBIW_FREE(zlib); return 0; }
-   *out_len = 8 + 12+13 + 12+zlen + 12;
-
-   o=out;
-   STBIW_MEMMOVE(o,sig,8); o+= 8;
-   stbiw__wp32(o, 13); // header length
-   stbiw__wptag(o, "IHDR");
-   stbiw__wp32(o, x);
-   stbiw__wp32(o, y);
-   *o++ = 8;
-   *o++ = STBIW_UCHAR(ctype[n]);
-   *o++ = 0;
-   *o++ = 0;
-   *o++ = 0;
-   stbiw__wpcrc(&o,13);
-
-   stbiw__wp32(o, zlen);
-   stbiw__wptag(o, "IDAT");
-   STBIW_MEMMOVE(o, zlib, zlen);
-   o += zlen;
-   STBIW_FREE(zlib);
-   stbiw__wpcrc(&o, zlen);
-
-   stbiw__wp32(o,0);
-   stbiw__wptag(o, "IEND");
-   stbiw__wpcrc(&o,0);
-
-   STBIW_ASSERT(o == out + *out_len);
-   STBIW_PNG_PROFILE(3);
-
    return out;
 }
 

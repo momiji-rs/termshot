@@ -5,7 +5,8 @@ Headless: no window, no terminal, no crates.io dependencies. The same source bui
 on macOS and Linux and writes the same pixels.
 
 termshot reads bytes a terminal already emitted, rebuilds the cell grid, and paints it.
-The screenshot below, 2200×1440, takes about 20 ms from start to finished file.
+The screenshot below, 2200×1440, takes about 9 ms from start to finished file
+on the Apple M3 measured below.
 
 ![A 100 by 30 demo inbox, rasterized from examples/reply-sent.pty](docs/reply-sent.png)
 
@@ -31,17 +32,27 @@ through a PTY already have CR LF.
 
 ## Speed
 
-A frame costs milliseconds, which is cheap enough to render one per test or on every save of a watch loop. Times are for one whole run of `./termshot examples/reply-sent.pty out.png <font> <px>`: process start, parse, rasterize, PNG encode, and the file write.
+Times below cover one whole run of `./termshot examples/reply-sent.pty out.png <font> <px>`:
+process start, input, font validation, parse, rasterize, PNG encode, and file close.
 
-| px | image | PNG | Apple M3, macOS | Ryzen 7 8745HS, Linux |
-|---|---|---|---|---|
-| 24 | 1100×720 | 79 KB | 10 ms | 8 ms |
-| 48 | 2200×1440 | 206 KB | 21 ms | 15 ms |
-| 128 | 5800×3840 | 955 KB | 94 ms | 64 ms |
+| px | Image | PNG | Apple M3 median | p95 |
+| --- | --- | ---: | ---: | ---: |
+| 24 | 1100×720 | 79 KB | 5.34 ms | 5.98 ms |
+| 48 | 2200×1440 | 206 KB | 9.07 ms | 12.55 ms |
+| 128 | 5800×3840 | 955 KB | 31.76 ms | 34.38 ms |
 
-Each figure is the mean of 40 runs, measured 2026-10-01: hyperfine on macOS, a shell loop on Linux.
+Measured on macOS 26.3.1 with 24 GiB RAM, 2026-10-01: three warmups and 30 runs
+per case, interleaved with baseline binaries. These are warm-filesystem measurements
+on a shared machine. Current Linux timings have not been measured.
 
-Nearly all the time goes to PNG compression. termshot uses stb_image_write's deflate with a faster match search (`src/deflate.c`). The search writes exactly the bytes stock stb would for nonempty input, and `./test.sh` compares both implementations on 3000 inputs. An empty-input defect is fixed in both implementations. Together with RGB output and no PNG row filter, a run is 7.7× faster than one that uses stock stb at px 48, and 13× faster at px 128. Rendering the cells themselves takes a few milliseconds.
+The latest round reduces median latency by 1.22–2.26× across 12 workloads against
+main at `255fa3a`, with byte-identical PNGs. Painting directly into PNG scanlines
+removes a full image copy and buffer; faster DEFLATE emission, Adler-32, and CRC-32
+reduce encoding work. ASCII parsing, font validation, and repeated rounded corners
+also improve. At 48 px, measured peak RSS falls from 22.67 to 13.52 MiB.
+
+See [performance measurements](docs/performance.md) for all workloads, per-stage
+timings, raw samples, memory usage, validation, and remaining bottlenecks.
 
 ## Build
 
@@ -98,9 +109,10 @@ SANITIZE=1 ./tests/run.sh
 ```
 
 Profiling writes two `termshot-profile` JSON records to stderr, covering input,
-parsing, font loading, drawing, PNG filtering, compression, and writing. The
-benchmark measures ordinary CLI runs separately from profiling and records raw
-samples, median, p95, output size, and toolchain details. Python 3 is needed only
+parsing, font reading/validation/padding, drawing, PNG filtering, compression
+allocation/matching/emission/checksum, PNG packaging, and writing. The benchmark
+measures ordinary CLI runs separately from profiling and optional peak RSS runs;
+it records raw samples, median, p95, output size and hash, and toolchain details. Python 3 is needed only
 for benchmarks and tests.
 
 See [performance measurements](docs/performance.md) for the before/after results,

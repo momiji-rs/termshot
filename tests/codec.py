@@ -18,5 +18,5 @@ with subprocess.Popen([sys.argv[1]], stdout=subprocess.PIPE) as process:
             assert decoded == raw, (kind, count, raw_size)
             count += 1
     assert process.wait() == 0
-assert count == 4976, count
+assert count == 5024, count
 print(f'{count} codec round trips passed')
