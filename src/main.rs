@@ -3,6 +3,7 @@
 
 use std::env;
 use std::fs;
+use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -56,6 +57,7 @@ extern "C" {
         font: *const u8,
         font_size: f64,
         out_path: *const i8,
+        verbose: i32,
     ) -> i32;
 }
 
@@ -900,110 +902,267 @@ fn utf8_at(data: &[u8]) -> (u32, usize) {
     (cp, need + 1)
 }
 
+const VERSION: &str = "0.1.0";
+
+/// The default font, built in so a lone binary works.
+static EMBEDDED_FONT: &[u8] = include_bytes!("../third_party/jetbrains-mono/JetBrainsMono-Regular.ttf");
 
 const USAGE: &str = "\
-usage: termshot <pty.log> <out.png> <font.ttf> [px] [cols] [rows]
+usage: termshot [options] <log> <out.png>
+       termshot <log> <out.png> <font.ttf> [px] [cols] [rows]
 
-px is the font pixel height (default 48). cols and rows are the capture
-grid (default 100 30). SGR reset uses foreground #dbe7f7 on background #111823.
+Render the final screen of a terminal log (raw PTY output) as a PNG.
+Use - as <log> to read stdin, and - as <out.png> to write stdout.
+
+options:
+  -f, --font FILE   TrueType font (default: built-in JetBrains Mono)
+  -p, --px N        font pixel height, above 0 and below 256 (default 48)
+  -s, --size CxR    grid size in columns x rows, up to 500x200 (default 100x30)
+  -v, --verbose     print the cell and image size to stderr
+  -h, --help        show this help
+  -V, --version     show the version
+
+The second form is the original one and still works.
+An SGR reset uses foreground #dbe7f7 on background #111823.
+
+exit status: 0 done; 1 a file could not be read or written, or the font is
+unusable; 2 bad arguments, including an image over 134217728 pixels.
 ";
+
+/// A rendering request from the command line.
+struct Options {
+    log: String,
+    out: String,
+    font: Option<String>,
+    px: f64,
+    cols: usize,
+    rows: usize,
+    verbose: bool,
+}
+
+enum Command {
+    Render(Options),
+    Help,
+    Version,
+}
+
+fn parse_px(value: &str) -> Result<f64, String> {
+    match value.parse::<f64>() {
+        Ok(px) if px > 0.0 && px < 256.0 => Ok(px),
+        _ => Err(format!("px must be a number above 0 and below 256, not {value:?}")),
+    }
+}
+
+fn parse_count(value: &str, what: &str, max: usize) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(n) if (1..=max).contains(&n) => Ok(n),
+        _ => Err(format!("{what} must be a whole number from 1 to {max}, not {value:?}")),
+    }
+}
+
+fn parse_size(value: &str) -> Result<(usize, usize), String> {
+    let (cols, rows) = value
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("size must look like 120x40, not {value:?}"))?;
+    Ok((parse_count(cols, "cols", 500)?, parse_count(rows, "rows", 200)?))
+}
+
+/// The value of an option: attached (--px=48, -p48) or the next argument.
+fn option_value(
+    name: &str,
+    attached: Option<String>,
+    rest: &mut impl Iterator<Item = String>,
+) -> Result<String, String> {
+    attached.or_else(|| rest.next()).ok_or_else(|| format!("{name} needs a value"))
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let mut positional = Vec::new();
+    let (mut font, mut px, mut size, mut verbose) = (None, None, None, false);
+    let mut options_done = false;
+    while let Some(arg) = args.next() {
+        if options_done || arg == "-" || !arg.starts_with('-') {
+            positional.push(arg);
+            continue;
+        }
+        if arg == "--" {
+            options_done = true;
+            continue;
+        }
+        // --name=value, -xVALUE, or a bare option.
+        let (name, attached) = if let Some(long) = arg.strip_prefix("--") {
+            match long.split_once('=') {
+                Some((name, value)) => (format!("--{name}"), Some(value.to_string())),
+                None => (arg.clone(), None),
+            }
+        } else if let Some((split, _)) = arg.char_indices().nth(2) {
+            (arg[..split].to_string(), Some(arg[split..].to_string()))
+        } else {
+            (arg.clone(), None)
+        };
+        match name.as_str() {
+            "-h" | "--help" | "-V" | "--version" | "-v" | "--verbose" if attached.is_some() => {
+                return Err(format!("{name} takes no value"));
+            }
+            "-h" | "--help" => return Ok(Command::Help),
+            "-V" | "--version" => return Ok(Command::Version),
+            "-v" | "--verbose" => verbose = true,
+            "-f" | "--font" => font = Some(option_value(&name, attached, &mut args)?),
+            "-p" | "--px" => px = Some(parse_px(&option_value(&name, attached, &mut args)?)?),
+            "-s" | "--size" => size = Some(parse_size(&option_value(&name, attached, &mut args)?)?),
+            _ => return Err(format!("unknown option {arg}")),
+        }
+    }
+    let mut positional = positional.into_iter();
+    let (Some(log), Some(out)) = (positional.next(), positional.next()) else {
+        return Err("expected <log> and <out.png>".into());
+    };
+    // The original form: <log> <out.png> <font.ttf> [px] [cols] [rows].
+    if let Some(path) = positional.next() {
+        if font.is_some() {
+            return Err("the font is given twice".into());
+        }
+        font = Some(path);
+    }
+    if let Some(value) = positional.next() {
+        if px.is_some() {
+            return Err("px is given twice".into());
+        }
+        px = Some(parse_px(&value)?);
+    }
+    let legacy_cols = positional.next().map(|v| parse_count(&v, "cols", 500)).transpose()?;
+    let legacy_rows = positional.next().map(|v| parse_count(&v, "rows", 200)).transpose()?;
+    if let Some(extra) = positional.next() {
+        return Err(format!("unexpected argument {extra:?}"));
+    }
+    if size.is_some() && legacy_cols.is_some() {
+        return Err("the grid size is given twice".into());
+    }
+    let (cols, rows) = size.unwrap_or((
+        legacy_cols.unwrap_or(DEFAULT_COLS),
+        legacy_rows.unwrap_or(DEFAULT_ROWS),
+    ));
+    Ok(Command::Render(Options { log, out, font, px: px.unwrap_or(48.0), cols, rows, verbose }))
+}
+
+/// Print an error the way every failure path reports it, and pick the status.
+fn fail(code: u8, message: impl std::fmt::Display) -> ExitCode {
+    eprintln!("termshot: {message}");
+    ExitCode::from(code)
+}
 
 fn main() -> ExitCode {
     let started = Instant::now();
     let profile = env::var_os("TERMSHOT_PROFILE").is_some();
-    let mut args = env::args().skip(1);
-    let Some(src) = args.next() else {
-        eprintln!("{USAGE}");
+    if env::args().len() == 1 {
+        eprint!("{USAGE}");
         return ExitCode::from(2);
-    };
-    if src == "-h" || src == "--help" {
-        println!("{USAGE}");
-        return ExitCode::from(0);
     }
-    let Some(dest) = args.next() else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(font_path) = args.next() else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let px: f64 = match args.next() {
-        Some(value) => match value.parse() {
-            Ok(px) if px > 0.0 && px < 256.0 => px,
-            _ => {
-                eprintln!("px must be a number in (0, 256)");
-                return ExitCode::from(2);
-            }
-        },
-        None => 48.0,
-    };
-    let cols: usize = match args.next() {
-        Some(value) => match value.parse() {
-            Ok(cols) if (1..=500).contains(&cols) => cols,
-            _ => {
-                eprintln!("cols must be a number in 1..=500");
-                return ExitCode::from(2);
-            }
-        },
-        None => DEFAULT_COLS,
-    };
-    let rows: usize = match args.next() {
-        Some(value) => match value.parse() {
-            Ok(rows) if (1..=200).contains(&rows) => rows,
-            _ => {
-                eprintln!("rows must be a number in 1..=200");
-                return ExitCode::from(2);
-            }
-        },
-        None => DEFAULT_ROWS,
-    };
-    let read_started = Instant::now();
-    let data = match fs::read(&src) {
-        Ok(data) => data,
-        Err(error) => {
-            eprintln!("{src}: {error}");
-            return ExitCode::from(1);
+    let options = match parse_args(env::args().skip(1)) {
+        Ok(Command::Render(options)) => options,
+        Ok(Command::Help) => {
+            print!("{USAGE}");
+            return ExitCode::SUCCESS;
         }
+        Ok(Command::Version) => {
+            println!("termshot {VERSION}");
+            return ExitCode::SUCCESS;
+        }
+        Err(message) => return fail(2, format!("{message}\nRun termshot --help for usage.")),
+    };
+
+    // Refuse to pour a PNG into a terminal, and find an unwritable output
+    // before doing any work. A file this run created is removed on failure.
+    let mut created = None;
+    let out_path = if options.out == "-" {
+        if std::io::stdout().is_terminal() {
+            return fail(2, "refusing to write a PNG to a terminal; redirect stdout or name a file");
+        }
+        "/dev/stdout".to_string()
+    } else {
+        let existed = std::path::Path::new(&options.out).exists();
+        if let Err(error) = fs::OpenOptions::new().write(true).create(true).open(&options.out) {
+            return fail(1, format!("{}: {error}", options.out));
+        }
+        if !existed {
+            created = Some(options.out.clone());
+        }
+        options.out.clone()
+    };
+    let cleanup = |code: u8, message: String| {
+        if let Some(path) = &created {
+            let _ = fs::remove_file(path);
+        }
+        fail(code, message)
+    };
+
+    let read_started = Instant::now();
+    let data = if options.log == "-" {
+        let mut data = Vec::new();
+        std::io::stdin().read_to_end(&mut data).map(|_| data)
+    } else {
+        fs::read(&options.log)
+    };
+    let data = match data {
+        Ok(data) => data,
+        Err(error) => return cleanup(1, format!("{}: {error}", options.log)),
     };
     let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
+
     let font_started = Instant::now();
     let mut font_timings = font::LoadTimings::default();
-    let loaded = if profile {
-        font::load_profiled(&font_path, &mut font_timings)
-    } else {
-        font::load(&font_path)
+    let loaded = match &options.font {
+        Some(path) if profile => font::load_profiled(path, &mut font_timings),
+        Some(path) => font::load(path),
+        // Built in: nothing to read; the check (and padding) is all the work.
+        None => {
+            let checked = Instant::now();
+            let font = font::prepare(EMBEDDED_FONT.to_vec()).map_err(|reason| format!("built-in font: {reason}"));
+            font_timings.check_ms = checked.elapsed().as_secs_f64() * 1000.0;
+            font
+        }
     };
     let font = match loaded {
         Ok(font) => font,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::from(1);
-        }
+        Err(error) => return cleanup(1, error),
     };
     let font_load_ms = font_started.elapsed().as_secs_f64() * 1000.0;
+
     let parse_started = Instant::now();
-    let cells = parse(&data, cols, rows);
+    let cells = parse(&data, options.cols, options.rows);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
-    let out = match std::ffi::CString::new(dest) {
-        Ok(out) => out,
-        Err(_) => {
-            eprintln!("output path contains a nul");
-            return ExitCode::from(2);
-        }
+    let Ok(out) = std::ffi::CString::new(out_path) else {
+        return cleanup(2, "output path contains a nul byte".into());
     };
     let code = unsafe {
         draw_png(
             cells.as_ptr(),
-            cols as i32,
-            rows as i32,
+            options.cols as i32,
+            options.rows as i32,
             font.as_ptr(),
-            px,
+            options.px,
             out.as_ptr(),
+            i32::from(options.verbose),
         )
     };
     if profile {
         eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0, data.len());
     }
-    ExitCode::from(code as u8)
+    // draw.c has already said what went wrong.
+    match code {
+        0 => ExitCode::SUCCESS,
+        2 => {
+            if let Some(path) = &created {
+                let _ = fs::remove_file(path);
+            }
+            ExitCode::from(2)
+        }
+        _ => {
+            if let Some(path) = &created {
+                let _ = fs::remove_file(path);
+            }
+            ExitCode::from(1)
+        }
+    }
 }

@@ -88,15 +88,31 @@ Tests marked `#[ignore]` describe the correct behaviour for a known bug and name
 ## Run
 
 ```sh
-./termshot examples/reply-sent.pty reply-sent.png \
-  third_party/jetbrains-mono/JetBrainsMono-Regular.ttf 48
+./termshot examples/reply-sent.pty reply-sent.png
 ```
 
-`48` is the font pixel height. Columns and rows default to 100 and 30, which is the size of the sample logs. Pass them after the pixel height when the capture used another size:
+The binary carries JetBrains Mono, so it needs no other files. The grid defaults to 100×30
+and the font pixel height to 48. Give the size the capture used:
 
 ```sh
-./termshot session.pty session.png path/to/font.ttf 48 120 40
+./termshot --size 120x40 session.pty session.png
+./termshot --px 24 --font path/to/font.ttf session.pty session.png
+cat session.pty | ./termshot - - > screen.png   # stdin to stdout
 ```
+
+| option | |
+|---|---|
+| `-f`, `--font FILE` | TrueType font (default: built-in JetBrains Mono) |
+| `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
+| `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
+| `-v`, `--verbose` | print the cell and image size to stderr |
+| `-h`, `--help`, `-V`, `--version` | |
+
+It prints nothing on success. Exit status is 0 when done; 1 when a file can't be read or written,
+or the font is unusable; and 2 for bad arguments, including an image over 2^27 pixels. termshot
+won't write a PNG to a terminal. A failed run removes the output file it created.
+
+The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, still works.
 
 `M` is snapped to a whole number of pixels so box-drawing joints meet. `─ │ ┌ ┐ └ ┘ ╭ ╮ ╯ ╰ ▀ █` are painted as geometry. Other characters come from the font. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
 

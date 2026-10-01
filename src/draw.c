@@ -230,16 +230,18 @@ static void blend(Canvas *cv, int dx, int dy, const unsigned char *bm, int gw, i
 /* Paint cells with the font in font (a TrueType file the caller has already
    checked; see src/font.rs) and write a PNG. The canvas and cache are local;
    timing hooks use thread-local state so concurrent renders remain independent.
-   Returns 0, 1 for an unusable font, or 2 for an image or write failure. */
+   verbose prints the cell and image size to stderr.
+   Returns 0; 1 for an unusable font; 2 when the image is too large or memory
+   runs out; 3 when the PNG cannot be written. */
 int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, double font_px,
-             const char *out_path) {
+             const char *out_path, int verbose) {
     profiling = getenv("TERMSHOT_PROFILE") != NULL;
     termshot_deflate_profile.enabled = profiling;
     double started = now_ms();
     stbtt_fontinfo font;
     int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
     if (offset < 0 || !stbtt_InitFont(&font, ttf, offset)) {
-        fprintf(stderr, "font init failed\n");
+        fprintf(stderr, "termshot: font init failed\n");
         return 1;
     }
 
@@ -248,7 +250,7 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
     int adv = 0, lsb = 0;
     stbtt_GetCodepointHMetrics(&font, 'M', &adv, &lsb);
     if (adv <= 0 || ascent <= descent) {
-        fprintf(stderr, "font metrics unusable\n");
+        fprintf(stderr, "termshot: font metrics unusable\n");
         return 1;
     }
     float scale = stbtt_ScaleForPixelHeight(&font, (float)font_px);
@@ -263,11 +265,13 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
     int baseline = (int)(ascent * scale + 0.5f) + (cell_h - body) / 2;
     long long width = (long long)cols * cell_w;
     long long height = (long long)rows * cell_h;
-    fprintf(stderr, "advance %d units scale %.5f cell %dx%d baseline %d image %lldx%lld\n",
-            adv, scale, cell_w, cell_h, baseline, width, height);
+    if (verbose) {
+        fprintf(stderr, "advance %d units scale %.5f cell %dx%d baseline %d image %lldx%lld\n",
+                adv, scale, cell_w, cell_h, baseline, width, height);
+    }
     /* stb_image_write sizes its buffers with int: (width*BPP+1)*height must not wrap. */
     if (width * height > MAX_PIXELS) {
-        fprintf(stderr, "image %lldx%lld is over %d pixels; lower px, cols or rows\n",
+        fprintf(stderr, "termshot: image %lldx%lld is over %d pixels; lower px, cols or rows\n",
                 width, height, MAX_PIXELS);
         return 2;
     }
@@ -280,7 +284,7 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
                      .w = (int)width, .h = (int)height, .stride = stride};
     Canvas *cv = &canvas;
     if (!cv->filtered) {
-        fprintf(stderr, "out of memory for a %lldx%lld image\n", width, height);
+        fprintf(stderr, "termshot: out of memory for a %lldx%lld image\n", width, height);
         return 2;
     }
 
@@ -332,7 +336,7 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
                             for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
                             free(cv->filtered);
                             cv->px = NULL;
-                            fprintf(stderr, "glyph allocation failed\n");
+                            fprintf(stderr, "termshot: glyph allocation failed\n");
                             return 2;
                         }
                         stbtt_MakeGlyphBitmap(&font, entry->bitmap, entry->w, entry->h, entry->w, scale, scale, glyph);
@@ -383,8 +387,8 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
             encoded - foreground, written - encoded, now_ms() - written, glyphs, cache_hits, png_len, (size_t)(width * height * BPP));
     }
     if (!ok) {
-        fprintf(stderr, "png write failed: %s\n", out_path);
-        return 2;
+        fprintf(stderr, "termshot: png write failed: %s\n", out_path);
+        return 3;
     }
     return 0;
 }

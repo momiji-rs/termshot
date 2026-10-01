@@ -9,7 +9,7 @@ const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 
 fn render(cells: &[Cell], cols: usize, rows: usize, font: &[u8], px: f64, out: &str) -> i32 {
     let out = CString::new(out).unwrap();
-    unsafe { draw_png(cells.as_ptr(), cols as i32, rows as i32, font.as_ptr(), px, out.as_ptr()) }
+    unsafe { draw_png(cells.as_ptr(), cols as i32, rows as i32, font.as_ptr(), px, out.as_ptr(), 0) }
 }
 
 /// The mutation tests/fontfuzz used to find stb_truetype crashes, ported

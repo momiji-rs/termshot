@@ -7,6 +7,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A built-in font: `termshot <log> <out.png>` needs no other files.
+- Options `--font`, `--px`, `--size COLSxROWS`, `--verbose`, `--help` and
+  `--version`, with `-` for stdin and stdout. The original positional form
+  still works. Unknown options and extra arguments are errors.
+- The screen model of a VT terminal, following xterm: autowrap, scrolling,
+  scroll regions, inserting and deleting lines, origin mode, and the
+  alternate screen (1049, 1047, 47, 1048).
+- Cursor and editing sequences: tabs and tab stops, BS, CHA/HPA/VPA,
+  HPR/VPR, CNL/CPL, ICH/DCH/ECH, REP, DECSC/DECRC with attributes,
+  IND/NEL/RI, RIS, and DEC Special Graphics line drawing.
+- `tests/vt/`: VT cases and recorded `ls`, `less` and `vi` sessions,
+  checked against tmux.
 - Optional `TERMSHOT_PROFILE` JSON timings for input, parsing, font loading,
   rendering, PNG encoding, and file writing.
 - Reproducible benchmarks with raw samples, median and p95 timings, output sizes,
@@ -19,6 +31,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Quiet by default: the metrics line moved behind `--verbose`. Exit status
+  is 1 for unreadable or unwritable files and unusable fonts, and 2 for bad
+  arguments. termshot refuses to write a PNG to a terminal, and removes the
+  output file it created when a run fails.
+- A bare LF moves down without returning to column 0, as in a terminal.
+- PNGs are RGB with no row filter: the same pixels, about 23% smaller.
+- A faster deflate that writes stb's exact bytes, and a faster parser for
+  large logs: about 18 ms for a 2200×1440 frame instead of about 140 ms.
+- CFF (`.otf`) fonts are rejected; TrueType fonts are checked before use.
 - Reuse rasterized glyphs within each render, copy repeated background scanlines,
   and clip glyph bounds before blending to reduce drawing work.
 - Reject DEFLATE candidates that cannot improve the current match while
@@ -35,6 +56,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A heap overflow in stb_image_write for very large images (#2).
+- Pixels differing between macOS and Linux at some sizes (#3).
+- Out-of-bounds reads in stb_truetype on damaged fonts, and a
+  use-after-free when rendering on several threads (#8).
+- Parser bugs that corrupted ordinary output: stray characters after
+  `ESC ( B`, erase modes, `ESC [2J` homing the cursor, `38;5;n` turning
+  on bold, unterminated strings, invalid UTF-8 (#5).
 - Report PNG short writes and close failures instead of reporting success.
 - Produce a valid zlib stream for empty input in both compression implementations.
 - Release compressed data if allocating the final PNG buffer fails.
