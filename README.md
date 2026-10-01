@@ -5,6 +5,7 @@ Headless: no window, no terminal, no crates.io dependencies. The same source bui
 on macOS and Linux and writes the same pixels.
 
 termshot reads bytes a terminal already emitted, rebuilds the cell grid, and paints it.
+The screenshot below, 2200×1440, takes about 20 ms from start to finished file.
 
 ![A 100 by 30 demo inbox, rasterized from examples/reply-sent.pty](docs/reply-sent.png)
 
@@ -25,7 +26,22 @@ It is not a terminal emulator. It draws one final frame, not an animation. Color
 24-bit SGR (`38;2;r;g;b` and `48;2;r;g;b`); scrolling and the 16 and 256 color palettes are
 not interpreted.
 
+## Speed
+
+A frame costs milliseconds, which is cheap enough to render one per test or on every save of a watch loop. Times are for one whole run of `./termshot examples/reply-sent.pty out.png <font> <px>`: process start, parse, rasterize, PNG encode, and the file write.
+
+| px | image | PNG | Apple M3, macOS | Ryzen 7 8745HS, Linux |
+|---|---|---|---|---|
+| 24 | 1100×720 | 79 KB | 10 ms | 8 ms |
+| 48 | 2200×1440 | 206 KB | 21 ms | 15 ms |
+| 128 | 5800×3840 | 955 KB | 94 ms | 64 ms |
+
+Each figure is the mean of 40 runs, measured 2026-10-01: hyperfine on macOS, a shell loop on Linux.
+
+Nearly all the time goes to PNG compression. termshot uses stb_image_write's deflate with a faster match search (`src/deflate.c`). The search writes exactly the bytes stock stb would, and `./test.sh` checks that on 3000 inputs. Together with RGB output and no PNG row filter, a run is 7.7× faster than one that uses stock stb at px 48, and 13× faster at px 128. Rendering the cells themselves takes a few milliseconds.
+
 ## Build
+
 
 A C compiler and rustc 1.70 or newer are enough.
 
