@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import random
 import re
+import resource
 import statistics
 import subprocess
 import tempfile
@@ -23,6 +24,8 @@ def workloads(directory):
     cases = [(name, ROOT / f'examples/{name}.pty', 48, 100, 30)
              for name in ('reply-sent', 'draft-ready')]
     cases.extend((f'reply-{px}px', ROOT / 'examples/reply-sent.pty', px, 100, 30) for px in (24, 128))
+    cases.extend((f'real-{name}', ROOT / f'tests/vt/real/{name}.log', 48, 80, 24)
+                 for name in ('shell', 'less', 'vi'))
     rng = random.Random(13)
     colors = ''.join(
         f'\x1b[{row + 1};{col + 1}H\x1b[38;2;{rng.randrange(256)};{rng.randrange(256)};{rng.randrange(256)};48;2;{rng.randrange(256)};{rng.randrange(256)};{rng.randrange(256)}m{chr(rng.randrange(33, 127))}'
@@ -47,9 +50,19 @@ def workloads(directory):
 
 def summary(values):
     values = sorted(values)
-    return {'median': statistics.median(values),
+    return {'mean': statistics.mean(values), 'median': statistics.median(values),
             'p95': values[math.ceil(len(values) * .95) - 1],
             'min': values[0], 'max': values[-1]}
+
+
+def paired_speedup(reference, candidate):
+    """Ratio for each interleaved round; bootstrap whole pairs, without trimming."""
+    ratios = [a / b for a, b in zip(reference, candidate)]
+    rng = random.Random(42)
+    estimates = sorted(statistics.median(rng.choices(ratios, k=len(ratios)))
+                       for _ in range(2000))
+    return {'median': statistics.median(ratios),
+            'bootstrap_95pct': [estimates[49], estimates[1949]], 'samples': ratios}
 
 
 def main():
@@ -61,40 +74,52 @@ def main():
     p.add_argument('--case', action='append')
     p.add_argument('--memory-runs', type=int, default=0, help='separate peak-RSS runs using /usr/bin/time')
     p.add_argument('--verify-identical', action='store_true', help='require byte-identical PNGs across binaries')
+    p.add_argument('--reference', help='binary label for paired speedup estimates')
+    p.add_argument('--seed', type=int, default=0, help='seed for interleaved execution order')
     args = p.parse_args()
     if args.runs < 1 or args.warmups < 0 or args.memory_runs < 0:
         p.error('runs must be positive; warmups and memory-runs must be nonnegative')
     binaries = dict(item.split('=', 1) for item in args.binary)
+    if args.reference and args.reference not in binaries:
+        p.error('reference must name one of the binary labels')
     report = {'platform': platform.platform(), 'machine': platform.machine(),
               'timestamp_utc': datetime.now(timezone.utc).isoformat(),
               'binary_sha256': {label: hashlib.sha256(Path(path).read_bytes()).hexdigest() for label, path in binaries.items()},
               'toolchain': {tool: subprocess.check_output([tool, '--version'], text=True).splitlines()[0] for tool in ('rustc', 'cc', 'python3')},
               'runs': args.runs, 'warmups': args.warmups,
               'memory_runs': args.memory_runs, 'verify_identical': args.verify_identical,
+              'seed': args.seed, 'reference': args.reference,
+              'font_sha256': hashlib.sha256(FONT.read_bytes()).hexdigest(),
+              'load_average_start': os.getloadavg(),
               'binaries': binaries, 'cases': {}}
     if platform.system() == 'Darwin':
         report['cpu'] = subprocess.check_output(['sysctl', '-n', 'machdep.cpu.brand_string'], text=True).strip()
         report['ram_bytes'] = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True))
     env = dict(os.environ)
     env.pop('TERMSHOT_PROFILE', None)
-    rng = random.Random(0)
+    rng = random.Random(args.seed)
     with tempfile.TemporaryDirectory(prefix='termshot-bench-') as tmp:
         directory = Path(tmp)
         for name, src, px, cols, rows in workloads(directory):
             if args.case and name not in args.case:
                 continue
             samples = {label: [] for label in binaries}
+            cpu_samples = {label: [] for label in binaries}
             profiles = {label: [] for label in binaries}
             for run in range(-args.warmups, args.runs):
                 labels = list(binaries)
                 rng.shuffle(labels)
                 for label in labels:
                     command = [str(Path(binaries[label]).resolve()), str(src), str(directory / f'{label}.png'), str(FONT), str(px), str(cols), str(rows)]
+                    before = resource.getrusage(resource.RUSAGE_CHILDREN)
                     start = time.perf_counter_ns()
                     subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                     elapsed = (time.perf_counter_ns() - start) / 1e6
+                    after = resource.getrusage(resource.RUSAGE_CHILDREN)
                     if run >= 0:
                         samples[label].append(elapsed)
+                        cpu_samples[label].append(1000 * (after.ru_utime + after.ru_stime
+                                                          - before.ru_utime - before.ru_stime))
             # Interleave the separate profile runs too, avoiding batch-order drift.
             for _ in range(args.runs):
                 labels = list(binaries)
@@ -128,14 +153,22 @@ def main():
                 keys = profiles[label][0].keys()
                 report['cases'][name][label] = {
                     'wall_ms': summary(samples[label]), 'wall_samples_ms': samples[label],
+                    'child_cpu_ms': summary(cpu_samples[label]),
+                    'child_cpu_samples_ms': cpu_samples[label],
                     'profile': {key: summary([s[key] for s in profiles[label]]) for key in keys},
                     'profile_samples': profiles[label],
                     'png_bytes': (directory / f'{label}.png').stat().st_size,
                     'png_sha256': hashes[label],
                     'peak_rss_bytes': summary(rss[label]) if rss[label] else None,
                     'peak_rss_samples_bytes': rss[label],
+                    'workload': {'px': px, 'cols': cols, 'rows': rows,
+                                 'input_sha256': hashlib.sha256(src.read_bytes()).hexdigest()},
                 }
+                if args.reference and label != args.reference:
+                    report['cases'][name][label]['paired_wall_speedup'] = paired_speedup(samples[args.reference], samples[label])
+                    report['cases'][name][label]['paired_cpu_speedup'] = paired_speedup(cpu_samples[args.reference], cpu_samples[label])
                 print(f'{name:12} {label:12} median={statistics.median(samples[label]):8.2f} ms p95={summary(samples[label])["p95"]:8.2f} ms', flush=True)
+    report['load_average_end'] = os.getloadavg()
     args.output.write_text(json.dumps(report, indent=2) + '\n')
 
 

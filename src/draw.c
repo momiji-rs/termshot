@@ -56,7 +56,9 @@ _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 /* 2^27 pixels keeps the 3-byte rows plus filter bytes near 384 MiB, well under INT_MAX. */
 #define MAX_PIXELS (1 << 27)
 
-/* Bounded per-render cache. Bold and colors reuse the same coverage bitmap. */
+/* Bounded per-render cache. Bold and colors reuse the same coverage bitmap.
+   1024 slots avoid thrashing on mixed Unicode screens (800 distinct codepoints
+   in the benchmark), while keeping metadata to 48 KiB on 64-bit builds. */
 typedef struct {
     uint32_t cp;
     /* wide is part of the key: a wide glyph is centered over two cells. shift
@@ -65,7 +67,7 @@ typedef struct {
     int valid, wide, missing, shift, ix0, iy0, w, h;
     unsigned char *bitmap;
 } Glyph;
-#define GLYPH_CACHE_SIZE 256
+#define GLYPH_CACHE_SIZE 1024
 
 /* The image being painted. Passed explicitly so draw_png is reentrant. */
 typedef struct {

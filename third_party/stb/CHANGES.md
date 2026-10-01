@@ -23,6 +23,8 @@ for each of the stock and custom compressors, including all PNG filters,
 boundaries, Adler-32 block boundaries, random bytes, and repeated runs. It also
 checks PNG chunk CRCs and zlib Adler-32 trailers, and compares the renderer's CRC
 with stb for aligned and unaligned inputs.
+`tests/deflate_alloc.c` also injects failures at each allocation in the custom
+compressor, checking termination and cleanup, including pending output bits.
 Run `SANITIZE=1 ./tests/run.sh`
 after changes. `./test.sh` additionally compares both compressors byte for byte
 on 3,000 seeded inputs. Renderer pixel hashes provide end-to-end checks on macOS

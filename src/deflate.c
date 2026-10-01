@@ -12,7 +12,7 @@
      skipped when the current one cannot be beaten.
    - Candidates that cannot beat the best length are rejected before comparing
      their prefixes.
-   - Matches are compared 8 bytes at a time.
+   - Matches are compared 16 bytes at a time, with bounded tail loads.
    - Buckets are fixed arrays of positions instead of per-bucket stretchy
      buffers; stb caps a bucket at 2*quality entries anyway.
    - Length/distance indexes are calculated directly and each token is emitted
@@ -65,11 +65,29 @@ static void put_byte(Out *o, unsigned char b) {
 static void add_bits(Out *o, unsigned int code, int bits) {
     o->bitbuf |= (uint64_t)code << o->bitcount;
     o->bitcount += bits;
-    while (o->bitcount >= 8) {
-        put_byte(o, (unsigned char)o->bitbuf);
-        o->bitbuf >>= 8;
-        o->bitcount -= 8;
+    /* At most 31 new bits plus seven trailing bits: reserve four bytes once,
+       then store the little-endian word without a capacity branch per byte.
+       Bytes beyond n are scratch and overwritten by the next token. */
+    if (!o->failed && o->cap - o->n < 4) {
+        size_t cap = o->cap ? o->cap * 2 : 65536;
+        unsigned char *p = (unsigned char *)realloc(o->p, cap);
+        if (!p) {
+            o->failed = 1;
+        } else {
+            o->p = p;
+            o->cap = cap;
+        }
     }
+    unsigned int bytes = (unsigned int)o->bitcount >> 3;
+    uint32_t word = (uint32_t)o->bitbuf;
+    unsigned char packed[4] = {(unsigned char)word, (unsigned char)(word >> 8),
+                              (unsigned char)(word >> 16), (unsigned char)(word >> 24)};
+    if (!o->failed) {
+        memcpy(o->p + o->n, packed, 4);
+        o->n += bytes;
+    }
+    o->bitbuf >>= bytes * 8;
+    o->bitcount &= 7;
 }
 
 static unsigned int bitrev(unsigned int code, int bits) {
@@ -115,7 +133,25 @@ static unsigned int zhash(const unsigned char *d) {
 static int countm(const unsigned char *a, const unsigned char *b, int limit) {
     int i = 0;
 #if (defined(__GNUC__) || defined(__clang__)) && defined(__BYTE_ORDER__)
-    while (i + 8 <= limit) {
+    while (i + 16 <= limit) {
+        uint64_t x0, x1, y0, y1;
+        memcpy(&x0, a + i, 8);
+        memcpy(&y0, b + i, 8);
+        memcpy(&x1, a + i + 8, 8);
+        memcpy(&y1, b + i + 8, 8);
+        uint64_t d0 = x0 ^ y0, d1 = x1 ^ y1;
+        if (d0 | d1) {
+            int offset = d0 ? 0 : 8;
+            uint64_t diff = d0 ? d0 : d1;
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+            return i + offset + (__builtin_ctzll(diff) >> 3);
+#else
+            return i + offset + (__builtin_clzll(diff) >> 3);
+#endif
+        }
+        i += 16;
+    }
+    if (i + 8 <= limit) {
         uint64_t x, y;
         memcpy(&x, a + i, 8);
         memcpy(&y, b + i, 8);

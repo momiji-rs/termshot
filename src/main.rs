@@ -545,8 +545,26 @@ impl Screen {
         let mut cell = self.pen.cell();
         while !text.is_empty() {
             if self.pending {
+                if self.autowrap && self.row == self.bottom {
+                    // Within this uninterrupted run, complete rows older than
+                    // one scrolling region cannot survive. Rotate storage as
+                    // if they were printed, then materialize the surviving rows.
+                    let height = self.bottom + 1 - self.top;
+                    let skip_rows = (text.len() / self.cols).saturating_sub(height);
+                    if skip_rows > 0 {
+                        self.map[self.top..=self.bottom].rotate_left(skip_rows % height);
+                        text = &text[skip_rows * self.cols..];
+                    }
+                }
                 self.col = 0;
-                self.index();
+                if self.row == self.bottom && text.len() >= self.cols {
+                    // The entire incoming row is overwritten below; avoid
+                    // clearing it just before assigning every cell again.
+                    self.pending = false;
+                    self.map[self.top..=self.bottom].rotate_left(1);
+                } else {
+                    self.index();
+                }
             }
             let count = text.len().min(self.cols - self.col);
             let start = self.cursor_index();
@@ -1000,8 +1018,10 @@ fn csi(screen: &mut Screen, params: &mut Params, data: &[u8], mut i: usize) -> u
         let c = data[i];
         match c {
             b'0'..=b'9' => {
-                let digit = u32::from(c - b'0');
-                current.value = Some(current.value.unwrap_or(0).saturating_mul(10).saturating_add(digit));
+                // A u32 times ten plus a digit fits in u64; one clamp preserves
+                // saturating arithmetic without two overflow checks per digit.
+                let value = u64::from(current.value.unwrap_or(0)) * 10 + u64::from(c - b'0');
+                current.value = Some(value.min(u64::from(u32::MAX)) as u32);
                 any = true;
             }
             b';' | b':' => {
@@ -1307,7 +1327,11 @@ fn main() -> ExitCode {
     let font_load_ms = font_started.elapsed().as_secs_f64() * 1000.0;
 
     let parse_started = Instant::now();
+    let input_bytes = data.len();
     let cells = parse(&data, options.cols, options.rows);
+    // Rendering needs only the final grid. Release potentially large logs before
+    // allocating the raster and compressor buffers.
+    drop(data);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
     let Ok(out) = std::ffi::CString::new(out_path) else {
         return cleanup(2, "output path contains a nul byte".into());
@@ -1325,7 +1349,7 @@ fn main() -> ExitCode {
         )
     };
     if profile {
-        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0, data.len());
+        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{input_bytes}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0);
     }
     // draw.c has already said what went wrong.
     match code {
