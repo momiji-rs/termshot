@@ -1,11 +1,29 @@
 # termshot
 
-Replay a captured PTY log into a PNG. No window, no crates.io dependencies.
-The same source builds on macOS and Linux and writes the same pixels.
+Turn raw terminal output (a PTY log with ANSI escapes) into a PNG of the final screen.
+Headless: no window, no terminal, no crates.io dependencies. The same source builds
+on macOS and Linux and writes the same pixels.
 
 termshot reads bytes a terminal already emitted, rebuilds the cell grid, and paints it.
 
 ![A 100 by 30 demo inbox, rasterized from examples/reply-sent.pty](docs/reply-sent.png)
+
+## When to use it
+
+We built it for TUI work, where the thing to check is what the screen ends up showing:
+
+- **Developing a TUI.** Record what the app writes, render it, and look at the frame without
+  opening a terminal. This also works on a remote box or inside an agent loop.
+- **Verifying output.** Same bytes in, same PNG out. Commit a reference image and compare
+  against it in CI to catch layout, color, or box-drawing regressions.
+- **Screenshots for docs, READMEs, and PRs.** You get a crisp image at any pixel height. It
+  doesn't depend on your terminal theme, font, or window size.
+- **Bug reports.** Ask for the raw log, not a phone photo of the screen, and render it at your
+  end.
+
+It is not a terminal emulator. It draws one final frame, not an animation. Colors come from
+24-bit SGR (`38;2;r;g;b` and `48;2;r;g;b`); scrolling and the 16 and 256 color palettes are
+not interpreted.
 
 ## Build
 
