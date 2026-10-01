@@ -1,0 +1,100 @@
+diff --git a/src/deflate.c b/src/deflate.c
+--- a/src/deflate.c
++++ b/src/deflate.c
+@@ -23,0 +24,11 @@
++#include <time.h>
++#include "deflate_profile.h"
++
++_Thread_local DeflateProfile termshot_deflate_profile;
++
++static double profile_now(void) {
++    if (!termshot_deflate_profile.enabled) return 0;
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
++}
+@@ -139,0 +151 @@
++    double started = profile_now();
+@@ -164,0 +177 @@
++    double allocated = profile_now();
+@@ -226,0 +240 @@
++    double matched = profile_now();
+@@ -245,0 +260 @@
++    double finalized = profile_now();
+@@ -255,0 +271,6 @@
++    if (termshot_deflate_profile.enabled) {
++        termshot_deflate_profile.allocate_ms = allocated - started;
++        termshot_deflate_profile.match_emit_ms = matched - allocated;
++        termshot_deflate_profile.finalize_ms = finalized - matched;
++        termshot_deflate_profile.checksum_ms = profile_now() - finalized;
++    }
+diff --git a/src/draw.c b/src/draw.c
+--- a/src/draw.c
++++ b/src/draw.c
+@@ -11,0 +12 @@
++#include "deflate_profile.h"
+@@ -219,0 +221 @@
++    termshot_deflate_profile.enabled = profiling;
+@@ -350 +352,3 @@
+-        fprintf(stderr, "termshot-profile {\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
++        fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
++            termshot_deflate_profile.allocate_ms, termshot_deflate_profile.match_emit_ms,
++            termshot_deflate_profile.finalize_ms, termshot_deflate_profile.checksum_ms,
+diff --git a/src/font.rs b/src/font.rs
+--- a/src/font.rs
++++ b/src/font.rs
+@@ -8,0 +9,8 @@
++use std::time::Instant;
++
++#[derive(Default)]
++pub struct LoadTimings {
++    pub read_ms: f64,
++    pub check_ms: f64,
++    pub padding_ms: f64,
++}
+@@ -22,0 +31,14 @@
++}
++
++/// The same validation as load(), with separate clocks only when requested.
++pub fn load_profiled(path: &str, timings: &mut LoadTimings) -> Result<Vec<u8>, String> {
++    let started = Instant::now();
++    let mut data = fs::read(path).map_err(|error| format!("{path}: {error}"))?;
++    timings.read_ms = started.elapsed().as_secs_f64() * 1000.0;
++    let started = Instant::now();
++    check(&data).map_err(|reason| format!("{path}: not a usable TrueType font: {reason}"))?;
++    timings.check_ms = started.elapsed().as_secs_f64() * 1000.0;
++    let started = Instant::now();
++    data.resize(data.len() + PADDING, 0);
++    timings.padding_ms = started.elapsed().as_secs_f64() * 1000.0;
++    Ok(data)
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -914 +914,7 @@
+-    let font = match font::load(&font_path) {
++    let mut font_timings = font::LoadTimings::default();
++    let loaded = if profile {
++        font::load_profiled(&font_path, &mut font_timings)
++    } else {
++        font::load(&font_path)
++    };
++    let font = match loaded {
+@@ -943 +949 @@
+-        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", started.elapsed().as_secs_f64() * 1000.0, data.len());
++        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0, data.len());
+diff --git a/src/deflate_profile.h b/src/deflate_profile.h
+new file mode 100644
+--- /dev/null
++++ b/src/deflate_profile.h
+@@ -0,0 +1,11 @@
++#ifndef TERMSHOT_DEFLATE_PROFILE_H
++#define TERMSHOT_DEFLATE_PROFILE_H
++
++/* One compressor call per thread. Disabled unless draw_png enables profiling. */
++typedef struct {
++    int enabled;
++    double allocate_ms, match_emit_ms, finalize_ms, checksum_ms;
++} DeflateProfile;
++extern _Thread_local DeflateProfile termshot_deflate_profile;
++
++#endif
