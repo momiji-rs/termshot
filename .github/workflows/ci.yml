@@ -5,27 +5,39 @@ on:
   pull_request:
 
 jobs:
-  build:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: |
+          rustc --version
+          cc --version
+      - name: unit tests, cli checks, pixel goldens
+        run: ./test.sh
+      - name: keep renders on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renders-${{ matrix.os }}
+          path: target/test/
+
+  sanitize:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: draw.c under ASan + UBSan
+        run: SANITIZE=1 ./test.sh
+
+  msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: build and render the sample logs
+      - name: rustc 1.70 (let-else, is_some_and)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential rustc
-          rustc --version
-          cc --version
-          ./build.sh
-          ./termshot examples/reply-sent.pty /tmp/reply-sent.png third_party/jetbrains-mono/JetBrainsMono-Regular.ttf 48
-          ./termshot examples/draft-ready.pty /tmp/draft-ready.png third_party/jetbrains-mono/JetBrainsMono-Regular.ttf 48
-          python3 - << 'PY'
-          import pathlib, struct
-          def size(path):
-              data = pathlib.Path(path).read_bytes()
-              assert data[:8] == b"\x89PNG\r\n\x1a\n", path
-              width, height = struct.unpack(">II", data[16:24])
-              print(path, width, height, len(data))
-              assert (width, height) == (2200, 1440), (width, height)
-          size("/tmp/reply-sent.png")
-          size("/tmp/draft-ready.png")
-          PY
+          rustup toolchain install 1.70.0 --profile minimal
+          RUSTUP_TOOLCHAIN=1.70.0 ./test.sh
