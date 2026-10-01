@@ -1,5 +1,4 @@
 diff --git a/src/deflate.c b/src/deflate.c
-index 1f7f746..3a0a715 100644
 --- a/src/deflate.c
 +++ b/src/deflate.c
 @@ -21,6 +21,17 @@
@@ -20,7 +19,7 @@ index 1f7f746..3a0a715 100644
  
  #define ZHASH 16384
  #define WINDOW 32768
-@@ -137,6 +148,7 @@ static uint32_t adler32(const unsigned char *d, size_t len) {
+@@ -137,6 +148,7 @@
  }
  
  unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality) {
@@ -28,7 +27,7 @@ index 1f7f746..3a0a715 100644
      static const unsigned short lengthc[] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27,
                                               31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 259};
      static const unsigned char lengtheb[] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
-@@ -162,6 +174,7 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
+@@ -162,6 +174,7 @@
      add_bits(&o, 1, 1); /* BFINAL = 1 */
      add_bits(&o, 1, 2); /* BTYPE = 1, fixed Huffman */
  
@@ -36,7 +35,7 @@ index 1f7f746..3a0a715 100644
      int i = 0;
      while (i < data_len - 3) {
          unsigned int h = zhash(data + i);
-@@ -224,6 +237,7 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
+@@ -224,6 +237,7 @@
      for (; i < data_len; i++) huff(&o, data[i]);
      huff(&o, 256); /* end of block */
      while (o.bitcount) add_bits(&o, 0, 1);
@@ -44,7 +43,7 @@ index 1f7f746..3a0a715 100644
      free(tab);
      free(cnt);
  
-@@ -243,6 +257,7 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
+@@ -243,6 +257,7 @@
          }
      }
  
@@ -52,7 +51,7 @@ index 1f7f746..3a0a715 100644
      uint32_t adler = adler32(data, (size_t)data_len);
      put_byte(&o, (unsigned char)(adler >> 24));
      put_byte(&o, (unsigned char)(adler >> 16));
-@@ -253,5 +268,11 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
+@@ -253,5 +268,11 @@
          return NULL;
      }
      *out_len = (int)o.n;
@@ -65,7 +64,6 @@ index 1f7f746..3a0a715 100644
      return o.p;
  }
 diff --git a/src/draw.c b/src/draw.c
-index 8ea783f..aa0e022 100644
 --- a/src/draw.c
 +++ b/src/draw.c
 @@ -9,6 +9,7 @@
@@ -76,7 +74,7 @@ index 8ea783f..aa0e022 100644
  
  /* PNG hooks have no context argument; keep timings independent per thread. */
  static _Thread_local int profiling;
-@@ -217,6 +218,7 @@ __attribute__((constructor)) static void use_no_png_filter(void) {
+@@ -217,6 +218,7 @@
  int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, double font_px,
               const char *out_path) {
      profiling = getenv("TERMSHOT_PROFILE") != NULL;
@@ -84,7 +82,7 @@ index 8ea783f..aa0e022 100644
      double started = now_ms();
      stbtt_fontinfo font;
      int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
-@@ -347,7 +349,9 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, do
+@@ -347,7 +349,9 @@
      free(cv->px);
      cv->px = NULL;
      if (profiling) {
@@ -96,7 +94,6 @@ index 8ea783f..aa0e022 100644
              background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
              png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
 diff --git a/src/font.rs b/src/font.rs
-index 072bb04..f649859 100644
 --- a/src/font.rs
 +++ b/src/font.rs
 @@ -6,6 +6,14 @@
@@ -114,10 +111,12 @@ index 072bb04..f649859 100644
  
  /// stb's reads past a checked table start reach at most about 460 KB
  /// (format 4: 16-bit offset + 2 * (16-bit codepoint delta) past 6 * 16-bit
-@@ -22,6 +30,20 @@ pub fn load(path: &str) -> Result<Vec<u8>, String> {
+@@ -20,6 +28,20 @@
+ pub fn load(path: &str) -> Result<Vec<u8>, String> {
+     let data = fs::read(path).map_err(|error| format!("{path}: {error}"))?;
      prepare(data).map_err(|reason| format!("{path}: not a usable TrueType font: {reason}"))
- }
- 
++}
++
 +/// The same validation as load(), with separate clocks only when requested.
 +pub fn load_profiled(path: &str, timings: &mut LoadTimings) -> Result<Vec<u8>, String> {
 +    let started = Instant::now();
@@ -130,16 +129,13 @@ index 072bb04..f649859 100644
 +    data.resize(data.len() + PADDING, 0);
 +    timings.padding_ms = started.elapsed().as_secs_f64() * 1000.0;
 +    Ok(data)
-+}
-+
+ }
+ 
  /// Check font bytes and append the padding.
- pub fn prepare(mut data: Vec<u8>) -> Result<Vec<u8>, String> {
-     check(&data)?;
 diff --git a/src/main.rs b/src/main.rs
-index 6a8b41d..1eef4d6 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -500,7 +500,13 @@ fn main() -> ExitCode {
+@@ -694,7 +694,13 @@
      };
      let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
      let font_started = Instant::now();
@@ -154,7 +150,7 @@ index 6a8b41d..1eef4d6 100644
          Ok(font) => font,
          Err(error) => {
              eprintln!("{error}");
-@@ -529,7 +535,7 @@ fn main() -> ExitCode {
+@@ -723,7 +729,7 @@
          )
      };
      if profile {
@@ -165,7 +161,6 @@ index 6a8b41d..1eef4d6 100644
  }
 diff --git a/src/deflate_profile.h b/src/deflate_profile.h
 new file mode 100644
-index 0000000..928ab0e
 --- /dev/null
 +++ b/src/deflate_profile.h
 @@ -0,0 +1,11 @@
