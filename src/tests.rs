@@ -499,6 +499,62 @@ fn erased_cells_take_colours_but_not_attributes() {
     assert!(g.iter().all(|c| c.attrs == 0 && bg(c) == (1, 2, 3)));
 }
 
+/// Not a test: writes the cell grids bench/c-vs-rust/run.sh paints, parsed
+/// by termshot's own parser, into $TERMSHOT_POC_DIR. See docs/c-vs-rust.md.
+#[test]
+#[ignore]
+fn poc_workloads() {
+    let Some(dir) = std::env::var_os("TERMSHOT_POC_DIR") else { return };
+    let dir = std::path::PathBuf::from(dir);
+    let dump = |name: &str, log: &[u8], cols: usize, rows: usize, px: f64| {
+        let cells = parse(log, cols, rows);
+        let bytes: Vec<u8> = cells
+            .iter()
+            .flat_map(|c| {
+                let mut b = c.ch.to_ne_bytes().to_vec();
+                b.extend_from_slice(&[c.fr, c.fg, c.fb, c.br, c.bg, c.bb, c.attrs, 0]);
+                b
+            })
+            .collect();
+        fs::write(dir.join(format!("{name}.cells")), bytes).unwrap();
+        fs::write(dir.join(format!("{name}.meta")), format!("{cols} {rows} {px}\n")).unwrap();
+    };
+    let reply = fs::read("examples/reply-sent.pty").unwrap();
+    dump("1-reply-px48", &reply, 100, 30, 48.0);
+    dump("2-reply-px128", &reply, 100, 30, 128.0);
+    // 16 and 256 colours and every attribute.
+    let mut attrs = Vec::new();
+    for (i, n) in (0..16).enumerate() {
+        attrs.extend_from_slice(format!("\x1b[38;5;{n}m{i:>3}").as_bytes());
+    }
+    attrs.extend_from_slice(b"\x1b[0m\r\n");
+    for n in 16..112 {
+        attrs.extend_from_slice(format!("\x1b[48;5;{n}m ").as_bytes());
+    }
+    attrs.extend_from_slice(b"\x1b[0m\r\nplain \x1b[1mbold\x1b[0m \x1b[2mdim\x1b[0m \x1b[4munderline\x1b[0m ");
+    attrs.extend_from_slice(b"\x1b[21mdouble\x1b[0m \x1b[9mstrike\x1b[0m \x1b[7mreverse\x1b[0m \x1b[1;4;9;31mall\x1b[0m");
+    dump("3-attrs-px24", &attrs, 96, 6, 24.0);
+    // Rounded boxes and lines: geometry, arcs included.
+    let ten = |left: &str, fill: &str, right: &str| format!("{left}{}{right}", fill.repeat(8)).repeat(10);
+    let one_row = [ten("╭", "─", "╮"), ten("│", " ", "│"), ten("╰", "─", "╯")].join("\r\n");
+    let boxes = vec![one_row; 10].join("\r\n");
+    dump("4-boxes-px48", boxes.as_bytes(), 100, 30, 48.0);
+    // Dense text in many colours.
+    let mut dense = Vec::new();
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    for r in 0..60 {
+        dense.extend_from_slice(format!("\x1b[{};1H", r + 1).as_bytes());
+        for _ in 0..200 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            dense.extend_from_slice(format!("\x1b[38;2;{};{};{}m", x & 255, (x >> 8) & 255, (x >> 16) & 255).as_bytes());
+            dense.push(b'!' + (x >> 24) as u8 % 94);
+        }
+    }
+    dump("5-dense-200x60-px16", &dense, 200, 60, 16.0);
+}
+
 /// Decode a printf(1) format string the way tests/vt/oracle.sh feeds it to
 /// printf: backslash escapes, octal \NNN (1-3 digits) and %%.
 fn printf_bytes(format: &str) -> Vec<u8> {

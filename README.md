@@ -115,7 +115,7 @@ won't write a PNG to a terminal. A failed run removes the output file it created
 
 The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, still works.
 
-`M` is snapped to a whole number of pixels so box-drawing joints meet. `─ │ ┌ ┐ └ ┘ ╭ ╮ ╯ ╰ ▀ █` are painted as geometry. Other characters come from the font. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
+`M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
 
 The font must be TrueType, meaning it has `glyf` outlines; CFF-based `.otf` fonts are rejected. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`). A damaged or hostile font is refused with a reason, and the run exits 1.
 
