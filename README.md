@@ -36,8 +36,9 @@ through a PTY already have CR LF.
 
 Colors are the 16 and 256 color palettes (xterm's defaults) and 24-bit color, in the `;` and
 `:` forms. Bold, dim, underline, double underline, strike-through, reverse video and hidden
-text are drawn; italic and blink are not. Double-width characters are not interpreted yet
-([#6](https://github.com/solcreek/termshot/issues/6)).
+text are drawn; italic and blink are not. Wide characters (CJK, fullwidth forms, emoji) take two
+cells. A combining mark is kept only when Unicode has a precomposed form for it; other marks are
+dropped ([#14](https://github.com/solcreek/termshot/issues/14)).
 
 ## Speed
 
@@ -80,7 +81,7 @@ The binary links libc and libm.
 ./test.sh
 ```
 
-This builds termshot, runs the parser unit tests, checks box drawing (`tests/boxes.c`) and glyph placement (`tests/glyphs.c`: wide characters, missing glyphs), checks the CLI exit codes, and compares the rendered samples against `tests/goldens.txt`. The goldens hash decoded pixels (stb_image decodes them, `tests/golden.rs` hashes them), so a change to how the PNG is encoded doesn't break them; only a change to the pixels does. They cover px 46 and 48, and CI runs them on Linux and macOS. px 46 is there because it is a size where a compiler that fuses multiply-adds would render different pixels.
+This builds termshot, runs the parser unit tests, checks box drawing (`tests/boxes.c`) and glyph placement (`tests/glyphs.c`: wide characters, missing glyphs), checks the CLI exit codes, and compares the rendered samples against `tests/goldens.txt`. The goldens hash decoded pixels (stb_image decodes them, `tests/golden.rs` hashes them), so a change to how the PNG is encoded doesn't break them; only a change to the pixels does. They cover the two samples at px 46 and 48 and the edge cases in `tests/fixtures/` (clipping, missing glyphs, escapes, random colors, box drawing from px 1 to 255), and CI runs them on Linux and macOS. px 46 is there because it is a size where a compiler that fuses multiply-adds would render different pixels.
 
 When a change is meant to move pixels, look at the renders in `target/test/`, then run `./test.sh --update-goldens`. `SANITIZE=1 ./test.sh` builds draw.c with ASan and UBSan; this works on macOS only.
 
