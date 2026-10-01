@@ -131,35 +131,40 @@ fn truncated_sequences_do_not_panic() {
 
 #[test]
 fn pseudorandom_input_does_not_panic() {
-    let pick = [0x1b, b'[', b';', b'0', b'9', b'H', b'K', b'J', b'm', b']', 0x07, b'\\', 0xe2, b'\n'];
+    let pick = [
+        0x1b, b'[', b']', b';', b':', b'0', b'2', b'5', b'9', b'3', b'8', b'H', b'A', b'B', b'C', b'D', b'K',
+        b'J', b'm', b'?', b'(', b' ', 0x07, 0x18, b'\\', b'\n', b'\r', 0x7f, 0xc2, 0xe2, 0xed, 0xf4, 0x80,
+    ];
     let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut step = || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
     for _ in 0..20_000 {
+        let len = step() % 128;
         let mut buf = Vec::new();
-        for _ in 0..(x % 96) {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            buf.push(if x & 1 == 0 { pick[(x >> 8) as usize % pick.len()] } else { (x >> 16) as u8 });
+        for _ in 0..len {
+            let r = step();
+            buf.push(if r & 3 != 0 { pick[(r >> 8) as usize % pick.len()] } else { (r >> 16) as u8 });
         }
         let _ = parse(&buf, 7, 3);
     }
 }
 
 #[test]
-#[ignore = "#5: ESC with an intermediate byte prints its final byte"]
 fn charset_designation_is_not_printed() {
     assert_eq!(line(&grid(b"\x1b(B\x1b)0\x1b#8a"), 0), "a         ");
 }
 
 #[test]
-#[ignore = "#5: EL ignores its mode"]
 fn el_modes() {
     assert_eq!(line(&grid(b"abcdef\x1b[1;4H\x1b[1K"), 0), "    ef    ");
     assert_eq!(line(&grid(b"abcdef\x1b[1;4H\x1b[2K"), 0), "          ");
 }
 
 #[test]
-#[ignore = "#5: ED handles only mode 2"]
 fn ed0_erases_below() {
     let g = grid(b"ab\r\ncd\x1b[1;2H\x1b[J");
     assert_eq!(line(&g, 0), "a         ");
@@ -167,32 +172,114 @@ fn ed0_erases_below() {
 }
 
 #[test]
-#[ignore = "#5: ED 2 homes the cursor"]
 fn ed2_keeps_the_cursor() {
     assert_eq!(line(&grid(b"abc\x1b[2Jx"), 0), "   x      ");
 }
 
 #[test]
-#[ignore = "#5: CUF clamps to cols instead of the last column"]
 fn cuf_stops_at_last_column() {
     assert_eq!(line(&grid(b"ab\x1b[99Cx"), 0), "ab       x");
 }
 
 #[test]
-#[ignore = "#5: DEL is printed"]
 fn del_is_not_printed() {
     assert_eq!(line(&grid(b"a\x7fb"), 0), "ab        ");
 }
 
 #[test]
-#[ignore = "#5: 38;5;n reads n as its own SGR"]
 fn indexed_colour_does_not_set_bold() {
     assert_eq!(at(&grid(b"\x1b[38;5;1ma"), 0, 0).bold, 0);
 }
 
 #[test]
-#[ignore = "#5: invalid UTF-8 is not replaced"]
 fn invalid_utf8_becomes_replacement_char() {
     assert_eq!(at(&grid(b"\xffA"), 0, 0).ch, 0xfffd);
     assert_eq!(at(&grid(b"\xe2A"), 0, 1).ch, 'A' as u32);
+}
+
+#[test]
+fn utf8_rejects_overlongs_surrogates_and_truncation() {
+    let replacements = |s: &[u8]| grid(s).iter().filter(|c| c.ch == 0xfffd).count();
+    assert_eq!(replacements(b"\xc0\xaf"), 2);
+    assert_eq!(replacements(b"\xed\xa0\x80"), 3);
+    assert_eq!(replacements(b"\xf4\x90\x80\x80"), 4);
+    assert_eq!(utf8_at(b"\xf0\x9f"), (0xfffd, 2));
+}
+
+#[test]
+fn c1_controls_take_no_cell() {
+    assert_eq!(line(&grid(b"a\xc2\x85b"), 0), "ab        ");
+}
+
+#[test]
+fn lf_moves_down_without_carriage_return() {
+    assert_eq!(line(&grid(b"ab\ncd"), 1), "  cd      ");
+}
+
+#[test]
+fn cursor_counts_of_zero_mean_one() {
+    assert_eq!(line(&grid(b"abc\x1b[0Dx"), 0), "abx       ");
+}
+
+#[test]
+fn cup_clamps_to_the_grid() {
+    assert_eq!(at(&grid(b"\x1b[99;99Hx"), R - 1, C - 1).ch, 'x' as u32);
+}
+
+#[test]
+fn huge_parameters_saturate() {
+    let g = grid(b"\x1b[4294967295;4294967295H\x1b[99999999999Ax\x1b[99999999999Cy\x1b[99999999999B\x1b[99999999999Dz");
+    assert_eq!(at(&g, 0, C - 1).ch, 'y' as u32);
+    assert_eq!(at(&g, R - 1, 0).ch, 'z' as u32);
+}
+
+#[test]
+fn erase_uses_the_current_background() {
+    let g = grid(b"\x1b[48;2;1;2;3m\x1b[2J");
+    assert!(g.iter().all(|c| bg(c) == (1, 2, 3)));
+}
+
+#[test]
+fn sgr_colon_truecolor() {
+    let g = grid(b"\x1b[38:2::10:20:30ma\x1b[48:2:1:2:3mb");
+    assert_eq!(fg(at(&g, 0, 0)), (10, 20, 30));
+    assert_eq!(bg(at(&g, 0, 1)), (1, 2, 3));
+}
+
+#[test]
+fn sgr_other_subparameters_are_skipped() {
+    let g = grid(b"\x1b[1;4:3ma");
+    assert_eq!(at(&g, 0, 0).bold, 1);
+}
+
+#[test]
+fn sgr_component_over_255_is_ignored() {
+    assert_eq!(fg(at(&grid(b"\x1b[38;2;300;0;0ma"), 0, 0)), DEFAULT_FG);
+}
+
+#[test]
+fn esc_aborts_a_string_sequence() {
+    let g = grid(b"\x1b]0;title\x1b[1ma\x1b]0;t\x18b");
+    assert_eq!(line(&g, 0), "ab        ");
+    assert_eq!(at(&g, 0, 0).bold, 1);
+}
+
+#[test]
+fn esc_aborts_a_csi() {
+    assert_eq!(at(&grid(b"\x1b[1\x1b[2;3Hx"), 1, 2).ch, 'x' as u32);
+}
+
+#[test]
+fn esc_esc_starts_over() {
+    assert_eq!(at(&grid(b"\x1b\x1b[1;2Hx"), 0, 1).ch, 'x' as u32);
+}
+
+#[test]
+fn c0_inside_csi_executes() {
+    assert_eq!(line(&grid(b"abc\x1b[\r2Cx"), 0), "abx       ");
+}
+
+#[test]
+fn csi_with_intermediate_is_ignored() {
+    assert_eq!(line(&grid(b"\x1b[2 qa"), 0), "a         ");
 }
