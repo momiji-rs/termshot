@@ -8,3 +8,9 @@ wrap-pending-lf: LF clears the pending wrap, as in xterm, so X lands in the last
 wrap-pending-el: with a wrap pending the cursor is on the last column and EL erases it; tmux treats the cursor as past the edge
 alt-1048: tmux does not implement mode 1048 (save and restore the cursor)
 rep-wrap: REP repeats the character as if it had been sent again, wrapping; tmux stops at the end of the line
+wide-el: EL from the second half of a wide character erases all of it; tmux keeps the character
+wide-ech: tmux keeps the orphaned second half as a padding cell, which capture-pane omits, so x looks one column left; on screen both show a blank there
+wide-dch: the same orphaned-padding representation as wide-ech
+wide-ich: a wide character pushed half off the line is erased; tmux keeps it, cut in half
+combine: termshot composes e + U+0301 into é (a cell holds one code point); tmux stores the marks, so its text is decomposed; both draw é
+zwj: termshot drops the zero-width joiner; tmux stores it with the a; both draw ab

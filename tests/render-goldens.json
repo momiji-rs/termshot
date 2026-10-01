@@ -47,17 +47,17 @@
   "clipping": {
     "width": 110,
     "height": 96,
-    "rgb_sha256": "98a34ddf3ae16ab1f81ebc737b1028d04132ac44762ed07fb426d8b17259872f"
+    "rgb_sha256": "922c8bf960da0c0f244b20db1ff82a61cb62fca174efa17dc52c57a512ca7274"
   },
   "cache-collisions": {
     "width": 840,
     "height": 60,
-    "rgb_sha256": "d96125834a7d7dec615c79186bc1c8568192f2b0a801a6414bccf10ea88c1f13"
+    "rgb_sha256": "ec90c12caaecd71842da044a4ed075ca694691ed90bcaab27b6db323b71a7ae3"
   },
   "missing-glyphs": {
     "width": 700,
     "height": 15,
-    "rgb_sha256": "3d164f13798664faa3e2fe76edf59789ca66041383e36815c6369ade419a6f0d"
+    "rgb_sha256": "184c8c2258eb150f19a90744da5df19cfcfd6b2d2d882db211069a4674e2122d"
   },
   "csi": {
     "width": 180,

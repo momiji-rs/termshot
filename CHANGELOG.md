@@ -7,6 +7,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Wide characters (CJK, Hangul, fullwidth forms, emoji) take two cells, by
+  the Unicode 17.0 widths in `src/unicode_tables.rs` (`tools/unicode-tables.sh`
+  regenerates them). They wrap instead of splitting, and an edit that cuts
+  one in half blanks the rest, as in xterm. Combining marks compose into the
+  character before them when Unicode has the precomposed form, and are
+  otherwise dropped; zero-width characters take no cell.
+- `--fallback-font FILE` for the characters the main font lacks, centered in
+  their cells.
+- A character no font has is drawn as an outlined box instead of nothing.
 - Every box-drawing and block-element character (U+2500–U+259F) is drawn as
   geometry: light, heavy, double and dashed lines with all their corners,
   tees and crosses, arcs, diagonals, eighth blocks, shades and quadrants.

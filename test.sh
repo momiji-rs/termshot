@@ -42,6 +42,14 @@ cc tests/boxes.c src/deflate.c -o "$out/boxes" -O2 -ffp-contract=off -Wno-deprec
     -I src -I third_party/stb -lm ${CFLAGS:-}
 "$out/boxes"
 
+echo "== glyph placement"
+# The decoder is test-only, so it is built without sanitizers or our warnings.
+cc -c tests/png_read.c -o "$out/png_read.o" -O2 -I third_party/stb
+# shellcheck disable=SC2086
+cc tests/glyphs.c src/deflate.c "$out/png_read.o" -o "$out/glyphs" -O2 -Wno-deprecated-declarations \
+    -I src -I third_party/stb -lm ${CFLAGS:-}
+"$out/glyphs" "$font" "$out/glyphs.png"
+
 echo "== cli"
 fail=0
 expect() {
@@ -70,6 +78,9 @@ expect 0 --version
 expect 1 "$out/missing.pty" "$out/x.png" "$font"
 expect 1 "$log" "$out/x.png" "$out/missing.ttf"
 expect 1 "$log" "$out/x.png" --font README.md
+expect 1 "$log" "$out/x.png" --fallback-font "$out/missing.ttf"
+expect 1 "$log" "$out/x.png" --fallback-font README.md
+expect 2 "$log" "$out/x.png" --fallback-font
 expect 1 "$log" "$out/no-such-dir/x.png"
 expect 2 "$log" "$out/x.png" "$font" 0
 expect 2 "$log" "$out/x.png" "$font" 48 0
@@ -89,6 +100,9 @@ expect 2 "$log" "$out/x.png" "$font" 48 100 30 extra
 ./termshot --font="$font" -p48 --size 100x30 "$log" "$out/options.png"
 check "builtin font matches the named font" 'cmp -s "$out/builtin.png" "$out/legacy.png"'
 check "options match the original form" 'cmp -s "$out/options.png" "$out/legacy.png"'
+# A fallback font only adds the characters the first lacks.
+./termshot --fallback-font "$font" "$log" "$out/fallback.png"
+check "an unused fallback font changes nothing" 'cmp -s "$out/fallback.png" "$out/legacy.png"'
 # stdin and stdout.
 ./termshot - - < "$log" > "$out/piped.png"
 check "stdin to stdout matches" 'cmp -s "$out/piped.png" "$out/legacy.png"'
@@ -101,8 +115,6 @@ check "failed run removes the file it created" '[ ! -e "$out/gone.png" ]'
 [ "$fail" -eq 0 ] && echo "ok"
 
 echo "== goldens"
-# The decoder is test-only, so it is built without sanitizers or our warnings.
-cc -c tests/png_read.c -o "$out/png_read.o" -O2 -I third_party/stb
 rustc --edition 2021 tests/golden.rs -o "$out/golden" -C opt-level=2 \
     -C link-arg="$PWD/$out/png_read.o" -C link-arg=-lm
 if [ "$mode" = update ]; then

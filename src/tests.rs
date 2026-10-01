@@ -19,6 +19,11 @@ fn line(cells: &[Cell], row: usize) -> String {
     (0..C).map(|c| char::from_u32(at(cells, row, c).ch).unwrap_or('?')).collect()
 }
 
+/// A row as a terminal shows it: a wide character once, its tail skipped.
+fn shown(row: &[Cell]) -> String {
+    row.iter().filter(|c| c.attrs & TAIL == 0).map(|c| char::from_u32(c.ch).unwrap_or('?')).collect()
+}
+
 fn fg(c: &Cell) -> (u8, u8, u8) {
     (c.fr, c.fg, c.fb)
 }
@@ -613,7 +618,7 @@ fn vt_cases_match_the_reference_screens() {
         let g = parse(&printf_bytes(input), cols, rows);
         let got: Vec<String> = (0..rows)
             .map(|r| {
-                let row: String = g[r * cols..(r + 1) * cols].iter().map(|c| char::from_u32(c.ch).unwrap_or('?')).collect();
+                let row = shown(&g[r * cols..(r + 1) * cols]);
                 row.trim_end().to_string()
             })
             .collect();
@@ -644,12 +649,90 @@ fn real_sessions_match_tmux() {
         let g = parse(&log, cols, rows);
         let got: String = (0..rows)
             .map(|r| {
-                let row: String = g[r * cols..(r + 1) * cols].iter().map(|c| char::from_u32(c.ch).unwrap_or('?')).collect();
+                let row = shown(&g[r * cols..(r + 1) * cols]);
                 row.trim_end().to_string() + "\n"
             })
             .collect();
         assert!(got == want, "{name}: termshot shows\n{got}\ntmux showed\n{want}");
     }
+}
+
+#[test]
+fn widths() {
+    let cases = [
+        ('a', 1), ('é', 1), ('\u{00AD}', 1), ('中', 2), ('한', 2), ('Ａ', 2), ('\u{3000}', 2),
+        ('😀', 2), ('\u{1F1F9}', 2), ('\u{0301}', 0), ('\u{302A}', 0), ('\u{200B}', 0),
+        ('\u{200D}', 0), ('\u{FE0F}', 0), ('\u{1160}', 0), ('─', 1), ('█', 1), ('\u{2028}', 1),
+    ];
+    for (ch, want) in cases {
+        assert_eq!(unicode::width(ch as u32), want, "U+{:04X}", ch as u32);
+    }
+}
+
+#[test]
+fn wide_characters_take_two_cells() {
+    let g = grid("a中b".as_bytes());
+    assert_eq!(shown(&g[..C]), "a中b      ");
+    assert_eq!(at(&g, 0, 1).attrs & WIDE, WIDE);
+    assert_eq!((at(&g, 0, 2).ch, at(&g, 0, 2).attrs & TAIL), (0, TAIL));
+    assert_eq!(at(&g, 0, 3).ch, 'b' as u32);
+}
+
+#[test]
+fn wide_character_wraps_instead_of_splitting() {
+    let g = grid("\x1b[1;10H中x".as_bytes());
+    assert_eq!(line(&g, 0), "          ");
+    assert_eq!(shown(&g[C..2 * C]), "中x       ");
+    // Without autowrap there is nowhere to put it.
+    assert_eq!(line(&grid("\x1b[?7l\x1b[1;10H中".as_bytes()), 0), "          ");
+    // Filling the last two columns leaves a wrap pending, like any character.
+    let g = grid("\x1b[1;9H中x".as_bytes());
+    assert_eq!(shown(&g[..C]), "        中");
+    assert_eq!(at(&g, 1, 0).ch, 'x' as u32);
+}
+
+#[test]
+fn overwriting_half_a_wide_character_blanks_the_other_half() {
+    assert_eq!(shown(&grid("中\x1b[1;2Hx".as_bytes())[..C]), " x        ");
+    assert_eq!(shown(&grid("中\x1b[1;1Hx".as_bytes())[..C]), "x         ");
+    assert_eq!(shown(&grid("中中\x1b[1;2H文".as_bytes())[..C]), " 文       ");
+    // The ASCII fast path, too.
+    assert_eq!(shown(&grid("中中\x1b[1;2Hab".as_bytes())[..C]), " ab       ");
+    assert!(grid("中中\x1b[1;2Hab".as_bytes()).iter().all(|c| c.attrs & (WIDE | TAIL) == 0));
+}
+
+#[test]
+fn edits_that_cut_a_wide_character_remove_all_of_it() {
+    // EL from the tail, ECH on the lead, DCH of the lead, ICH pushing a tail off the line.
+    assert_eq!(shown(&grid("中文\x1b[1;2H\x1b[K".as_bytes())[..C]), "          ");
+    assert_eq!(shown(&grid("中x\x1b[1;1H\x1b[X".as_bytes())[..C]), "  x       ");
+    assert_eq!(shown(&grid("中x\x1b[1;1H\x1b[P".as_bytes())[..C]), " x        ");
+    assert_eq!(shown(&grid("aaaaaaaa中\x1b[1;1H\x1b[@".as_bytes())[..C]), " aaaaaaaa ");
+    for log in ["中文\x1b[1;2H\x1b[K", "中x\x1b[1;1H\x1b[X", "中x\x1b[1;1H\x1b[P", "aaaaaaaa中\x1b[1;1H\x1b[@"] {
+        let g = grid(log.as_bytes());
+        for c in 0..C {
+            let attrs = at(&g, 0, c).attrs;
+            assert!(attrs & WIDE == 0 || (c + 1 < C && at(&g, 0, c + 1).attrs & TAIL != 0), "{log:?}: orphan lead");
+            assert!(attrs & TAIL == 0 || (c > 0 && at(&g, 0, c - 1).attrs & WIDE != 0), "{log:?}: orphan tail");
+        }
+    }
+}
+
+#[test]
+fn combining_marks_compose_or_are_dropped() {
+    let g = grid("e\u{0301}a\u{0308}x\u{0301}y".as_bytes());
+    assert_eq!(line(&g, 0), "éäxy      ");
+    // Zero-width joiners and variation selectors take no cell.
+    assert_eq!(line(&grid("a\u{200D}b\u{FE0F}c".as_bytes()), 0), "abc       ");
+    // A mark with nothing before it is dropped.
+    assert_eq!(line(&grid("\u{0301}z".as_bytes()), 0), "z         ");
+}
+
+#[test]
+fn rep_and_attributes_cover_both_halves() {
+    let g = grid("\x1b[4m中\x1b[2b".as_bytes());
+    assert_eq!(shown(&g[..C]), "中中中    ");
+    assert!((0..6).all(|c| at(&g, 0, c).attrs & UNDERLINE != 0));
 }
 
 #[test]
