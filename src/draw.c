@@ -11,6 +11,9 @@
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
+/* stb's deflate, with a faster search that writes the same bytes (deflate.c). */
+unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality);
+#define STBIW_ZLIB_COMPRESS termshot_zlib_compress
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 

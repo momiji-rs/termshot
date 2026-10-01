@@ -7,6 +7,7 @@ cd "$(dirname "$0")"
 # arm64 (which emits FMA by default) matches x86-64 Linux pixel for pixel.
 # Never add -ffast-math: it changes about half of all renders.
 cc -c src/draw.c -o draw.o -O2 -ffp-contract=off -Wall -Wextra -Wno-unused-function -Wno-missing-field-initializers -I third_party/stb ${CFLAGS:-}
+cc -c src/deflate.c -o deflate.o -O2 -Wall -Wextra ${CFLAGS:-}
 rustc --edition 2021 src/main.rs -o termshot -C opt-level=2 \
-  -C link-arg="$PWD/draw.o" \
+  -C link-arg="$PWD/draw.o" -C link-arg="$PWD/deflate.o" \
   -C link-arg=-lm ${RUSTC_LINK_ARGS:-}

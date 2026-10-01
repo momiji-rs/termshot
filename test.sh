@@ -27,8 +27,14 @@ fi
 echo "== unit tests"
 # shellcheck disable=SC2086
 rustc --edition 2021 --test src/main.rs -o "$out/unit" \
-    -C link-arg="$PWD/draw.o" -C link-arg=-lm ${RUSTC_LINK_ARGS:-}
+    -C link-arg="$PWD/draw.o" -C link-arg="$PWD/deflate.o" -C link-arg=-lm ${RUSTC_LINK_ARGS:-}
 "$out/unit" -q
+
+echo "== deflate matches stb"
+# shellcheck disable=SC2086
+cc tests/deflate_diff.c src/deflate.c -o "$out/deflate_diff" -O2 -Wno-deprecated-declarations \
+    -I third_party/stb ${CFLAGS:-}
+"$out/deflate_diff"
 
 echo "== cli"
 fail=0
