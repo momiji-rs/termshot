@@ -21,6 +21,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - U+2800 BRAILLE PATTERN BLANK, which TUIs such as btop use for empty graph
   dots, and the line and paragraph separators U+2028 and U+2029 drew as
   boxes when the font lacked them. They are blank, like space separators.
+- A glyph with no outline left its cell blank (#24). Color emoji fonts such
+  as Apple Color Emoji map every emoji to one, and some text fonts map a few
+  characters to one (µ in iA Writer Duospace). It now counts as missing:
+  the fallback font draws the character, or it is drawn as a box. Blank
+  characters keep their empty glyphs.
 
 ## [0.1.0] - 2026-10-01
 

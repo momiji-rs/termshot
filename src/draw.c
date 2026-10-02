@@ -615,11 +615,18 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
                 *entry = (Glyph){.cp = cp, .valid = 1, .wide = wide};
                 const stbtt_fontinfo *face = &font;
                 float s = scale;
+                /* A glyph with no outline counts as missing unless the
+                   character is blank by design: color emoji fonts (sbix,
+                   CBDT) map characters to empty glyphs and draw them from
+                   bitmaps, which stb_truetype cannot. */
+                int blank = is_blank(cp);
                 int glyph = stbtt_FindGlyphIndex(&font, (int)cp);
+                if (glyph != 0 && !blank && stbtt_IsGlyphEmpty(&font, glyph)) glyph = 0;
                 if (glyph == 0 && fallback_ttf) {
                     face = &fallback;
                     s = fallback_scale;
                     glyph = stbtt_FindGlyphIndex(&fallback, (int)cp);
+                    if (glyph != 0 && !blank && stbtt_IsGlyphEmpty(&fallback, glyph)) glyph = 0;
                 }
                 entry->missing = glyph == 0;
                 if (glyph != 0) {
