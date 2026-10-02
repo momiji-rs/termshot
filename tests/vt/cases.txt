@@ -99,3 +99,13 @@ hangul		10x4	\355\225\234\352\270\200
 fullwidth	10x4	\357\274\241\357\274\242
 combine		10x4	e\314\201a\314\210x
 zwj		10x4	a\342\200\215b
+wide-1x1	1x1	\347\225\214
+wide-1col	1x3	a\347\225\214b
+wide-1col-scroll	1x2	\347\225\214\347\225\214x
+wide-1col-nowrap	1x3	\033[?7l\347\225\214a
+wide-1col-rep	1x3	\347\225\214\033[2b
+wide-1col-combine	1x2	e\314\201\347\225\214
+wide-1col-margins	1x3	\033[2;3r\033[3;1H\347\225\214\347\225\214
+wide-2col	2x2	a\347\225\214
+wide-2col-fit	2x2	\347\225\214a
+wide-2col-rep	2x3	\347\225\214\033[2b

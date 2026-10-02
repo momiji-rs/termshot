@@ -108,6 +108,8 @@ check "an unused fallback font changes nothing" 'cmp -s "$out/fallback.png" "$ou
 # stdin and stdout.
 ./termshot - - < "$log" > "$out/piped.png"
 check "stdin to stdout matches" 'cmp -s "$out/piped.png" "$out/legacy.png"'
+# A wide character on a one-column screen (#18).
+check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
 check "quiet by default" '[ -z "$(./termshot "$log" "$out/q.png" 2>&1)" ]'
 check "verbose prints the image size" './termshot -v "$log" "$out/q.png" 2>&1 | grep -q "image 2200x1440"'
