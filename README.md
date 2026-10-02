@@ -31,7 +31,8 @@ It draws one final frame, not an animation. The screen model follows xterm and c
 
 `tests/vt/` checks this against tmux, on short cases and on recorded `ls`, `less` and `vi`
 sessions. A bare LF moves down without returning to column 0, as in a terminal; logs captured
-through a PTY already have CR LF.
+through a PTY already have CR LF. For output that has bare LFs (a text file, `cmd > out.log`),
+pass `--lf-newline`.
 
 Colors are the 16 and 256 color palettes (xterm's defaults) and 24-bit color, in the `;` and
 `:` forms. Bold, dim, underline, double underline, strike-through, reverse video and hidden
@@ -113,6 +114,7 @@ cat session.pty | ./termshot - - > screen.png   # stdin to stdout
 | `--fallback-font FILE` | TrueType font for characters the first lacks, such as CJK |
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
+| `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY |
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 

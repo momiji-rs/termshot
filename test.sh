@@ -108,6 +108,13 @@ check "an unused fallback font changes nothing" 'cmp -s "$out/fallback.png" "$ou
 # stdin and stdout.
 ./termshot - - < "$log" > "$out/piped.png"
 check "stdin to stdout matches" 'cmp -s "$out/piped.png" "$out/legacy.png"'
+# --lf-newline: a bare LF renders as CR LF, and a PTY log (all CR LF) is unchanged.
+printf '\033[1mab\033[m\ncd\nef' | ./termshot --lf-newline --size 10x4 - "$out/lf-newline.png"
+printf '\033[1mab\033[m\r\ncd\r\nef' | ./termshot --size 10x4 - "$out/crlf.png"
+check "--lf-newline renders LF as CR LF" 'cmp -s "$out/lf-newline.png" "$out/crlf.png"'
+./termshot --lf-newline "$log" "$out/lf-newline-pty.png"
+check "--lf-newline leaves a PTY log unchanged" 'cmp -s "$out/lf-newline-pty.png" "$out/legacy.png"'
+expect 2 "$log" "$out/x.png" --lf-newline=yes
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
