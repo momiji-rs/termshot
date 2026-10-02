@@ -8,10 +8,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
-  does, for logs not captured through a PTY (#28). The LF that ends the
+  does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so
   `tmux capture-pane -e -p | termshot --lf-newline --size <pane size>`
-  keeps the top row.
+  keeps the top row; a final CR LF still scrolls, so a PTY log renders
+  the same with the flag as without.
 - A hint on stderr when a log has line feeds but no CR and `--lf-newline`
   is not given. The image is still written and the exit status is 0.
 

@@ -119,6 +119,10 @@ expect 2 "$log" "$out/x.png" --lf-newline=yes
 printf 'a\nb\nc\nd\n' | ./termshot --lf-newline --size 1x4 - "$out/lf-tall.png"
 printf 'a\r\nb\r\nc\r\nd' | ./termshot --size 1x4 - "$out/crlf-tall.png"
 check "--lf-newline keeps the top row of a full-height capture" 'cmp -s "$out/lf-tall.png" "$out/crlf-tall.png"'
+# A final CR LF is not bare: a full-height PTY log scrolls with or without the flag.
+printf 'a\r\nb\r\nc\r\nd\r\n' | ./termshot --lf-newline --size 1x4 - "$out/lf-crlf-end.png"
+printf 'a\r\nb\r\nc\r\nd\r\n' | ./termshot --size 1x4 - "$out/crlf-end.png"
+check "--lf-newline leaves a final CR LF alone" 'cmp -s "$out/lf-crlf-end.png" "$out/crlf-end.png"'
 # The pipeline it is for: tmux capture-pane of a pane the size of the grid.
 # Needs tmux, which CI doesn't have.
 if command -v tmux >/dev/null; then

@@ -193,6 +193,14 @@ fn lf_newline_final_lf_ends_the_last_line() {
 }
 
 #[test]
+fn lf_newline_keeps_a_final_cr_lf() {
+    // A CR LF is not a bare LF: a PTY log that ends in one scrolls either way.
+    let log = b"1\r\n2\r\n3\r\n4\r\n";
+    assert!(lines(log).iter().map(cell_key).eq(grid(log).iter().map(cell_key)));
+    assert_eq!(line(&lines(log), 0), "2         ");
+}
+
+#[test]
 fn lf_newline_keeps_an_empty_last_line() {
     // Only one LF is a terminator: the line before it is empty, and shown.
     let g = lines(b"1\n2\n3\n4\n\n");
@@ -408,11 +416,12 @@ fn fuzz_sizes_and_wide_characters() {
             Ok(cells) if cells.len() != cols * rows => Some(format!("{} cells", cells.len())),
             Ok(cells) => wide_pairs_are_whole(cells, cols).err(),
         };
-        // --lf-newline is exactly CR LF for every LF but a final one,
+        // --lf-newline is exactly CR LF for every LF but a final bare one,
         // wherever the LF lands: at top level, inside a CSI, after an ESC,
-        // or inside a string.
+        // or inside a string. The reference strips that LF by hand.
         if failure.is_none() {
-            let crlf: Vec<u8> = log.strip_suffix(b"\n").unwrap_or(&log).iter().flat_map(|b| if *b == b'\n' { &b"\r\n"[..] } else { std::slice::from_ref(b) }).copied().collect();
+            let text = if log.ends_with(b"\n") && !log.ends_with(b"\r\n") { &log[..log.len() - 1] } else { &log[..] };
+            let crlf: Vec<u8> = text.iter().flat_map(|b| if *b == b'\n' { &b"\r\n"[..] } else { std::slice::from_ref(b) }).copied().collect();
             let outcome = std::panic::catch_unwind(|| (parse_lf(&log, cols, rows, Lf::Newline), parse(&crlf, cols, rows)));
             failure = match &outcome {
                 Err(_) => Some("panicked with --lf-newline".to_string()),

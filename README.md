@@ -122,7 +122,7 @@ tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 - top.png
 | `--fallback-font FILE` | TrueType font for characters the first lacks, such as CJK |
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
-| `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final LF ends the last line instead of scrolling |
+| `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 

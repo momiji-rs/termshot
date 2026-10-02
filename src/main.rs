@@ -950,6 +950,19 @@ fn lacks_cr(data: &[u8]) -> bool {
     !data.contains(&b'\r') && data.contains(&b'\n')
 }
 
+/// Text is lines that each end in LF, so the bare LF that ends the input
+/// ends the last line rather than opening a new one. Otherwise a capture as
+/// tall as the grid (tmux capture-pane ends every row with LF) would scroll
+/// its top row away. A final CR LF is a PTY's and stays, so a PTY log
+/// renders the same with --lf-newline as without.
+fn strip_final_bare_lf(data: &[u8]) -> &[u8] {
+    match data {
+        [.., b'\r', b'\n'] => data,
+        [rest @ .., b'\n'] => rest,
+        _ => data,
+    }
+}
+
 /// Replay a log as a terminal would, with bare LFs indexing.
 #[cfg(test)]
 fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
@@ -957,12 +970,8 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
 }
 
 fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
-    // Text is lines that each end in LF, so the LF that ends the input ends
-    // the last line rather than opening a new one. Otherwise a capture as
-    // tall as the grid (tmux capture-pane ends every row with LF) would
-    // scroll its top row away.
     let data = match lf {
-        Lf::Newline => data.strip_suffix(b"\n").unwrap_or(data),
+        Lf::Newline => strip_final_bare_lf(data),
         Lf::Index => data,
     };
     let mut screen = Screen::new(cols, rows, lf);
@@ -1155,8 +1164,8 @@ options:
   -s, --size CxR    grid size in columns x rows, up to 500x200 (default 100x30)
       --lf-newline  treat each bare LF as CR LF, for logs not captured
                     through a PTY: text files, cmd > out.log, and
-                    tmux capture-pane -e -p; a final LF ends the last
-                    line instead of scrolling
+                    tmux capture-pane -e -p; a final bare LF ends the
+                    last line instead of scrolling
   -v, --verbose     print the cell and image size to stderr
   -h, --help        show this help
   -V, --version     show the version
