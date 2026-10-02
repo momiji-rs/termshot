@@ -330,6 +330,10 @@ fn cursor_option_counts_from_0_as_tmux_does() {
     for bad in ["11,0", "0,4", "4", "4,", ",2", "-1,0", "4,2,1", "4;2", "", "None"] {
         assert!(parse_cursor(bad, 10, 4).is_err(), "{bad:?} accepted");
     }
+    // The message gives the range that is accepted, pending wrap included.
+    let message = parse_cursor("11,0", 10, 4).unwrap_err();
+    assert!(message.contains("columns go from 0 to 10 (10 is a pending wrap"), "{message}");
+    assert!(message.contains("rows from 0 to 3"), "{message}");
 }
 
 #[test]

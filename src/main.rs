@@ -1282,8 +1282,8 @@ fn parse_cursor(value: &str, cols: usize, rows: usize) -> Result<Option<(usize, 
     };
     if col > cols || row >= rows {
         return Err(format!(
-            "cursor {value} is off the {cols}x{rows} grid: columns go from 0 to {}, rows from 0 to {}",
-            cols - 1,
+            "cursor {value} is off the {cols}x{rows} grid: columns go from 0 to {cols} \
+             ({cols} is a pending wrap, drawn on the last column), rows from 0 to {}",
             rows - 1
         ));
     }
