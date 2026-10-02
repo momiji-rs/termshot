@@ -305,7 +305,7 @@ or tests.
 
 ## Where the historical “~20 ms” came from
 
-[README at `fb714a5`](https://github.com/solcreek/termshot/blob/fb714a5/README.md)
+[README at `fb714a5`](https://github.com/momiji-rs/termshot/blob/fb714a5/README.md)
 recorded **21 ms mean** for the 2200×1440 sample on Apple M3, using 40 hyperfine
 runs, and rounded this to “about 20 ms” in prose. Those original samples were
 not checked into the repository. That mean and the later PR's 19.50 ms median

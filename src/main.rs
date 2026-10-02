@@ -449,10 +449,16 @@ impl Screen {
     /// Wide characters take two cells; zero-width ones combine with the
     /// character before them.
     fn print_mapped(&mut self, ch: u32) {
-        let width = unicode::width(ch);
+        let mut width = unicode::width(ch);
         if width == 0 {
             self.combine(ch);
             return;
+        }
+        // On a one-column screen no row can hold both halves, so a wide
+        // character takes the one cell as a narrow one (#18). tmux keeps it
+        // there too, but overwrites it in place instead of wrapping.
+        if width == 2 && self.cols == 1 {
+            width = 1;
         }
         self.last = Some(ch);
         if self.pending {

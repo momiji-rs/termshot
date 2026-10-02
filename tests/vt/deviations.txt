@@ -14,3 +14,9 @@ wide-dch: the same orphaned-padding representation as wide-ech
 wide-ich: a wide character pushed half off the line is erased; tmux keeps it, cut in half
 combine: termshot composes e + U+0301 into é (a cell holds one code point); tmux stores the marks, so its text is decomposed; both draw é
 zwj: termshot drops the zero-width joiner; tmux stores it with the a; both draw ab
+wide-1col: each wide character takes a row of its own and wraps like a narrow one; tmux overwrites the one cell in place, so only b is left
+wide-1col-scroll: the wide characters wrap and scroll like narrow ones; tmux overwrites them in place
+wide-1col-rep: REP repeats the wide character, each on its own row; tmux overwrites in place
+wide-1col-combine: é composes, then the wide character wraps to the next row; tmux overwrites é
+wide-1col-margins: wrapping at the bottom margin scrolls the region; tmux overwrites in place
+wide-2col-rep: REP repeats the wide character as if sent again, wrapping, as in rep-wrap; tmux stops at the end of the line

@@ -35,8 +35,9 @@ through a PTY already have CR LF.
 
 Colors are the 16 and 256 color palettes (xterm's defaults) and 24-bit color, in the `;` and
 `:` forms. Bold, dim, underline, double underline, strike-through, reverse video and hidden
-text are drawn; italic and blink are not. Double-width characters are not interpreted yet
-([#6](https://github.com/solcreek/termshot/issues/6)).
+text are drawn; italic and blink are not. Wide characters (CJK, fullwidth forms, emoji) take two
+cells. A combining mark is kept only when Unicode has a precomposed form for it; other marks are
+dropped ([#14](https://github.com/momiji-rs/termshot/issues/14)).
 
 ## Speed
 
@@ -84,7 +85,7 @@ The binary links libc and libm.
 ./test.sh
 ```
 
-This builds termshot, runs the parser unit tests, checks box drawing (`tests/boxes.c`) and glyph placement (`tests/glyphs.c`: wide characters, missing glyphs), checks the CLI exit codes, and compares the rendered samples against `tests/goldens.txt`. The goldens hash decoded pixels (stb_image decodes them, `tests/golden.rs` hashes them), so a change to how the PNG is encoded doesn't break them; only a change to the pixels does. They cover px 46 and 48, and CI runs them on Linux and macOS. px 46 is there because it is a size where a compiler that fuses multiply-adds would render different pixels.
+This builds termshot, runs the parser unit tests, checks box drawing (`tests/boxes.c`) and glyph placement (`tests/glyphs.c`: wide characters, missing glyphs), checks the CLI exit codes, and compares the rendered samples against `tests/goldens.txt`. The goldens hash decoded pixels (stb_image decodes them, `tests/golden.rs` hashes them), so a change to how the PNG is encoded doesn't break them; only a change to the pixels does. They cover the two samples at px 46 and 48 and the edge cases in `tests/fixtures/` (clipping, missing glyphs, escapes, random colors, box drawing from px 1 to 255), and CI runs them on Linux and macOS. px 46 is there because it is a size where a compiler that fuses multiply-adds would render different pixels.
 
 When a change is meant to move pixels, look at the renders in `target/test/`, then run `./test.sh --update-goldens`. `SANITIZE=1 ./test.sh` builds draw.c with ASan and UBSan; this works on macOS only.
 
@@ -121,7 +122,7 @@ won't write a PNG to a terminal. A failed run removes the output file it created
 
 The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, still works.
 
-`M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both; a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é) and is otherwise dropped. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
+`M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both (on a one-column screen, where no row can hold two, they take the one cell); a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é) and is otherwise dropped. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
 
 The font must be TrueType, meaning it has `glyf` outlines; CFF-based `.otf` fonts are rejected. Color emoji fonts are bitmaps, not outlines, so emoji need a monochrome outline font such as Noto Emoji. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`). A damaged or hostile font is refused with a reason, and the run exits 1.
 
