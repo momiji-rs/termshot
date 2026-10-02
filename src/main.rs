@@ -950,6 +950,14 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
 }
 
 fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
+    // Text is lines that each end in LF, so the LF that ends the input ends
+    // the last line rather than opening a new one. Otherwise a capture as
+    // tall as the grid (tmux capture-pane ends every row with LF) would
+    // scroll its top row away.
+    let data = match lf {
+        Lf::Newline => data.strip_suffix(b"\n").unwrap_or(data),
+        Lf::Index => data,
+    };
     let mut screen = Screen::new(cols, rows, lf);
     // Reuse the fixed parameter buffer across sequences; only len needs resetting.
     let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
@@ -1140,7 +1148,8 @@ options:
   -s, --size CxR    grid size in columns x rows, up to 500x200 (default 100x30)
       --lf-newline  treat each bare LF as CR LF, for logs not captured
                     through a PTY: text files, cmd > out.log, and
-                    tmux capture-pane -e -p
+                    tmux capture-pane -e -p; a final LF ends the last
+                    line instead of scrolling
   -v, --verbose     print the cell and image size to stderr
   -h, --help        show this help
   -V, --version     show the version

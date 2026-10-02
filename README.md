@@ -108,13 +108,21 @@ cat session.pty | ./termshot - - > screen.png   # stdin to stdout
 ./termshot --fallback-font /path/to/cjk.ttf session.pty session.png
 ```
 
+To screenshot a TUI that is still running, drive it in tmux and capture the pane. tmux ends
+each row with a bare LF, so pass `--lf-newline` and the pane's size:
+
+```sh
+tmux new-session -d -s app -x 100 -y 30 top
+tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 - top.png
+```
+
 | option | |
 |---|---|
 | `-f`, `--font FILE` | TrueType font (default: built-in JetBrains Mono) |
 | `--fallback-font FILE` | TrueType font for characters the first lacks, such as CJK |
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
-| `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY |
+| `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final LF ends the last line instead of scrolling |
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 

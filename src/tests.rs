@@ -170,6 +170,22 @@ fn lf_newline_scrolls_at_the_bottom() {
 }
 
 #[test]
+fn lf_newline_final_lf_ends_the_last_line() {
+    // Four rows of text on four rows, as tmux capture-pane writes them.
+    let g = lines(b"1\n2\n3\n4\n");
+    assert_eq!((0..R).map(|r| line(&g, r)).collect::<Vec<_>>(), ["1         ", "2         ", "3         ", "4         "]);
+    // Without the flag, the same LF scrolls, as on a terminal.
+    assert_eq!(line(&grid(b"1\r\n2\r\n3\r\n4\r\n"), 0), "2         ");
+}
+
+#[test]
+fn lf_newline_keeps_an_empty_last_line() {
+    // Only one LF is a terminator: the line before it is empty, and shown.
+    let g = lines(b"1\n2\n3\n4\n\n");
+    assert_eq!((0..R).map(|r| line(&g, r)).collect::<Vec<_>>(), ["2         ", "3         ", "4         ", "          "]);
+}
+
+#[test]
 fn lf_newline_maps_only_lf() {
     // onlcr maps NL alone: VT and FF still only index.
     let g = lines(b"ab\x0bcd\x0cef");
@@ -378,10 +394,11 @@ fn fuzz_sizes_and_wide_characters() {
             Ok(cells) if cells.len() != cols * rows => Some(format!("{} cells", cells.len())),
             Ok(cells) => wide_pairs_are_whole(cells, cols).err(),
         };
-        // --lf-newline is exactly CR LF for every LF, wherever the LF lands:
-        // at top level, inside a CSI, after an ESC, or inside a string.
+        // --lf-newline is exactly CR LF for every LF but a final one,
+        // wherever the LF lands: at top level, inside a CSI, after an ESC,
+        // or inside a string.
         if failure.is_none() {
-            let crlf: Vec<u8> = log.iter().flat_map(|b| if *b == b'\n' { &b"\r\n"[..] } else { std::slice::from_ref(b) }).copied().collect();
+            let crlf: Vec<u8> = log.strip_suffix(b"\n").unwrap_or(&log).iter().flat_map(|b| if *b == b'\n' { &b"\r\n"[..] } else { std::slice::from_ref(b) }).copied().collect();
             let outcome = std::panic::catch_unwind(|| (parse_lf(&log, cols, rows, Lf::Newline), parse(&crlf, cols, rows)));
             failure = match &outcome {
                 Err(_) => Some("panicked with --lf-newline".to_string()),

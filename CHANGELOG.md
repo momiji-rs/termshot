@@ -8,7 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
-  does, for logs not captured through a PTY (#28).
+  does, for logs not captured through a PTY (#28). The LF that ends the
+  input ends the last line instead of scrolling, so
+  `tmux capture-pane -e -p | termshot --lf-newline --size <pane size>`
+  keeps the top row.
 
 ## [0.1.0] - 2026-10-01
 

@@ -115,6 +115,28 @@ check "--lf-newline renders LF as CR LF" 'cmp -s "$out/lf-newline.png" "$out/crl
 ./termshot --lf-newline "$log" "$out/lf-newline-pty.png"
 check "--lf-newline leaves a PTY log unchanged" 'cmp -s "$out/lf-newline-pty.png" "$out/legacy.png"'
 expect 2 "$log" "$out/x.png" --lf-newline=yes
+# Under --lf-newline the final LF ends the last line: rows as tall as the grid keep the top row.
+printf 'a\nb\nc\nd\n' | ./termshot --lf-newline --size 1x4 - "$out/lf-tall.png"
+printf 'a\r\nb\r\nc\r\nd' | ./termshot --size 1x4 - "$out/crlf-tall.png"
+check "--lf-newline keeps the top row of a full-height capture" 'cmp -s "$out/lf-tall.png" "$out/crlf-tall.png"'
+# The pipeline it is for: tmux capture-pane of a pane the size of the grid.
+# Needs tmux, which CI doesn't have.
+if command -v tmux >/dev/null; then
+    socket="termshot-test-$$"
+    printf '\033[31mred\033[m\r\nplain\r\n\r\nlast' > "$out/pane.pty"
+    tmux -L "$socket" -f /dev/null new-session -d -x 10 -y 4 "cat '$out/pane.pty'; sleep 30"
+    tries=0
+    until tmux -L "$socket" capture-pane -p | grep -q last || [ "$tries" -ge 50 ]; do
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+    tmux -L "$socket" capture-pane -e -p | ./termshot --lf-newline --size 10x4 - "$out/pane.png"
+    tmux -L "$socket" kill-server
+    ./termshot --size 10x4 "$out/pane.pty" "$out/pane-direct.png"
+    check "tmux capture-pane renders like the bytes the pane was sent" 'cmp -s "$out/pane.png" "$out/pane-direct.png"'
+else
+    echo "skip: tmux capture-pane check (no tmux)"
+fi
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
