@@ -37,7 +37,7 @@ Colors are the 16 and 256 color palettes (xterm's defaults) and 24-bit color, in
 `:` forms. Bold, dim, underline, double underline, strike-through, reverse video and hidden
 text are drawn; italic and blink are not. Wide characters (CJK, fullwidth forms, emoji) take two
 cells. A combining mark is kept only when Unicode has a precomposed form for it; other marks are
-dropped ([#14](https://github.com/solcreek/termshot/issues/14)).
+dropped ([#14](https://github.com/momiji-rs/termshot/issues/14)).
 
 ## Speed
 

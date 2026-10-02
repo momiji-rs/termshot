@@ -98,4 +98,4 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Produce a valid zlib stream for empty input in both compression implementations.
 - Release compressed data if allocating the final PNG buffer fails.
 
-[Unreleased]: https://github.com/solcreek/termshot/commits/main/
+[Unreleased]: https://github.com/momiji-rs/termshot/commits/main/

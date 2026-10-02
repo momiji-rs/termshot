@@ -7,7 +7,7 @@ libraries are not part of it.
 **Answer: no.** With the same compiler backend, the Rust and the C run at the same speed,
 within a few percent. Swapping gcc for LLVM moves the numbers more than swapping C for Rust
 does. So performance should not decide where code lives; memory safety should (see
-[#12](https://github.com/solcreek/termshot/issues/12)). One caveat: the Rust port
+[#12](https://github.com/momiji-rs/termshot/issues/12)). One caveat: the Rust port
 has to be written so LLVM can optimize it, and a literal line-for-line port of one loop ran 3x
 slower.
 
@@ -106,7 +106,7 @@ Moving `draw.c` or `deflate.c` to Rust would cost nothing in speed, if it is don
 does it: benchmarked against the C, and checked byte-identical. Every memory-safety bug found so
 far was in C: the image-size overflow (#2), and the font out-of-bounds reads and the shared
 canvas use-after-free (#8). That safety record, not speed, is the argument for moving.
-[#12](https://github.com/solcreek/termshot/issues/12) weighs it.
+[#12](https://github.com/momiji-rs/termshot/issues/12) weighs it.
 
 ## Limits
 
