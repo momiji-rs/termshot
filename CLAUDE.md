@@ -21,7 +21,7 @@ SANITIZE=1 ./tests/run.sh       # extended: codec round trips, deflate alloc fai
 ./target/test/unit --ignored          # #[ignore] tests only
 ```
 
-The convention (README, `src/tests.rs`) is that an `#[ignore]` test states the correct behaviour for a known bug and names its issue. The only one now is `poc_workloads`, which isn't that kind of test: it writes benchmark inputs to `$TERMSHOT_POC_DIR`, does nothing when the variable isn't set, and is described in `docs/c-vs-rust.md`.
+A test for a known bug states the correct behaviour and is marked `#[ignore = "#N: ..."]` with its issue, so it starts passing when the issue is fixed. None are open now. The bare `#[ignore]` on `poc_workloads` is different: that function is a benchmark helper, not a test. It writes inputs to `$TERMSHOT_POC_DIR` and does nothing when the variable is unset (see `docs/c-vs-rust.md`).
 
 Rebuild it after editing Rust without running the whole suite:
 

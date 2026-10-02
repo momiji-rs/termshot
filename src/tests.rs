@@ -1,6 +1,8 @@
 //! Parser unit tests. No crates, no FFI calls; ./test.sh builds and runs them.
-//! Tests marked #[ignore] state the correct behaviour for a known bug (see the
-//! issue in the reason) and should pass once it is fixed.
+//! A test for a known bug states the correct behaviour, is marked
+//! #[ignore = "#N: ..."] with its issue, and should pass once it is fixed.
+//! There are none open now. poc_workloads is ignored for another reason: it is
+//! a benchmark helper, not a test.
 
 use super::*;
 
