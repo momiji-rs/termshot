@@ -10,7 +10,13 @@ import unicodedata
 
 
 def width(text):
-    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+    """The fewest and the most cells text can take. Python's Unicode version
+    may be older than termshot's tables, so a code point it has unassigned
+    could be either width; every other one is wide when it is W or F."""
+    unknown = sum(unicodedata.category(ch) == "Cn" for ch in text)
+    wide = sum(unicodedata.east_asian_width(ch) in "WF" for ch in text if unicodedata.category(ch) != "Cn")
+    least = len(text) + wide
+    return least, least + unknown
 
 
 def check(json_path):
@@ -21,13 +27,17 @@ def check(json_path):
     if cursor is not None:
         assert 0 <= cursor["col"] < grid["cols"] and 0 <= cursor["row"] < grid["rows"], "cursor off the grid"
     for r, (runs, row) in enumerate(zip(grid["lines"], rows)):
-        col = 0
+        # Runs cover the row from column 0 without gaps, so each starts where
+        # the one before ends, and the last ends inside the grid.
+        least = most = 0
         for run in runs:
-            assert run["col"] >= col, f"row {r}: runs overlap"
-            col = run["col"] + width(run["text"])
+            assert least <= run["col"] <= most, f"row {r}: run at col {run['col']}, want {least}..{most}"
+            assert run["text"], f"row {r}: empty run at col {run['col']}"
+            low, high = width(run["text"])
+            least, most = run["col"] + low, run["col"] + high
             for key in ("fg", "bg"):
                 assert len(run[key]) == 7 and run[key][0] == "#", f"row {r}: {key} {run[key]}"
-        assert col <= grid["cols"], f"row {r}: runs past the last column"
+        assert least <= grid["cols"], f"row {r}: runs past the last column"
         # --text trims every trailing space; --json keeps those that show.
         assert "".join(run["text"] for run in runs).rstrip(" ") == row, f"row {r}: text differs from --text"
 
