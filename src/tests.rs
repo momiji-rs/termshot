@@ -241,6 +241,84 @@ fn pseudorandom_input_does_not_panic() {
     }
 }
 
+/// A WIDE cell has its TAIL to the right in the same row, and a TAIL has its
+/// WIDE to the left; anything else is half a character.
+fn wide_pairs_are_whole(cells: &[Cell], cols: usize) -> Result<(), String> {
+    for (i, cell) in cells.iter().enumerate() {
+        let col = i % cols;
+        if cell.attrs & WIDE != 0 && (col + 1 == cols || cells[i + 1].attrs & TAIL == 0) {
+            return Err(format!("WIDE without its TAIL at row {} col {col}", i / cols));
+        }
+        if cell.attrs & TAIL != 0 && (col == 0 || cells[i - 1].attrs & WIDE == 0) {
+            return Err(format!("TAIL without its WIDE at row {} col {col}", i / cols));
+        }
+    }
+    Ok(())
+}
+
+/// Random logs on random grid sizes, weighted toward the edges (one row or
+/// column), mixing wide and zero-width characters with the sequences that
+/// move, wrap, insert, erase and scroll. Checks that parse doesn't panic and
+/// leaves no half of a wide character. Rounds and seed come from
+/// TERMSHOT_FUZZ_ROUNDS and TERMSHOT_FUZZ_SEED; a failure prints both.
+#[test]
+fn fuzz_sizes_and_wide_characters() {
+    let env = |name: &str, default: u64| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
+    let rounds = env("TERMSHOT_FUZZ_ROUNDS", 20_000);
+    let seed = env("TERMSHOT_FUZZ_SEED", 0x2545_f491_4f6c_dd1d) | 1;
+    let mut x = seed;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    // Wide (CJK, Hangul, fullwidth, emoji), zero-width (combining acute, Thai
+    // vowel, ZWJ, VS16, skin tone), DEC graphics letters, and plain ASCII.
+    let chars = ["界", "한", "Ｗ", "😀", "\u{301}", "\u{e31}", "\u{200d}", "\u{fe0f}", "🏽", "q", "x", " ", "é"];
+    let finals = b"HfABCDEFGd`a@PXKJbrLMSTIZ";
+    let modes = ["?7h", "?7l", "?6h", "?6l", "?1049h", "?1049l", "?47h", "?47l", "4h", "4l"];
+    let escapes = ["\x1b7", "\x1b8", "\x1bD", "\x1bE", "\x1bM", "\x1bc", "\x1b#8", "\x1b(0", "\x1b(B", "\x0e", "\x0f"];
+    for round in 0..rounds {
+        let (cols, rows) = match next() % 4 {
+            0 => (1, 1 + next() as usize % 4),
+            1 => (1 + next() as usize % 4, 1),
+            2 => (1 + next() as usize % 3, 1 + next() as usize % 3),
+            _ => (1 + next() as usize % 40, 1 + next() as usize % 12),
+        };
+        let mut log = Vec::new();
+        for _ in 0..next() % 48 {
+            let r = next();
+            match r % 10 {
+                0..=3 => log.extend_from_slice(chars[(r >> 8) as usize % chars.len()].as_bytes()),
+                4 => log.push(b"\r\n\x08\t"[(r >> 8) as usize % 4]),
+                5 => log.extend_from_slice(escapes[(r >> 8) as usize % escapes.len()].as_bytes()),
+                6 => log.extend_from_slice(format!("\x1b[{}", modes[(r >> 8) as usize % modes.len()]).as_bytes()),
+                7 => log.push([0x80, 0xff, 0xe7, 0xf0][(r >> 8) as usize % 4]),
+                _ => {
+                    // A CSI with up to two parameters near the grid's size, or huge.
+                    let param = |v: u64| if v % 16 == 0 { 4_000_000_000 } else { v % (cols.max(rows) as u64 + 3) };
+                    let final_byte = finals[(r >> 8) as usize % finals.len()] as char;
+                    log.extend_from_slice(format!("\x1b[{};{}{final_byte}", param(r >> 16), param(r >> 40)).as_bytes());
+                }
+            }
+        }
+        let outcome = std::panic::catch_unwind(|| parse(&log, cols, rows));
+        let failure = match &outcome {
+            Err(_) => Some("panicked".to_string()),
+            Ok(cells) if cells.len() != cols * rows => Some(format!("{} cells", cells.len())),
+            Ok(cells) => wide_pairs_are_whole(cells, cols).err(),
+        };
+        if let Some(failure) = failure {
+            panic!(
+                "{failure} on round {round} (TERMSHOT_FUZZ_SEED={seed} TERMSHOT_FUZZ_ROUNDS={rounds}), \
+                 {cols}x{rows}: {:?}",
+                String::from_utf8_lossy(&log)
+            );
+        }
+    }
+}
+
 #[test]
 fn charset_designation_is_not_printed() {
     assert_eq!(line(&grid(b"\x1b(B\x1b)0\x1b#8a"), 0), "a         ");
