@@ -28,6 +28,8 @@ It draws one final frame, not an animation. The screen model follows xterm and c
   that full-screen programs use (`vi`, `less`)
 - cursor movement, tabs, erase, inserting and deleting characters, saving the cursor, and DEC
   line drawing (`ESC ( 0`)
+- the cursor, drawn as a block in reverse video where the log leaves it, unless the log hides
+  it (`ESC [ ? 25 l`)
 
 `tests/vt/` checks this against tmux, on short cases and on recorded `ls`, `less` and `vi`
 sessions. A bare LF moves down without returning to column 0, as in a terminal; logs captured

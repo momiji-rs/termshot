@@ -15,6 +15,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the same with the flag as without.
 - A hint on stderr when a log has line feeds but no CR and `--lf-newline`
   is not given. The image is still written and the exit status is 0.
+- The cursor is drawn where the log leaves it, as a block in reverse video
+  (#33). On a wide character it covers both cells. With a wrap pending it
+  stays on the last column, as terminals draw it.
+
+### Changed
+
+- Renders now show the cursor unless the log hides it with `ESC [ ? 25 l`
+  (DECTCEM), as full-screen programs and progress bars often do.
 
 ### Fixed
 

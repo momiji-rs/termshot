@@ -3,487 +3,636 @@ abcdefghxj
 
 
 
+cursor 9,0
 == tab-last
 abcdefghix
 
 
 
+cursor 9,0
 == bs
 axc
 
 
 
+cursor 2,0
 == bs-col0
 x
 
 
 
+cursor 1,0
 == bs-last
         cb
 
 
 
+cursor 9,0
 == hts
 abcxefghij
 
 
 
+cursor 4,0
 == tbc
 abcdefghix
 
 
 
+cursor 9,0
 == cbt
 abcdefghxj
 
 
 
+cursor 9,0
 == cht
 abcdefghix
 
 
 
+cursor 9,0
 == cha
   y x
 
    z     !
 
+cursor 9,2
 == cnl-cpl
 ab
 y
 x
 
+cursor 1,1
 == hpr-vpr
    x
 
     y
 
+cursor 5,2
 == ich
 ab  cdef
 
 
 
+cursor 2,0
 == ich-overflow
 abcdefgh
 
 
 
+cursor 8,0
 == dch
 adef
 
 
 
+cursor 1,0
 == dch-overflow
 a
 
 
 
+cursor 1,0
 == ech
 az def
 
 
 
+cursor 2,0
 == rep
 abbbb
 
 
 
+cursor 5,0
 == decsc
 
  z
 
 
+cursor 2,1
 == scosc
 
  z
 
 
+cursor 2,1
 == ind
 ab
   c
 
 
+cursor 3,1
 == nel
 ab
 c
 
 
+cursor 1,1
 == ri
 
 x
 
 
+cursor 1,1
 == ris
 x
 
 
 
+cursor 1,0
 == vt-ff
 a
  b
   c
 
+cursor 3,2
 == lf
 ab
   cd
 
 
+cursor 4,1
 == ed0
 a
 
 
 
+cursor 1,0
 == ed1
 
   ij
 
 
+cursor 1,1
 == ed2
    x
 
 
 
+cursor 4,0
 == el1
     ef
 
 
 
+cursor 3,0
 == el2
 
 
 
 
+cursor 3,0
 == cuf
 ab       x
 
 
 
+cursor 9,0
 == cup-clamp
 
 
 
          x
+cursor 9,3
 == charset-esc
 ok
 
 
 
+cursor 2,0
 == osc-esc
 
  x
 
 
+cursor 2,1
 == wrap
 abcdefghij
 KL
 
 
+cursor 2,1
 == wrap-pending-cr
 Xbcdefghij
 
 
 
+cursor 1,0
 == wrap-pending-lf
 abcdefghij
          X
 
 
+cursor 9,1
 == wrap-pending-cup
 abcdefghij
 X
 
 
+cursor 1,1
 == wrap-pending-el
 abcdefghi
 
 
 
+cursor 9,0
 == wrap-scroll
 abcdefghij
 ABCDEFGHIJ
 klmnopqrst
 UV
+cursor 2,3
 == nowrap
 abcdefghiL
 
 
 
+cursor 9,0
 == nowrap-back
 abcdefghij
 MN
 
 
+cursor 2,1
 == lf-scroll
 b
 c
 d
 e
+cursor 1,3
 == ind-scroll
 
 
 x
  y
+cursor 2,3
 == nel-scroll
 
 
 x
 y
+cursor 1,3
 == ri-scroll
 x
 a
 b
 
+cursor 1,0
 == region-lf
 1
 
 X
 4
+cursor 1,2
 == region-ri
 1
 X
 2
 4
+cursor 1,1
 == region-home
 xbc
 
 
 
+cursor 1,0
 == region-wrap
 1
 abcdefghij
 kl
 4
+cursor 2,2
 == region-below
 
 
 
 xY
+cursor 2,3
 == region-cuu
 
 x
 
 
+cursor 1,1
 == region-cud
 
 
 x
 
+cursor 1,2
 == region-bad
 2
 3
 4
 X
+cursor 1,3
 == su
 3
 4
 
 
+cursor 1,3
 == sd
 
 1
 2
 3
+cursor 1,3
 == su-region
 1
 3
 
 4
+cursor 0,0
 == il
 1
 
 2
 3
+cursor 0,1
 == il-col
 1
  Z
 2x
 3
+cursor 2,1
 == dl
 1
 3
 4
 
+cursor 0,1
 == il-region
 1
 
 2
 4
+cursor 0,1
 == il-outside
 1
 2
 3
 4
+cursor 0,3
 == dl-many
 1
 
 
 
+cursor 0,1
 == origin
 
 x
         y
 
+cursor 9,2
 == origin-off
 x
 
 
 
+cursor 1,0
 == ed3
 abc
 
 
 
+cursor 3,0
 == alt
     alt
 
 
 
+cursor 7,0
 == alt-exit
 mainX
 
 
 
+cursor 5,0
 == alt-clear
 ok
 
 
 
+cursor 2,0
 == alt-47
 main Y
 
 
 
+cursor 6,0
 == alt-1047
 main Y
 
 
 
+cursor 6,0
 == alt-1048
 abY
 
   x
 
+cursor 3,0
 == rep-wrap
 abbbbbbbbb
 bbbb
 
 
+cursor 4,1
 == wide
 a中b
 
 
 
+cursor 4,0
 == wide-wrap
 
 中x
 
 
+cursor 3,1
 == wide-fill
         中
 x
 
 
+cursor 1,1
 == wide-nowrap
 
 
 
 
+cursor 9,0
 == wide-tail
  x
 
 
 
+cursor 2,0
 == wide-lead
 x
 
 
 
+cursor 1,0
 == wide-shift
  文
 
 
 
+cursor 3,0
 == wide-ascii
  ab
 
 
 
+cursor 3,0
 == wide-el
 
 
 
 
+cursor 1,0
 == wide-ech
   x
 
 
 
+cursor 0,0
 == wide-dch
  x
 
 
 
+cursor 0,0
 == wide-ich
  aaaaaaaa
 
 
 
+cursor 0,0
 == emoji
 😀!
 
 
 
+cursor 3,0
 == hangul
 한글
 
 
 
+cursor 4,0
 == fullwidth
 ＡＢ
 
 
 
+cursor 4,0
 == combine
 éäx
 
 
 
+cursor 3,0
 == zwj
 ab
 
 
 
+cursor 2,0
 == wide-1x1
 界
+cursor 0,0
 == wide-1col
 a
 界
 b
+cursor 0,2
 == wide-1col-scroll
 界
 x
+cursor 0,1
 == wide-1col-nowrap
 a
 
 
+cursor 0,0
 == wide-1col-rep
 界
 界
 界
+cursor 0,2
 == wide-1col-combine
 é
 界
+cursor 0,1
 == wide-1col-margins
 
 界
 界
+cursor 0,2
 == wide-2col
 a
 界
+cursor 1,1
 == wide-2col-fit
 界
 a
+cursor 1,1
 == wide-2col-rep
 界
 界
 界
+cursor 1,2
+== cursor-hidden
+ab
+
+
+
+cursor hidden
+== cursor-shown-again
+ab
+
+
+
+cursor 2,0
+== cursor-hidden-ris
+
+
+
+
+cursor 0,0
+== cursor-hidden-alt
+
+
+
+
+cursor hidden
+== cursor-hidden-decrc
+
+
+
+
+cursor hidden
+== cursor-wide
+a中
+
+
+
+cursor 2,0
+== cursor-wide-first
+a中
+
+
+
+cursor 1,0
+== cursor-pending
+
+0123456789
+
+
+cursor 9,1

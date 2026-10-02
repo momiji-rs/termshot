@@ -210,6 +210,9 @@ struct Screen {
     last: Option<u32>,
     /// Where it went (a storage index), for combining marks that follow.
     last_at: Option<usize>,
+    /// DECTCEM (mode 25): whether the cursor is shown. One setting for both
+    /// screens, and DECSC does not save it, as in xterm.
+    cursor_shown: bool,
     /// Not terminal state: RIS keeps it, as a reset keeps the tty's settings.
     lf: Lf,
 }
@@ -238,6 +241,7 @@ impl Screen {
             shifted: false,
             last: None,
             last_at: None,
+            cursor_shown: true,
             lf,
         }
     }
@@ -406,6 +410,7 @@ impl Screen {
                 self.home();
             }
             7 => self.autowrap = on,
+            25 => self.cursor_shown = on,
             47 | 1047 => self.use_alternate(on, mode == 1047 && !on),
             1048 => {
                 if on {
@@ -969,7 +974,19 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
     parse_lf(data, cols, rows, Lf::Index)
 }
 
+#[cfg(test)]
 fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
+    replay(data, cols, rows, lf).cells
+}
+
+/// The screen a log leaves: its cells in screen order, and the cursor as
+/// (row, col) unless the log hid it.
+struct Grid {
+    cells: Vec<Cell>,
+    cursor: Option<(usize, usize)>,
+}
+
+fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
     let data = match lf {
         Lf::Newline => strip_final_bare_lf(data),
         Lf::Index => data,
@@ -1052,7 +1069,34 @@ fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
         }
         i += 1;
     }
-    screen.into_cells()
+    // With a wrap pending the cursor stays on the last column, where
+    // terminals draw it.
+    let cursor = screen.cursor_shown.then_some((screen.row, screen.col));
+    Grid { cells: screen.into_cells(), cursor }
+}
+
+/// Draw the cursor as a block in reverse video over the cell at (row, col),
+/// or over both cells of the wide character it is on.
+fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
+    let line = row * cols..(row + 1) * cols;
+    let mut start = line.start + col;
+    if cells[start].attrs & TAIL != 0 && start > line.start {
+        start -= 1;
+    }
+    let end = if cells[start].attrs & WIDE != 0 { start + 2 } else { start + 1 };
+    for cell in &mut cells[start..end.min(line.end)] {
+        let (fg, bg) = ((cell.fr, cell.fg, cell.fb), (cell.br, cell.bg, cell.bb));
+        // Concealed text (the colours alike) stays hidden in a block that
+        // still shows.
+        let (fg, bg) = if fg != bg {
+            (bg, fg)
+        } else {
+            let block = if bg == DEFAULT_FG { DEFAULT_BG } else { DEFAULT_FG };
+            (block, block)
+        };
+        (cell.fr, cell.fg, cell.fb) = fg;
+        (cell.br, cell.bg, cell.bb) = bg;
+    }
 }
 
 /// Parse one CSI sequence whose parameters start at i, apply it, and return
@@ -1397,7 +1441,10 @@ fn main() -> ExitCode {
 
     let parse_started = Instant::now();
     let input_bytes = data.len();
-    let cells = parse_lf(&data, options.cols, options.rows, options.lf);
+    let Grid { mut cells, cursor } = replay(&data, options.cols, options.rows, options.lf);
+    if let Some((row, col)) = cursor {
+        draw_cursor(&mut cells, options.cols, row, col);
+    }
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);
