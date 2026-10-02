@@ -148,6 +148,20 @@ fn bare_lf_indexes_without_returning() {
 }
 
 #[test]
+fn a_log_without_cr_is_flagged() {
+    assert!(lacks_cr(b"ab\ncd"));
+    assert!(!lacks_cr(b"ab\r\ncd"));
+    // One CR anywhere is enough to stay quiet: a PTY log with the odd bare
+    // LF (a program that moves down without returning) is still a PTY log.
+    assert!(!lacks_cr(b"ab\ncd\r"));
+    // No line feed, nothing to hint about: a one-line log, or a TUI that
+    // only addresses the cursor.
+    assert!(!lacks_cr(b"ab"));
+    assert!(!lacks_cr(b"\x1b[2;1Hab"));
+    assert!(!lacks_cr(b""));
+}
+
+#[test]
 fn lf_newline_returns_to_column_zero() {
     let g = lines(b"ab\ncd\r\nef");
     assert_eq!(line(&g, 0), "ab        ");

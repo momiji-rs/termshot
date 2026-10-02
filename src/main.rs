@@ -943,6 +943,13 @@ fn skip_string(data: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// Whether a log looks like it never went through a PTY: it has line feeds
+/// but no CR at all, which `onlcr` would have added before each one.
+/// Checks CR first, so a PTY log stops at its first line end.
+fn lacks_cr(data: &[u8]) -> bool {
+    !data.contains(&b'\r') && data.contains(&b'\n')
+}
+
 /// Replay a log as a terminal would, with bare LFs indexing.
 #[cfg(test)]
 fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
@@ -1346,6 +1353,15 @@ fn main() -> ExitCode {
         Err(error) => return cleanup(1, format!("{}: {error}", options.log)),
     };
     let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
+    // The image would still be made, with each line starting where the
+    // last one ended; say why, and what fixes it.
+    if options.lf == Lf::Index && lacks_cr(&data) {
+        eprintln!(
+            "termshot: hint: {} has line feeds but no CR, so each line starts where the last ended; \
+             if it was not captured through a PTY (a text file, cmd > out.log, tmux capture-pane), pass --lf-newline",
+            if options.log == "-" { "stdin" } else { &options.log }
+        );
+    }
 
     let font_started = Instant::now();
     let mut font_timings = font::LoadTimings::default();

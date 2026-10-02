@@ -126,7 +126,8 @@ tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 - top.png
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 
-It prints nothing on success. Exit status is 0 when done; 1 when a file can't be read or written,
+It prints nothing on success, except a hint on stderr when the log has line feeds but no CR,
+which means it was probably not captured through a PTY and needs `--lf-newline`. Exit status is 0 when done; 1 when a file can't be read or written,
 or the font is unusable; and 2 for bad arguments, including an image over 2^27 pixels. termshot
 won't write a PNG to a terminal. A failed run removes the output file it created.
 

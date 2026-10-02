@@ -141,6 +141,11 @@ fi
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
 check "quiet by default" '[ -z "$(./termshot "$log" "$out/q.png" 2>&1)" ]'
+check "a log with LF but no CR hints at --lf-newline" 'printf "a\nb" | ./termshot - "$out/q.png" 2>&1 | grep -q -- "pass --lf-newline"'
+check "the hint names the file" 'printf "a\nb" > "$out/bare.log" && ./termshot "$out/bare.log" "$out/q.png" 2>&1 | grep -q "bare.log has line feeds"'
+check "no hint with --lf-newline" '[ -z "$(printf "a\nb" | ./termshot --lf-newline - "$out/q.png" 2>&1)" ]'
+check "no hint for CR LF" '[ -z "$(printf "a\r\nb" | ./termshot - "$out/q.png" 2>&1)" ]'
+check "the hint keeps exit status 0" 'printf "a\nb" | ./termshot - "$out/q.png" 2>/dev/null'
 check "verbose prints the image size" './termshot -v "$log" "$out/q.png" 2>&1 | grep -q "image 2200x1440"'
 rm -f "$out/gone.png"
 ./termshot "$log" "$out/gone.png" "$font" 255 500 73 2>/dev/null || true

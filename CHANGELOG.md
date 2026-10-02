@@ -12,6 +12,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   input ends the last line instead of scrolling, so
   `tmux capture-pane -e -p | termshot --lf-newline --size <pane size>`
   keeps the top row.
+- A hint on stderr when a log has line feeds but no CR and `--lf-newline`
+  is not given. The image is still written and the exit status is 0.
 
 ## [0.1.0] - 2026-10-01
 
