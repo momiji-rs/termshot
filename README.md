@@ -90,7 +90,7 @@ This builds termshot, runs the parser unit tests, checks box drawing (`tests/box
 
 When a change is meant to move pixels, look at the renders in `target/test/`, then run `./test.sh --update-goldens`. `SANITIZE=1 ./test.sh` builds draw.c with ASan and UBSan; this works on macOS only.
 
-Tests marked `#[ignore]` describe the correct behaviour for a known bug and name its issue. Run them with `./target/test/unit --ignored`.
+A test for a known bug describes the correct behaviour and is marked `#[ignore = "#N: ..."]` with its issue. None are open now. Run them with `./target/test/unit --ignored`. The other ignored test, `poc_workloads`, writes inputs for `bench/c-vs-rust/` and checks nothing.
 
 ## Run
 
