@@ -453,3 +453,37 @@ ab
 
 
 
+== wide-1x1
+界
+== wide-1col
+a
+界
+b
+== wide-1col-scroll
+界
+x
+== wide-1col-nowrap
+a
+
+
+== wide-1col-rep
+界
+界
+界
+== wide-1col-combine
+é
+界
+== wide-1col-margins
+
+界
+界
+== wide-2col
+a
+界
+== wide-2col-fit
+界
+a
+== wide-2col-rep
+界
+界
+界
