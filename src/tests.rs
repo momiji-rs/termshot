@@ -257,8 +257,9 @@ fn wide_pairs_are_whole(cells: &[Cell], cols: usize) -> Result<(), String> {
 }
 
 /// Random logs on random grid sizes, weighted toward the edges (one row or
-/// column), mixing wide and zero-width characters with the sequences that
-/// move, wrap, insert, erase and scroll. Checks that parse doesn't panic and
+/// column, and rarely the CLI's 500x200 limit), mixing wide and zero-width
+/// characters with the sequences that move, wrap, insert, erase and scroll,
+/// and with OSC and DCS strings. Checks that parse doesn't panic and
 /// leaves no half of a wide character. Rounds and seed come from
 /// TERMSHOT_FUZZ_ROUNDS and TERMSHOT_FUZZ_SEED; a failure prints both.
 #[test]
@@ -279,12 +280,20 @@ fn fuzz_sizes_and_wide_characters() {
     let finals = b"HfABCDEFGd`a@PXKJbrLMSTIZ";
     let modes = ["?7h", "?7l", "?6h", "?6l", "?1049h", "?1049l", "?47h", "?47l", "4h", "4l"];
     let escapes = ["\x1b7", "\x1b8", "\x1bD", "\x1bE", "\x1bM", "\x1bc", "\x1b#8", "\x1b(0", "\x1b(B", "\x0e", "\x0f"];
+    // OSC and DCS ended by BEL or ST, with a wide character inside, and one
+    // left open so what follows lands in the string.
+    let strings = ["\x1b]0;界\x07", "\x1b]8;;http://x\x1b\\", "\x1bPq界\x1b\\", "\x1b]2;"];
     for round in 0..rounds {
-        let (cols, rows) = match next() % 4 {
-            0 => (1, 1 + next() as usize % 4),
-            1 => (1 + next() as usize % 4, 1),
-            2 => (1 + next() as usize % 3, 1 + next() as usize % 3),
-            _ => (1 + next() as usize % 40, 1 + next() as usize % 12),
+        let (cols, rows) = match next() % 64 {
+            // At or near the CLI's limits; rare, as each is 100,000 cells.
+            0 => (500 - next() as usize % 2, 200 - next() as usize % 2),
+            1 => (1 + next() as usize % 500, 1 + next() as usize % 200),
+            r => match r % 4 {
+                0 => (1, 1 + next() as usize % 4),
+                1 => (1 + next() as usize % 4, 1),
+                2 => (1 + next() as usize % 3, 1 + next() as usize % 3),
+                _ => (1 + next() as usize % 40, 1 + next() as usize % 12),
+            },
         };
         let mut log = Vec::new();
         for _ in 0..next() % 48 {
@@ -292,7 +301,8 @@ fn fuzz_sizes_and_wide_characters() {
             match r % 10 {
                 0..=3 => log.extend_from_slice(chars[(r >> 8) as usize % chars.len()].as_bytes()),
                 4 => log.push(b"\r\n\x08\t"[(r >> 8) as usize % 4]),
-                5 => log.extend_from_slice(escapes[(r >> 8) as usize % escapes.len()].as_bytes()),
+                5 if r & 0x100 == 0 => log.extend_from_slice(escapes[(r >> 9) as usize % escapes.len()].as_bytes()),
+                5 => log.extend_from_slice(strings[(r >> 9) as usize % strings.len()].as_bytes()),
                 6 => log.extend_from_slice(format!("\x1b[{}", modes[(r >> 8) as usize % modes.len()]).as_bytes()),
                 7 => log.push([0x80, 0xff, 0xe7, 0xf0][(r >> 8) as usize % 4]),
                 _ => {
@@ -312,8 +322,8 @@ fn fuzz_sizes_and_wide_characters() {
         if let Some(failure) = failure {
             panic!(
                 "{failure} on round {round} (TERMSHOT_FUZZ_SEED={seed} TERMSHOT_FUZZ_ROUNDS={rounds}), \
-                 {cols}x{rows}: {:?}",
-                String::from_utf8_lossy(&log)
+                 {cols}x{rows}: b\"{}\"",
+                log.escape_ascii()
             );
         }
     }
