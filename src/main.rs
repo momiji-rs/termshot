@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 mod font;
+mod graphics;
 mod unicode;
 #[rustfmt::skip]
 mod unicode_tables;
@@ -116,6 +117,11 @@ impl Cell {
 }
 
 extern "C" {
+    fn draw_cell_size(font: *const u8, px: f64, w: *mut i32, h: *mut i32) -> i32;
+    fn draw_png_images(cells: *const Cell, cols: i32, rows: i32, font: *const u8,
+        fallback: *const u8, font_size: f64, out_path: *const std::ffi::c_char,
+        verbose: i32, images: *const graphics::ImageView, count: usize) -> i32;
+    #[cfg(test)]
     fn draw_png(
         cells: *const Cell,
         cols: i32,
@@ -180,6 +186,9 @@ impl Saved {
 /// character wraps first, and most other controls cancel the wrap (xterm's
 /// model).
 struct Screen {
+    graphics: graphics::Graphics,
+    other_graphics: graphics::Graphics,
+    cell_size: (i32, i32),
     /// Rows of cells in storage order; `map` gives the storage row of each
     /// screen row, so scrolling rotates `map` instead of moving cells.
     cells: Vec<Cell>,
@@ -220,6 +229,9 @@ struct Screen {
 impl Screen {
     fn new(cols: usize, rows: usize, lf: Lf) -> Self {
         Self {
+            graphics: graphics::Graphics::default(),
+            other_graphics: graphics::Graphics::default(),
+            cell_size: (1, 1),
             cells: vec![Cell::blank(); cols * rows],
             map: (0..rows).collect(),
             other: vec![Cell::blank(); cols * rows],
@@ -348,6 +360,7 @@ impl Screen {
     /// Move rows top..=bottom up by n, blanking the n rows that open at the bottom.
     fn scroll_up(&mut self, top: usize, bottom: usize, n: usize) {
         let n = n.min(bottom + 1 - top);
+        self.graphics.scroll(top, bottom, -(n as i64), self.cell_size.1);
         self.map[top..=bottom].rotate_left(n);
         self.erase_rows(bottom + 1 - n, bottom + 1);
     }
@@ -355,6 +368,7 @@ impl Screen {
     /// Move rows top..=bottom down by n, blanking the n rows that open at the top.
     fn scroll_down(&mut self, top: usize, bottom: usize, n: usize) {
         let n = n.min(bottom + 1 - top);
+        self.graphics.scroll(top, bottom, n as i64, self.cell_size.1);
         self.map[top..=bottom].rotate_right(n);
         self.erase_rows(top, top + n);
     }
@@ -426,6 +440,7 @@ impl Screen {
                     self.save_cursor();
                     self.use_alternate(true, false);
                     self.erase_rows(0, self.rows);
+                    self.graphics = graphics::Graphics::default();
                 }
             }
             1049 => {
@@ -445,8 +460,12 @@ impl Screen {
             return;
         }
         if clear_first {
+            self.graphics = graphics::Graphics::default();
             self.erase_rows(0, self.rows);
         }
+        self.graphics.abort();
+        self.other_graphics.abort();
+        std::mem::swap(&mut self.graphics, &mut self.other_graphics);
         std::mem::swap(&mut self.cells, &mut self.other);
         std::mem::swap(&mut self.map, &mut self.other_map);
         self.on_alternate = on;
@@ -738,7 +757,10 @@ impl Screen {
                         self.erase_rows(0, self.row);
                         self.erase(line.start, cursor + 1);
                     }
-                    2 => self.erase_rows(0, self.rows),
+                    2 => {
+                        self.erase_rows(0, self.rows);
+                        self.graphics.placements.clear();
+                    },
                     // 3 clears only the scrollback, which termshot does not keep.
                     _ => {}
                 }
@@ -982,16 +1004,23 @@ fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
 /// The screen a log leaves: its cells in screen order, and the cursor as
 /// (row, col) unless the log hid it.
 struct Grid {
+    images: Vec<graphics::Placement>,
     cells: Vec<Cell>,
     cursor: Option<(usize, usize)>,
 }
 
+#[cfg(test)]
 fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
+    replay_sized(data, cols, rows, lf, (1, 1))
+}
+
+fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, i32)) -> Grid {
     let data = match lf {
         Lf::Newline => strip_final_bare_lf(data),
         Lf::Index => data,
     };
     let mut screen = Screen::new(cols, rows, lf);
+    screen.cell_size = cell_size;
     // Reuse the fixed parameter buffer across sequences; only len needs resetting.
     let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
     let mut i = 0;
@@ -1012,6 +1041,22 @@ fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
             i += 2;
             match kind {
                 b'[' => i = csi(&mut screen, &mut params, data, i),
+                b'_' if data.get(i) == Some(&b'G') => {
+                    let end = skip_string(data, i);
+                    // Only ST commits a graphics command; BEL/CAN/SUB, another
+                    // escape, or EOF discard it and any incomplete upload.
+                    if end >= i + 3 && data.get(end - 2..end) == Some(b"\x1b\\") {
+                        if let Some((dc, dr)) = screen.graphics.command(
+                            &data[i + 1..end - 2], screen.col, screen.row, cell_size, rows,
+                        ) {
+                            screen.col = screen.col.saturating_add(dc).min(cols - 1);
+                            // The protocol leaves overflow positioning implementation-defined.
+                            screen.row = screen.row.saturating_add(dr).min(screen.bottom.max(screen.row));
+                            screen.pending = false;
+                        }
+                    } else { screen.graphics.abort(); }
+                    i = end;
+                }
                 b']' | b'P' | b'_' | b'^' | b'X' => i = skip_string(data, i),
                 // ESC ( B, ESC ) 0, ESC # 8: intermediates, then one final byte.
                 0x20..=0x2f => {
@@ -1044,7 +1089,10 @@ fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
                     screen.tabs[col] = true;
                 }
                 // RIS: full reset.
-                b'c' => screen = Screen::new(cols, rows, lf),
+                b'c' => {
+                    screen = Screen::new(cols, rows, lf);
+                    screen.cell_size = cell_size;
+                },
                 // CAN and SUB cancel the escape.
                 0x18 | 0x1a => {}
                 // Another ESC starts over; other C0 controls still execute.
@@ -1072,7 +1120,8 @@ fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
     // With a wrap pending the cursor stays on the last column, where
     // terminals draw it.
     let cursor = screen.cursor_shown.then_some((screen.row, screen.col));
-    Grid { cells: screen.into_cells(), cursor }
+    let images = std::mem::take(&mut screen.graphics.placements);
+    Grid { cells: screen.into_cells(), cursor, images }
 }
 
 /// Draw the cursor as a block in reverse video over the cell at (row, col),
@@ -1474,7 +1523,12 @@ fn main() -> ExitCode {
 
     let parse_started = Instant::now();
     let input_bytes = data.len();
-    let Grid { mut cells, cursor } = replay(&data, options.cols, options.rows, options.lf);
+    let (mut cell_w, mut cell_h) = (0, 0);
+    if unsafe { draw_cell_size(font.as_ptr(), options.px, &mut cell_w, &mut cell_h) } == 0 {
+        return cleanup(1, "font metrics unusable".into());
+    }
+    let Grid { mut cells, cursor, images } = replay_sized(&data, options.cols, options.rows, options.lf, (cell_w, cell_h));
+    let image_views: Vec<_> = images.iter().map(graphics::Placement::view).collect();
     if let Some((row, col)) = options.cursor.unwrap_or(cursor) {
         draw_cursor(&mut cells, options.cols, row, col);
     }
@@ -1486,7 +1540,7 @@ fn main() -> ExitCode {
         return cleanup(2, "output path contains a nul byte".into());
     };
     let code = unsafe {
-        draw_png(
+        draw_png_images(
             cells.as_ptr(),
             options.cols as i32,
             options.rows as i32,
@@ -1495,6 +1549,8 @@ fn main() -> ExitCode {
             options.px,
             out.as_ptr(),
             i32::from(options.verbose),
+            image_views.as_ptr(),
+            image_views.len(),
         )
     };
     if profile {

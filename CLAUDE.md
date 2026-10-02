@@ -37,10 +37,10 @@ Other tools: `tests/vt/oracle.sh` compares `tests/vt/expected.txt` against tmux 
 
 The pipeline is Rust in, C out:
 
-1. **`src/main.rs`** holds the CLI (`parse_args`), the input handling, and the whole VT parser and screen model: `Screen`, `Pen`, `Cell`, `parse`/`parse_lf`, `csi`, and `utf8_at`. It follows xterm: autowrap, scroll regions, the alternate screen, DEC graphics, and so on. Output is a flat `Vec<Cell>` of `cols*rows`.
+1. **`src/main.rs`** holds the CLI (`parse_args`), the input handling, and the whole VT parser and screen model: `Screen`, `Pen`, `Cell`, `parse`/`parse_lf`, `csi`, and `utf8_at`. It follows xterm: autowrap, scroll regions, the alternate screen, DEC graphics, and so on. Output is a flat `Vec<Cell>` of `cols*rows` plus final image placements. `src/graphics.rs` handles the supported kitty direct-transmission subset; `src/image.c` wraps the vendored PNG decoder with a bounded allocator.
 2. **`src/font.rs`** validates every TrueType structure stb_truetype will touch before C ever sees the font, because stb trusts its input. A font that fails is refused with a reason (exit 1). Fonts reach C with zero padding after them. JetBrains Mono is embedded with `include_bytes!` as the default.
 3. **`src/unicode.rs`** and **`src/unicode_tables.rs`** give character widths (wide = 2 cells) and canonical composition for combining marks.
-4. **`src/draw.c`** is the rasterizer, behind the single FFI entry point `draw_png`. It uses stb_truetype for glyphs and paints box drawing and block elements (U+2500–U+259F) as geometry. It writes the PNG through a locally modified `stb_image_write.h`, with `src/deflate.c` as the compressor (stb's deflate made faster, with byte-identical output) and `src/png_crc.h` for the CRC.
+4. **`src/draw.c`** is the rasterizer, behind `draw_png_images` (and the cell-only `draw_png` test wrapper). `draw_cell_size` shares its exact font metrics with the parser so native-pixel images move the cursor correctly. It uses stb_truetype for glyphs and paints box drawing and block elements (U+2500–U+259F) as geometry. It writes the PNG through a locally modified `stb_image_write.h`, with `src/deflate.c` as the compressor (stb's deflate made faster, with byte-identical output) and `src/png_crc.h` for the CRC.
 
 `Cell` is `#[repr(C)]` and shared across the FFI boundary: `draw.c` asserts `sizeof(Cell) == 12`, and the `ATTR_*` bits are defined in both languages. Change both sides together.
 

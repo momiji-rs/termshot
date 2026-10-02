@@ -271,7 +271,7 @@ fn private_and_unknown_csi_are_skipped() {
 
 /// The grid with the cursor drawn where the log leaves it, if shown.
 fn with_cursor(s: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
-    let Grid { mut cells, cursor } = replay(s, cols, rows, Lf::Index);
+    let Grid { mut cells, cursor, .. } = replay(s, cols, rows, Lf::Index);
     if let Some((row, col)) = cursor {
         draw_cursor(&mut cells, cols, row, col);
     }

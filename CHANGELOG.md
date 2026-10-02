@@ -7,6 +7,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Replay kitty inline graphics (`a=T,t=d`) in RGB, RGBA and PNG formats,
+  including chunked uploads, alpha blending, cell-sized placements, native
+  pixel sizing, image-ID replacement and deletion (#41). Images track scrolling
+  and alternate screens. Unsupported graphics features, including Sixel and
+  external-file transfers, remain ignored; see the README for the supported
+  subset and resource limits.
+
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so
