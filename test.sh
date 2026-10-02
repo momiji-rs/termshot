@@ -189,6 +189,19 @@ check "--text and --json together match each alone" 'cmp -s "$out/both.txt" "$ou
 expect 2 --json - --text - "$log"
 expect 2 --json - "$log" -
 expect 1 --json "$out/no-such-dir/x.json" "$log"
+# No output may be another output or an input, however the path is spelled.
+cp "$log" "$out/clash.pty"
+ln -sf clash.pty "$out/clash-link.pty"
+rm -f "$out/clash.txt"
+expect 2 --text "$out/clash.txt" --json "$out/clash.txt" "$log"
+expect 2 --text "$out/clash.txt" --json "$out/../test/clash.txt" "$log"
+expect 2 --json "$out/clash.txt" "$log" "$out/clash.txt"
+check "a refused clash creates no file" '[ ! -e "$out/clash.txt" ]'
+expect 2 --text "$out/clash.pty" "$out/clash.pty"
+expect 2 --json "$out/clash-link.pty" "$out/clash.pty"
+expect 2 "$out/clash.pty" "./$out/clash.pty"
+expect 2 --font "$out/clash.pty" "$log" "$out/clash.pty"
+check "a clash leaves the input as it was" 'cmp -s "$out/clash.pty" "$log"'
 # Every golden's JSON parses, and its runs spell the --text rows.
 if command -v python3 >/dev/null; then
     check "the golden JSON parses and agrees with --text" 'python3 tests/grids/check.py tests/grids'

@@ -51,6 +51,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   characters to one (µ in iA Writer Duospace). It now counts as missing:
   the fallback font draws the character, or it is drawn as a box. Blank
   characters keep their empty glyphs.
+- An output that names the log or a font overwrote it, and two outputs
+  that name one file overwrote each other. Both are refused with exit 2,
+  however the paths are spelled (`a`, `./a`, a symlink).
 
 ## [0.1.0] - 2026-10-01
 

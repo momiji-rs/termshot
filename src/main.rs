@@ -1497,6 +1497,35 @@ fn load_fonts(
 }
 
 /// Write a text output to its file, or to stdout for -.
+/// Why an output can't be written: it names the same file as another output,
+/// which would overwrite it, or as an input, which would destroy it. One file
+/// can be named many ways (`a`, `./a`, `d/../a`, a symlink), so paths are
+/// compared canonical: the file if it exists, else its directory.
+fn output_clash(options: &Options) -> Option<String> {
+    let canonical = |path: &str| {
+        let path = std::path::Path::new(path);
+        let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        fs::canonicalize(path)
+            .or_else(|_| fs::canonicalize(dir).map(|dir| dir.join(path.file_name().unwrap_or_default())))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    fn named<'a>(pairs: [(&'static str, Option<&'a String>); 3]) -> Vec<(&'static str, &'a String)> {
+        pairs.into_iter().filter_map(|(name, path)| Some((name, path.filter(|p| *p != "-")?))).collect()
+    }
+    let outputs = named([("<out.png>", options.out.as_ref()), ("--text", options.text.as_ref()), ("--json", options.json.as_ref())]);
+    let inputs = named([("<log>", Some(&options.log)), ("--font", options.font.as_ref()), ("--fallback-font", options.fallback_font.as_ref())]);
+    let outputs: Vec<_> = outputs.into_iter().map(|(name, path)| (name, path, canonical(path))).collect();
+    for (i, (name, path, file)) in outputs.iter().enumerate() {
+        if let Some((other, ..)) = outputs[..i].iter().find(|(.., earlier)| earlier == file) {
+            return Some(format!("{name} and {other} name the same file, {path}; give each output its own"));
+        }
+        if let Some((input, _)) = inputs.iter().find(|(_, input)| canonical(input) == *file) {
+            return Some(format!("{name} {path} is the {input} file; writing it would destroy the input"));
+        }
+    }
+    None
+}
+
 fn write_output(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     if path == "-" {
         let mut stdout = std::io::stdout().lock();
@@ -1537,6 +1566,9 @@ fn main() -> ExitCode {
     // before doing any work. The files this run created are removed on failure.
     if options.out.as_deref() == Some("-") && std::io::stdout().is_terminal() {
         return fail(2, "refusing to write a PNG to a terminal; redirect stdout or name a file");
+    }
+    if let Some(message) = output_clash(&options) {
+        return fail(2, message);
     }
     let mut created = Vec::new();
     let remove_created = |created: &[String]| {
