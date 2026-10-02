@@ -105,6 +105,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Release compressed data if allocating the final PNG buffer fails.
 - termshot did not build on aarch64 Linux, where C `char` is unsigned and
   the system libraries need the C code linked before them.
+- A wide character on a one-column screen panicked (exit 101). It now
+  takes the one cell as a narrow character (#18).
 
 [Unreleased]: https://github.com/solcreek/termshot/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/solcreek/termshot/releases/tag/v0.1.0
