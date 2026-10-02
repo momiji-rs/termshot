@@ -917,10 +917,11 @@ fn printf_bytes(format: &str) -> Vec<u8> {
 }
 
 /// A screen as tests/vt/ writes it: each row with trailing spaces trimmed,
-/// then where the cursor is.
+/// then where the cursor is. The rows are --text's output, so the tmux
+/// references check --text too.
 fn screen_lines(g: &Grid, cols: usize, rows: usize) -> Vec<String> {
-    let mut lines: Vec<String> =
-        (0..rows).map(|r| shown(&g.cells[r * cols..(r + 1) * cols]).trim_end().to_string()).collect();
+    let mut lines: Vec<String> = grid_text(&g.cells, cols).lines().map(String::from).collect();
+    assert_eq!(lines.len(), rows);
     lines.push(match g.cursor {
         Some((row, col)) => format!("cursor {col},{row}"),
         None => "cursor hidden".into(),

@@ -161,6 +161,21 @@ check "--cursor draws it there, even if the log hid it" 'cmp -s "$out/cursor-at.
 printf 'ab' | ./termshot --size 10x4 --cursor=10,3 - "$out/cursor-pending.png"
 printf 'ab\033[4;10H' | ./termshot --size 10x4 - "$out/cursor-last.png"
 check "--cursor at the column count is the last column" 'cmp -s "$out/cursor-pending.png" "$out/cursor-last.png"'
+# --text: the screen as text, with the PNG or without it.
+printf 'ab\r\ncd  \r\n\344\270\255x' | ./termshot --size 10x4 --text "$out/text.txt" -
+printf 'ab\ncd\n\344\270\255x\n\n' > "$out/text-want.txt"
+check "--text alone writes the rows, trimmed" 'cmp -s "$out/text.txt" "$out/text-want.txt"'
+printf 'ab\r\ncd  \r\n\344\270\255x' | ./termshot --size 10x4 --text - - > "$out/text-stdout.txt"
+check "--text - writes stdout" 'cmp -s "$out/text-stdout.txt" "$out/text-want.txt"'
+./termshot --text "$out/text-png.txt" "$log" "$out/text-png.png"
+check "--text leaves the PNG as it was" 'cmp -s "$out/text-png.png" "$out/builtin.png"'
+check "--text needs no font without a PNG" './termshot --font README.md --text "$out/q.txt" "$log"'
+expect 2 "$log" --text
+expect 2 --text - "$log" -
+expect 1 --text "$out/no-such-dir/x.txt" "$log"
+rm -f "$out/gone.txt"
+./termshot --text "$out/gone.txt" "$log" "$out/gone.png" "$font" 255 500 73 2>/dev/null || true
+check "failed run removes the text file it created" '[ ! -e "$out/gone.txt" ]'
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
@@ -176,6 +191,7 @@ rm -f "$out/gone.png"
 check "failed run removes the file it created" '[ ! -e "$out/gone.png" ]'
 if [ -e /dev/full ]; then
     check "short writes are reported" '! ./termshot "$log" /dev/full 2>/dev/null'
+    check "short text writes are reported" '! ./termshot --text /dev/full "$log" 2>/dev/null'
 fi
 [ "$fail" -eq 0 ] && echo "ok"
 

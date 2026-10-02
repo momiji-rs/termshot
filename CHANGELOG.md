@@ -23,6 +23,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A tmux capture-pane has no cursor, so the README's tmux example now asks
   tmux for it. COL may be the column count, which is how tmux reports a
   pending wrap.
+- `--text FILE` writes the screen as text, as `tmux capture-pane -p` prints
+  it: a line per row, trailing spaces trimmed, a wide character once (#32).
+  `<out.png>` is optional with it; without a PNG no font is read, so a
+  text-only run takes about 1 ms where a PNG takes 10. `tests/grids/` holds
+  the text of every golden fixture, and the tmux references in `tests/vt/`
+  check it too.
 
 ### Changed
 
