@@ -21,11 +21,9 @@ pub struct Placement {
     pub width: u32,
     pub height: u32,
     pub x: i64,
-    pub y: i64,
     pub w: i64,
     pub h: i64,
-    pub clip_top: i64,
-    pub clip_bottom: i64,
+    slices: Vec<ImageSlice>,
     id: u32,
     placement_id: u32,
     z: u32,
@@ -45,20 +43,45 @@ pub struct ImageView {
     clip_bottom: i64,
 }
 
+/// A visible vertical part of a placement. `y` is the translated origin of
+/// the full source image, preserving sampling after a partial-region scroll.
+/// Parts share the placement's pixels, identity and quota; they never overlap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ImageSlice {
+    y: i64,
+    top: i64,
+    bottom: i64,
+}
+
 impl Placement {
-    pub fn view(&self) -> ImageView {
-        ImageView {
+    pub fn views(&self) -> impl Iterator<Item = ImageView> + '_ {
+        self.slices.iter().map(|slice| ImageView {
             pixels: self.pixels.as_ptr(),
             width: self.width,
             height: self.height,
             x: self.x,
-            y: self.y,
+            y: slice.y,
             w: self.w,
             h: self.h,
-            clip_top: self.clip_top,
-            clip_bottom: self.clip_bottom,
+            clip_top: slice.top,
+            clip_bottom: slice.bottom,
+        })
+    }
+}
+
+// Coalesce adjacent parts with the same source mapping, so scrolling history
+// does not accumulate redundant metadata. Empty/clipped parts are discarded.
+fn append_slice(slices: &mut Vec<ImageSlice>, y: i64, top: i64, bottom: i64) {
+    if top >= bottom {
+        return;
+    }
+    if let Some(last) = slices.last_mut() {
+        if last.y == y && last.bottom == top {
+            last.bottom = bottom;
+            return;
         }
     }
+    slices.push(ImageSlice { y, top, bottom });
 }
 
 #[derive(Default)]
@@ -315,11 +338,13 @@ impl Graphics {
             width,
             height,
             x: col as i64 * cw + (bw - w) / 2,
-            y,
             w,
             h,
-            clip_top: 0,
-            clip_bottom: screen_rows as i64 * ch,
+            slices: {
+                let mut slices = Vec::new();
+                append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
+                slices
+            },
             id: cmd.id,
             placement_id: cmd.placement_id,
             z: cmd.z,
@@ -332,22 +357,32 @@ impl Graphics {
         }
     }
 
-    /// Images intersecting a scrolling region move with it and are clipped at
-    /// its edges. Clipped pixels cannot reappear on a subsequent reverse scroll.
+    /// Move only pixels inside the scrolling region. Preserve stationary
+    /// parts above/below it, and discard pixels that scroll past its edges.
     pub fn scroll(&mut self, top: usize, bottom: usize, delta: i64, cell_h: i32) {
         let ch = i64::from(cell_h);
         let (top, bottom, dy) = (top as i64 * ch, (bottom + 1) as i64 * ch, delta * ch);
         for p in &mut self.placements {
-            let lo = p.y.max(p.clip_top);
-            let hi = (p.y + p.h).min(p.clip_bottom);
-            if lo < bottom && hi > top {
-                p.y += dy;
-                p.clip_top = (lo.max(top) + dy).max(top);
-                p.clip_bottom = (hi.min(bottom) + dy).min(bottom);
+            let old = std::mem::take(&mut p.slices);
+            let mut slices = Vec::with_capacity(old.len() + 2);
+            for part in old {
+                // The stationary parts keep their original sampling origin.
+                append_slice(&mut slices, part.y, part.top, part.bottom.min(top));
+                let lo = part.top.max(top);
+                let hi = part.bottom.min(bottom);
+                if lo < hi {
+                    append_slice(
+                        &mut slices,
+                        part.y + dy,
+                        (lo + dy).max(top),
+                        (hi + dy).min(bottom),
+                    );
+                }
+                append_slice(&mut slices, part.y, part.top.max(bottom), part.bottom);
             }
+            p.slices = slices;
         }
-        self.placements
-            .retain(|p| p.y.max(p.clip_top) < (p.y + p.h).min(p.clip_bottom));
+        self.placements.retain(|p| !p.slices.is_empty());
     }
 }
 

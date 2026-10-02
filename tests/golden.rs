@@ -17,11 +17,12 @@ const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 const HEADER: &str = "# sha256 of decoded RGBA pixels, size, log, px. Rewrite with ./test.sh --update-goldens";
 // (log, px, cols, rows). A log is examples/<log>.pty or tests/fixtures/<log>.pty.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32); 25] = [
+const CASES: [(&str, &str, u32, u32); 26] = [
     ("reply-sent", "46", 100, 30),
     ("reply-sent", "48", 100, 30),
     ("draft-ready", "46", 100, 30),
     ("draft-ready", "48", 100, 30),
+    ("kitty-scroll", "24", 12, 8),
     ("kitty-rgb", "24", 6, 4),
     ("kitty-rgb", "47.5", 6, 4),
     ("kitty-rgba", "24", 6, 4),

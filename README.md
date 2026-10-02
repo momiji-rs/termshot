@@ -155,7 +155,7 @@ screen/scroll area's bottom and right edges.
 
 `a=d` deletes all placements; `d=i`/`d=I,i=...` deletes by image ID, optionally
 restricted with `p`. Retransmitting an ID replaces its image. Nonnegative `z`
-orders overlays. Images follow scrolling, are clipped at scroll-region edges,
+orders overlays. Images follow scrolling inside the affected region and retain their pixels outside it,
 and are cleared by full-screen erase/reset. Main and alternate screens keep
 separate images. See [the regression evidence](docs/kitty-graphics.md).
 
@@ -166,7 +166,9 @@ placeholders are not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain
 `tmux capture-pane` text capture cannot recover them. This does not make every
-image-using TUI capture compatible automatically.
+image-using TUI capture compatible automatically. Sixel remains tracked in
+[#41](https://github.com/momiji-rs/termshot/issues/41); advanced kitty work is
+tracked in [#44](https://github.com/momiji-rs/termshot/issues/44).
 
 Limits per screen are 1,024 placements and 16 MiB of retained RGBA pixels;
 each upload is limited to 16 MiB of decoded payload and 8,192 pixels per source

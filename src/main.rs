@@ -1528,7 +1528,7 @@ fn main() -> ExitCode {
         return cleanup(1, "font metrics unusable".into());
     }
     let Grid { mut cells, cursor, images } = replay_sized(&data, options.cols, options.rows, options.lf, (cell_w, cell_h));
-    let image_views: Vec<_> = images.iter().map(graphics::Placement::view).collect();
+    let image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
     if let Some((row, col)) = options.cursor.unwrap_or(cursor) {
         draw_cursor(&mut cells, options.cols, row, col);
     }

@@ -16,7 +16,7 @@ fn rgb_placement_and_cursor() {
     assert_eq!(g.images.len(), 1);
     let p = &g.images[0];
     assert_eq!(p.pixels, [255, 0, 0, 255]);
-    assert_eq!((p.x, p.y, p.w, p.h), (0, 0, 20, 20));
+    assert_eq!((p.x, p.slices[0].y, p.w, p.h), (0, 0, 20, 20));
 }
 
 #[test]
@@ -25,7 +25,12 @@ fn rgba_default_format_and_no_cursor_move() {
     assert_eq!(g.cursor, Some((2, 3)));
     assert_eq!(g.images[0].pixels, [255, 0, 0, 128]);
     assert_eq!(
-        (g.images[0].x, g.images[0].y, g.images[0].w, g.images[0].h),
+        (
+            g.images[0].x,
+            g.images[0].slices[0].y,
+            g.images[0].w,
+            g.images[0].h
+        ),
         (30, 40, 1, 1)
     );
 }
@@ -39,7 +44,7 @@ fn chunks_commit_only_on_final_chunk_at_final_cursor() {
     let g = replay(&log);
     assert_eq!(g.images.len(), 1);
     assert_eq!(g.images[0].pixels, [255, 0, 0, 255, 0, 255, 0, 255]);
-    assert_eq!((g.images[0].x, g.images[0].y), (30, 40));
+    assert_eq!((g.images[0].x, g.images[0].slices[0].y), (30, 40));
     assert_eq!(g.cursor, Some((3, 7)));
 }
 
@@ -163,7 +168,7 @@ fn placement_sizing_preserves_aspect_ratio() {
     ] {
         let g = replay(format!("\x1b_Ga=T,f=24,s=1,v=1{extra};/wAA\x1b\\").as_bytes());
         let p = &g.images[0];
-        assert_eq!((p.x, p.y, p.w, p.h), expected);
+        assert_eq!((p.x, p.slices[0].y, p.w, p.h), expected);
     }
 }
 
@@ -193,11 +198,17 @@ fn scrolling_clips_images_and_reverse_scroll_cannot_restore_pixels() {
     log.extend_from_slice(b"\x1b[2S");
     let g = replay(&log);
     let p = &g.images[0];
-    assert_eq!((p.y, p.clip_top, p.clip_bottom), (-20, 0, 20));
+    assert_eq!(
+        (p.slices[0].y, p.slices[0].top, p.slices[0].bottom),
+        (-20, 0, 20)
+    );
     log.extend_from_slice(b"\x1b[T");
     let g = replay(&log);
     let p = &g.images[0];
-    assert_eq!((p.y, p.clip_top, p.clip_bottom), (0, 20, 40));
+    assert_eq!(
+        (p.slices[0].y, p.slices[0].top, p.slices[0].bottom),
+        (0, 20, 40)
+    );
     log.extend_from_slice(b"\x1b[10S");
     assert!(replay(&log).images.is_empty());
 }
@@ -206,7 +217,7 @@ fn scrolling_clips_images_and_reverse_scroll_cannot_restore_pixels() {
 fn scroll_region_leaves_images_outside_it_alone() {
     let mut log = red(",C=1");
     log.extend_from_slice(b"\x1b[3;8r\x1b[5S");
-    assert_eq!(replay(&log).images[0].y, 0);
+    assert_eq!(replay(&log).images[0].slices[0].y, 0);
 }
 
 #[test]
@@ -328,4 +339,129 @@ fn base64_accepts_exact_payload_limit_and_rejects_one_byte_more() {
     assert_eq!(base64(&encoded).unwrap().len(), MAX_BYTES);
     encoded[n - 2] = b'A';
     assert!(base64(&encoded).is_none());
+}
+
+#[test]
+fn partial_scroll_preserves_pixels_above_and_below_both_margins() {
+    let mut g = Graphics::default();
+    g.command(
+        b"a=T,f=24,s=1,v=1,c=20,r=10,C=1,i=9,p=3;/wAA",
+        0,
+        0,
+        (10, 20),
+        10,
+    );
+    let original_pixels = g.placements[0].pixels.as_ptr();
+    g.scroll(2, 5, -1, 20);
+    assert_eq!(g.placements.len(), 1);
+    assert_eq!(
+        g.placements[0].slices,
+        [
+            ImageSlice {
+                y: 0,
+                top: 0,
+                bottom: 40
+            },
+            ImageSlice {
+                y: -20,
+                top: 40,
+                bottom: 100
+            },
+            ImageSlice {
+                y: 0,
+                top: 120,
+                bottom: 200
+            },
+        ]
+    );
+    assert_eq!(g.placements[0].pixels.as_ptr(), original_pixels);
+    // Reverse scroll leaves the removed source band absent.
+    g.scroll(2, 5, 1, 20);
+    assert_eq!(
+        g.placements[0].slices,
+        [
+            ImageSlice {
+                y: 0,
+                top: 0,
+                bottom: 40
+            },
+            ImageSlice {
+                y: 0,
+                top: 60,
+                bottom: 200
+            },
+        ]
+    );
+    // The slices still form one placement for ID-based deletion.
+    g.command(b"a=d,d=i,i=9,p=3", 0, 0, (10, 20), 10);
+    assert!(g.placements.is_empty());
+}
+
+#[test]
+fn fragmented_images_still_count_once_for_limits_and_replacement() {
+    let mut g = Graphics::default();
+    for id in 1..=MAX_PLACEMENTS {
+        g.command(
+            format!("a=T,f=24,s=1,v=1,c=20,r=10,C=1,i={id};/wAA").as_bytes(),
+            0,
+            0,
+            (10, 20),
+            10,
+        );
+    }
+    g.scroll(2, 5, -1, 20);
+    assert_eq!(g.placements.len(), MAX_PLACEMENTS);
+    assert!(g
+        .placements
+        .iter()
+        .all(|p| p.slices.len() == 3 && p.pixels.len() == 4));
+    g.command(b"a=T,f=24,s=1,v=1,C=1,i=1;AP8A", 0, 0, (10, 20), 10);
+    assert_eq!(g.placements.len(), MAX_PLACEMENTS);
+    assert_eq!(g.placements[0].pixels, [0, 255, 0, 255]);
+    assert_eq!(g.placements[0].slices.len(), 1);
+}
+
+#[test]
+fn repeated_partial_scrolls_match_independent_pixel_row_model() {
+    let mut seed = 0x41cafeu32;
+    for _ in 0..100 {
+        let mut g = Graphics::default();
+        g.command(b"a=T,f=24,s=1,v=1,c=20,r=10,C=1;/wAA", 0, 0, (10, 20), 10);
+        let mut expected: Vec<_> = (0..200).map(Some).collect();
+        for _ in 0..20 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let top = (seed as usize >> 8) % 10;
+            let bottom = top + (seed as usize >> 16) % (10 - top);
+            let n = 1 + (seed as usize >> 24) % (bottom - top + 1);
+            let delta = if seed & 1 == 0 { n as i64 } else { -(n as i64) };
+            let old = expected.clone();
+            for row in top * 20..(bottom + 1) * 20 {
+                let source = row as i64 - delta * 20;
+                expected[row] =
+                    if source >= (top * 20) as i64 && source < ((bottom + 1) * 20) as i64 {
+                        old[source as usize]
+                    } else {
+                        None
+                    };
+            }
+            g.scroll(top, bottom, delta, 20);
+            let mut actual = vec![None; 200];
+            for p in &g.placements {
+                // Every slice is nonempty and adjacent equal mappings coalesce.
+                assert!(p.slices.len() <= 10);
+                for pair in p.slices.windows(2) {
+                    assert!(pair[0].bottom <= pair[1].top);
+                    assert!(pair[0].bottom != pair[1].top || pair[0].y != pair[1].y);
+                }
+                for s in &p.slices {
+                    assert!(s.top < s.bottom);
+                    for row in s.top..s.bottom {
+                        assert!(actual[row as usize].is_none());
+                        actual[row as usize] = Some((row - s.y) as usize);
+                    }
+                }
+            }
+            assert_eq!(actual, expected, "top={top} bottom={bottom} delta={delta}");
+        }
+    }
 }

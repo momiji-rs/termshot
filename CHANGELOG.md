@@ -38,6 +38,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Partial-region scrolling preserves image pixels outside the affected rows,
+  including images that cross either margin, insert/delete line and reverse
+  index (#43 review).
+
 - U+2800 BRAILLE PATTERN BLANK, which TUIs such as btop use for empty graph
   dots, and the line and paragraph separators U+2028 and U+2029 drew as
   boxes when the font lacked them. They are blank, like space separators.

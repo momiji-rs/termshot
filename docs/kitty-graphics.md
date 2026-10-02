@@ -28,7 +28,7 @@ cross-platform reproducibility; it does not promise GPU-filter-identical output.
 
 Local validation passed on Linux x86-64:
 
-- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 122 unit tests passed; one existing
+- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 125 unit tests passed; one existing
   benchmark helper is ignored. All CLI, pixel, codec and geometry checks passed.
 - `SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh`: passed, including
   the image decoder/compositor, codec round trips and concurrent render checks.
@@ -42,7 +42,7 @@ Local validation passed on Linux x86-64:
   PNG-with-alpha at five pixel heights (1, 9, 24, 47.5, 128): **843,072 pixel
   checks**, plus native clipping, text layering, transparency and deletion.
   Expected colors and geometry are computed independently of production code.
-- Five new decoded-pixel goldens; all 20 existing hashes stay unchanged.
+- Six new decoded-pixel goldens; all 20 existing hashes stay unchanged.
 - `tests/image.c`: production PNG decoding, every truncation of a valid PNG,
   2,000 deterministic byte mutations, quota exhaustion and recovery, and
   allocation accounting. The Rust tests also decode PNGs concurrently.
@@ -75,3 +75,41 @@ subset before using this to test a TUI: Unicode-placeholder placements,
 separate transmit/put commands and external-file transfers remain unsupported.
 It has not been validated against captures of AgentAmp or yazi, or compared
 pixel-for-pixel with a live kitty terminal.
+
+
+## Partial scroll-region regression
+
+[Review finding](https://github.com/momiji-rs/termshot/pull/43#discussion_r4170723891)
+confirmed against `af189d8`: a picture crossing either scroll margin lost pixels
+outside the scrolled region. Each placement now retains disjoint visible slices
+sharing its original pixels and identity. Only the intersecting slices move;
+outside slices stay fixed, clipped pixels stay gone, and adjacent slices with
+the same source mapping are coalesced. Splitting does not multiply image storage
+or consume additional placement IDs/quota.
+
+| Before the scroll fix | After |
+| --- | --- |
+| ![Lost outside pixels](kitty-scroll-before.png) | ![Outside pixels preserved](kitty-scroll-after.png) |
+
+```sh
+./termshot --cursor none --size 12x8 --px 24 \
+  tests/fixtures/kitty-scroll.pty /tmp/kitty-scroll.png
+```
+
+The end-to-end raster oracle fails on `af189d8` with:
+
+```text
+assertion `left == right` failed: scroll up at (11, 41)
+  left: [17, 24, 35, 255]
+ right: [255, 0, 0, 255]
+```
+
+Seven pixel comparisons cover scrolling up/down, a completely cleared region,
+insert/delete line, index and reverse index. Three additional unit tests cover
+both margins, reverse scrolling without resurrection, deletion/replacement and
+quota semantics after splitting, and 2,000 partial scroll operations compared
+against an independent pixel-row model. The existing 25 golden hashes are
+unchanged; the new scroll fixture adds one hash.
+
+Remaining protocol work: Sixel is already tracked by #41; advanced kitty
+features now have a dedicated follow-up, #44.
