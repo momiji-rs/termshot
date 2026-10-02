@@ -31,7 +31,8 @@ It draws one final frame, not an animation. The screen model follows xterm and c
 
 `tests/vt/` checks this against tmux, on short cases and on recorded `ls`, `less` and `vi`
 sessions. A bare LF moves down without returning to column 0, as in a terminal; logs captured
-through a PTY already have CR LF.
+through a PTY already have CR LF. For output that has bare LFs (a text file, `cmd > out.log`),
+pass `--lf-newline`.
 
 Colors are the 16 and 256 color palettes (xterm's defaults) and 24-bit color, in the `;` and
 `:` forms. Bold, dim, underline, double underline, strike-through, reverse video and hidden
@@ -107,16 +108,26 @@ cat session.pty | ./termshot - - > screen.png   # stdin to stdout
 ./termshot --fallback-font /path/to/cjk.ttf session.pty session.png
 ```
 
+To screenshot a TUI that is still running, drive it in tmux and capture the pane. tmux ends
+each row with a bare LF, so pass `--lf-newline` and the pane's size:
+
+```sh
+tmux new-session -d -s app -x 100 -y 30 top
+tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 - top.png
+```
+
 | option | |
 |---|---|
 | `-f`, `--font FILE` | TrueType font (default: built-in JetBrains Mono) |
 | `--fallback-font FILE` | TrueType font for characters the first lacks, such as CJK |
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
+| `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 
-It prints nothing on success. Exit status is 0 when done; 1 when a file can't be read or written,
+It prints nothing on success, except a hint on stderr when the log has line feeds but no CR,
+which means it was probably not captured through a PTY and needs `--lf-newline`. Exit status is 0 when done; 1 when a file can't be read or written,
 or the font is unusable; and 2 for bad arguments, including an image over 2^27 pixels. termshot
 won't write a PNG to a terminal. A failed run removes the output file it created.
 

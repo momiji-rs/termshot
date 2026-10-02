@@ -130,6 +130,16 @@ extern "C" {
     ) -> i32;
 }
 
+/// What a bare LF does.
+#[derive(Clone, Copy, PartialEq)]
+enum Lf {
+    /// Down a row, as on a terminal; PTY output carries its own CR.
+    Index,
+    /// Down a row and back to column 0, as on a terminal with `onlcr` output
+    /// processing: for text files and other output not run under a PTY.
+    Newline,
+}
+
 /// A character set that G0 or G1 can hold.
 #[derive(Clone, Copy, PartialEq)]
 enum Charset {
@@ -200,10 +210,12 @@ struct Screen {
     last: Option<u32>,
     /// Where it went (a storage index), for combining marks that follow.
     last_at: Option<usize>,
+    /// Not terminal state: RIS keeps it, as a reset keeps the tty's settings.
+    lf: Lf,
 }
 
 impl Screen {
-    fn new(cols: usize, rows: usize) -> Self {
+    fn new(cols: usize, rows: usize, lf: Lf) -> Self {
         Self {
             cells: vec![Cell::blank(); cols * rows],
             map: (0..rows).collect(),
@@ -226,6 +238,7 @@ impl Screen {
             shifted: false,
             last: None,
             last_at: None,
+            lf,
         }
     }
 
@@ -256,6 +269,10 @@ impl Screen {
                 self.pending = false;
             }
             0x09 => self.tab_forward(1),
+            0x0a if self.lf == Lf::Newline => {
+                self.col = 0;
+                self.index();
+            }
             // LF, VT and FF all index, as on a VT100.
             0x0a..=0x0c => self.index(),
             0x0d => {
@@ -926,8 +943,38 @@ fn skip_string(data: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// Whether a log looks like it never went through a PTY: it has line feeds
+/// but no CR at all, which `onlcr` would have added before each one.
+/// Checks CR first, so a PTY log stops at its first line end.
+fn lacks_cr(data: &[u8]) -> bool {
+    !data.contains(&b'\r') && data.contains(&b'\n')
+}
+
+/// Text is lines that each end in LF, so the bare LF that ends the input
+/// ends the last line rather than opening a new one. Otherwise a capture as
+/// tall as the grid (tmux capture-pane ends every row with LF) would scroll
+/// its top row away. A final CR LF is a PTY's and stays, so a PTY log
+/// renders the same with --lf-newline as without.
+fn strip_final_bare_lf(data: &[u8]) -> &[u8] {
+    match data {
+        [.., b'\r', b'\n'] => data,
+        [rest @ .., b'\n'] => rest,
+        _ => data,
+    }
+}
+
+/// Replay a log as a terminal would, with bare LFs indexing.
+#[cfg(test)]
 fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
-    let mut screen = Screen::new(cols, rows);
+    parse_lf(data, cols, rows, Lf::Index)
+}
+
+fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
+    let data = match lf {
+        Lf::Newline => strip_final_bare_lf(data),
+        Lf::Index => data,
+    };
+    let mut screen = Screen::new(cols, rows, lf);
     // Reuse the fixed parameter buffer across sequences; only len needs resetting.
     let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
     let mut i = 0;
@@ -980,7 +1027,7 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
                     screen.tabs[col] = true;
                 }
                 // RIS: full reset.
-                b'c' => screen = Screen::new(cols, rows),
+                b'c' => screen = Screen::new(cols, rows, lf),
                 // CAN and SUB cancel the escape.
                 0x18 | 0x1a => {}
                 // Another ESC starts over; other C0 controls still execute.
@@ -1115,6 +1162,10 @@ options:
                     as CJK or emoji; others are drawn as an empty box
   -p, --px N        font pixel height, above 0 and below 256 (default 48)
   -s, --size CxR    grid size in columns x rows, up to 500x200 (default 100x30)
+      --lf-newline  treat each bare LF as CR LF, for logs not captured
+                    through a PTY: text files, cmd > out.log, and
+                    tmux capture-pane -e -p; a final bare LF ends the
+                    last line instead of scrolling
   -v, --verbose     print the cell and image size to stderr
   -h, --help        show this help
   -V, --version     show the version
@@ -1135,6 +1186,7 @@ struct Options {
     px: f64,
     cols: usize,
     rows: usize,
+    lf: Lf,
     verbose: bool,
 }
 
@@ -1178,6 +1230,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut args = args.into_iter();
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
+    let mut lf = Lf::Index;
     let mut options_done = false;
     while let Some(arg) = args.next() {
         if options_done || arg == "-" || !arg.starts_with('-') {
@@ -1200,12 +1253,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             (arg.clone(), None)
         };
         match name.as_str() {
-            "-h" | "--help" | "-V" | "--version" | "-v" | "--verbose" if attached.is_some() => {
+            "-h" | "--help" | "-V" | "--version" | "-v" | "--verbose" | "--lf-newline" if attached.is_some() => {
                 return Err(format!("{name} takes no value"));
             }
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
             "-v" | "--verbose" => verbose = true,
+            "--lf-newline" => lf = Lf::Newline,
             "-f" | "--font" => font = Some(option_value(&name, attached, &mut args)?),
             "--fallback-font" => fallback_font = Some(option_value(&name, attached, &mut args)?),
             "-p" | "--px" => px = Some(parse_px(&option_value(&name, attached, &mut args)?)?),
@@ -1242,7 +1296,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         legacy_cols.unwrap_or(DEFAULT_COLS),
         legacy_rows.unwrap_or(DEFAULT_ROWS),
     ));
-    Ok(Command::Render(Options { log, out, font, fallback_font, px: px.unwrap_or(48.0), cols, rows, verbose }))
+    Ok(Command::Render(Options { log, out, font, fallback_font, px: px.unwrap_or(48.0), cols, rows, lf, verbose }))
 }
 
 /// Print an error the way every failure path reports it, and pick the status.
@@ -1308,6 +1362,15 @@ fn main() -> ExitCode {
         Err(error) => return cleanup(1, format!("{}: {error}", options.log)),
     };
     let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
+    // The image would still be made, with each line starting where the
+    // last one ended; say why, and what fixes it.
+    if options.lf == Lf::Index && lacks_cr(&data) {
+        eprintln!(
+            "termshot: hint: {} has line feeds but no CR, so each line starts where the last ended; \
+             if it was not captured through a PTY (a text file, cmd > out.log, tmux capture-pane), pass --lf-newline",
+            if options.log == "-" { "stdin" } else { &options.log }
+        );
+    }
 
     let font_started = Instant::now();
     let mut font_timings = font::LoadTimings::default();
@@ -1334,7 +1397,7 @@ fn main() -> ExitCode {
 
     let parse_started = Instant::now();
     let input_bytes = data.len();
-    let cells = parse(&data, options.cols, options.rows);
+    let cells = parse_lf(&data, options.cols, options.rows, options.lf);
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);

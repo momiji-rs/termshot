@@ -63,7 +63,7 @@ fn ascii_scroll_batches_match_individual_prints() {
                 for alternate in [false, true] {
                     for len in [0, 1, cols - 1, cols, cols * rows, cols * rows * 3 + 1, 4097] {
                         let setup = || {
-                            let mut s = Screen::new(cols, rows);
+                            let mut s = Screen::new(cols, rows, Lf::Index);
                             s.use_alternate(alternate, false);
                             for i in 0..cols * rows {
                                 s.print(if cols > 1 && i % 3 == 0 { '界' } else { '!' } as u32);
@@ -131,6 +131,103 @@ fn cr_and_lf() {
     let g = grid(b"ab\r\ncd\rX");
     assert_eq!(line(&g, 0), "ab        ");
     assert_eq!(line(&g, 1), "Xd        ");
+}
+
+fn lines(s: &[u8]) -> Vec<Cell> {
+    parse_lf(s, C, R, Lf::Newline)
+}
+
+/// Every field, so two grids can be compared whole.
+fn cell_key(c: &Cell) -> (u32, (u8, u8, u8), (u8, u8, u8), u8) {
+    (c.ch, fg(c), bg(c), c.attrs)
+}
+
+#[test]
+fn bare_lf_indexes_without_returning() {
+    assert_eq!(line(&grid(b"ab\ncd"), 1), "  cd      ");
+}
+
+#[test]
+fn a_log_without_cr_is_flagged() {
+    assert!(lacks_cr(b"ab\ncd"));
+    assert!(!lacks_cr(b"ab\r\ncd"));
+    // One CR anywhere is enough to stay quiet: a PTY log with the odd bare
+    // LF (a program that moves down without returning) is still a PTY log.
+    assert!(!lacks_cr(b"ab\ncd\r"));
+    // No line feed, nothing to hint about: a one-line log, or a TUI that
+    // only addresses the cursor.
+    assert!(!lacks_cr(b"ab"));
+    assert!(!lacks_cr(b"\x1b[2;1Hab"));
+    assert!(!lacks_cr(b""));
+}
+
+#[test]
+fn lf_newline_returns_to_column_zero() {
+    let g = lines(b"ab\ncd\r\nef");
+    assert_eq!(line(&g, 0), "ab        ");
+    assert_eq!(line(&g, 1), "cd        ");
+    assert_eq!(line(&g, 2), "ef        ");
+}
+
+#[test]
+fn lf_newline_cancels_a_pending_wrap_once() {
+    // A full row leaves a wrap pending; the LF moves down one row, not two.
+    let g = lines(b"0123456789\nab");
+    assert_eq!(line(&g, 0), "0123456789");
+    assert_eq!(line(&g, 1), "ab        ");
+}
+
+#[test]
+fn lf_newline_scrolls_at_the_bottom() {
+    let g = lines(b"1\n2\n3\n4\n5");
+    assert_eq!((0..R).map(|r| line(&g, r)).collect::<Vec<_>>(), ["2         ", "3         ", "4         ", "5         "]);
+}
+
+#[test]
+fn lf_newline_final_lf_ends_the_last_line() {
+    // Four rows of text on four rows, as tmux capture-pane writes them.
+    let g = lines(b"1\n2\n3\n4\n");
+    assert_eq!((0..R).map(|r| line(&g, r)).collect::<Vec<_>>(), ["1         ", "2         ", "3         ", "4         "]);
+    // Without the flag, the same LF scrolls, as on a terminal.
+    assert_eq!(line(&grid(b"1\r\n2\r\n3\r\n4\r\n"), 0), "2         ");
+}
+
+#[test]
+fn lf_newline_keeps_a_final_cr_lf() {
+    // A CR LF is not a bare LF: a PTY log that ends in one scrolls either way.
+    let log = b"1\r\n2\r\n3\r\n4\r\n";
+    assert!(lines(log).iter().map(cell_key).eq(grid(log).iter().map(cell_key)));
+    assert_eq!(line(&lines(log), 0), "2         ");
+}
+
+#[test]
+fn lf_newline_keeps_an_empty_last_line() {
+    // Only one LF is a terminator: the line before it is empty, and shown.
+    let g = lines(b"1\n2\n3\n4\n\n");
+    assert_eq!((0..R).map(|r| line(&g, r)).collect::<Vec<_>>(), ["2         ", "3         ", "4         ", "          "]);
+}
+
+#[test]
+fn lf_newline_maps_only_lf() {
+    // onlcr maps NL alone: VT and FF still only index.
+    let g = lines(b"ab\x0bcd\x0cef");
+    assert_eq!(line(&g, 1), "  cd      ");
+    assert_eq!(line(&g, 2), "    ef    ");
+}
+
+#[test]
+fn lf_newline_inside_a_csi() {
+    // A C0 control inside a CSI executes in place, LF included.
+    let g = lines(b"ab\x1b[\n1mcd");
+    assert_eq!(line(&g, 1), "cd        ");
+    assert_eq!(at(&g, 1, 0).attrs & BOLD, BOLD);
+}
+
+#[test]
+fn lf_newline_survives_a_full_reset() {
+    let g = lines(b"xx\x1bcab\ncd");
+    assert_eq!(line(&g, 0), "ab        ");
+    assert_eq!(line(&g, 1), "cd        ");
 }
 
 #[test]
@@ -314,11 +411,26 @@ fn fuzz_sizes_and_wide_characters() {
             }
         }
         let outcome = std::panic::catch_unwind(|| parse(&log, cols, rows));
-        let failure = match &outcome {
+        let mut failure = match &outcome {
             Err(_) => Some("panicked".to_string()),
             Ok(cells) if cells.len() != cols * rows => Some(format!("{} cells", cells.len())),
             Ok(cells) => wide_pairs_are_whole(cells, cols).err(),
         };
+        // --lf-newline is exactly CR LF for every LF but a final bare one,
+        // wherever the LF lands: at top level, inside a CSI, after an ESC,
+        // or inside a string. The reference strips that LF by hand.
+        if failure.is_none() {
+            let text = if log.ends_with(b"\n") && !log.ends_with(b"\r\n") { &log[..log.len() - 1] } else { &log[..] };
+            let crlf: Vec<u8> = text.iter().flat_map(|b| if *b == b'\n' { &b"\r\n"[..] } else { std::slice::from_ref(b) }).copied().collect();
+            let outcome = std::panic::catch_unwind(|| (parse_lf(&log, cols, rows, Lf::Newline), parse(&crlf, cols, rows)));
+            failure = match &outcome {
+                Err(_) => Some("panicked with --lf-newline".to_string()),
+                Ok((newline, crlf)) if !newline.iter().map(cell_key).eq(crlf.iter().map(cell_key)) => {
+                    Some("--lf-newline differs from CR LF".to_string())
+                }
+                Ok(_) => None,
+            };
+        }
         if let Some(failure) = failure {
             panic!(
                 "{failure} on round {round} (TERMSHOT_FUZZ_SEED={seed} TERMSHOT_FUZZ_ROUNDS={rounds}), \

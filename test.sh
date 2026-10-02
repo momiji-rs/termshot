@@ -108,10 +108,48 @@ check "an unused fallback font changes nothing" 'cmp -s "$out/fallback.png" "$ou
 # stdin and stdout.
 ./termshot - - < "$log" > "$out/piped.png"
 check "stdin to stdout matches" 'cmp -s "$out/piped.png" "$out/legacy.png"'
+# --lf-newline: a bare LF renders as CR LF, and a PTY log (all CR LF) is unchanged.
+printf '\033[1mab\033[m\ncd\nef' | ./termshot --lf-newline --size 10x4 - "$out/lf-newline.png"
+printf '\033[1mab\033[m\r\ncd\r\nef' | ./termshot --size 10x4 - "$out/crlf.png"
+check "--lf-newline renders LF as CR LF" 'cmp -s "$out/lf-newline.png" "$out/crlf.png"'
+./termshot --lf-newline "$log" "$out/lf-newline-pty.png"
+check "--lf-newline leaves a PTY log unchanged" 'cmp -s "$out/lf-newline-pty.png" "$out/legacy.png"'
+expect 2 "$log" "$out/x.png" --lf-newline=yes
+# Under --lf-newline the final LF ends the last line: rows as tall as the grid keep the top row.
+printf 'a\nb\nc\nd\n' | ./termshot --lf-newline --size 1x4 - "$out/lf-tall.png"
+printf 'a\r\nb\r\nc\r\nd' | ./termshot --size 1x4 - "$out/crlf-tall.png"
+check "--lf-newline keeps the top row of a full-height capture" 'cmp -s "$out/lf-tall.png" "$out/crlf-tall.png"'
+# A final CR LF is not bare: a full-height PTY log scrolls with or without the flag.
+printf 'a\r\nb\r\nc\r\nd\r\n' | ./termshot --lf-newline --size 1x4 - "$out/lf-crlf-end.png"
+printf 'a\r\nb\r\nc\r\nd\r\n' | ./termshot --size 1x4 - "$out/crlf-end.png"
+check "--lf-newline leaves a final CR LF alone" 'cmp -s "$out/lf-crlf-end.png" "$out/crlf-end.png"'
+# The pipeline it is for: tmux capture-pane of a pane the size of the grid.
+# Needs tmux, which CI doesn't have.
+if command -v tmux >/dev/null; then
+    socket="termshot-test-$$"
+    printf '\033[31mred\033[m\r\nplain\r\n\r\nlast' > "$out/pane.pty"
+    tmux -L "$socket" -f /dev/null new-session -d -x 10 -y 4 "cat '$out/pane.pty'; sleep 30"
+    tries=0
+    until tmux -L "$socket" capture-pane -p | grep -q last || [ "$tries" -ge 50 ]; do
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+    tmux -L "$socket" capture-pane -e -p | ./termshot --lf-newline --size 10x4 - "$out/pane.png"
+    tmux -L "$socket" kill-server
+    ./termshot --size 10x4 "$out/pane.pty" "$out/pane-direct.png"
+    check "tmux capture-pane renders like the bytes the pane was sent" 'cmp -s "$out/pane.png" "$out/pane-direct.png"'
+else
+    echo "skip: tmux capture-pane check (no tmux)"
+fi
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
 check "quiet by default" '[ -z "$(./termshot "$log" "$out/q.png" 2>&1)" ]'
+check "a log with LF but no CR hints at --lf-newline" 'printf "a\nb" | ./termshot - "$out/q.png" 2>&1 | grep -q -- "pass --lf-newline"'
+check "the hint names the file" 'printf "a\nb" > "$out/bare.log" && ./termshot "$out/bare.log" "$out/q.png" 2>&1 | grep -q "bare.log has line feeds"'
+check "no hint with --lf-newline" '[ -z "$(printf "a\nb" | ./termshot --lf-newline - "$out/q.png" 2>&1)" ]'
+check "no hint for CR LF" '[ -z "$(printf "a\r\nb" | ./termshot - "$out/q.png" 2>&1)" ]'
+check "the hint keeps exit status 0" 'printf "a\nb" | ./termshot - "$out/q.png" 2>/dev/null'
 check "verbose prints the image size" './termshot -v "$log" "$out/q.png" 2>&1 | grep -q "image 2200x1440"'
 rm -f "$out/gone.png"
 ./termshot "$log" "$out/gone.png" "$font" 255 500 73 2>/dev/null || true
