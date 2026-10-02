@@ -486,10 +486,12 @@ static int init_font(stbtt_fontinfo *font, const unsigned char *ttf) {
     return offset >= 0 && stbtt_InitFont(font, ttf, offset);
 }
 
-/* Unicode's space separators (Zs): blank even when no font has them. */
-static int is_space(uint32_t cp) {
-    return cp == 0x20 || cp == 0xa0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200a) || cp == 0x202f ||
-           cp == 0x205f || cp == 0x3000;
+/* Characters that draw nothing by design, so blank even when no font has
+   them: Unicode's space separators (Zs), the line and paragraph separators,
+   and the blank Braille pattern that TUIs use as an empty dot graph. */
+static int is_blank(uint32_t cp) {
+    return cp == 0x20 || cp == 0xa0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200a) || cp == 0x2028 ||
+           cp == 0x2029 || cp == 0x202f || cp == 0x205f || cp == 0x2800 || cp == 0x3000;
 }
 
 /* An outlined box for a character neither font has, inset in its cells. */
@@ -653,7 +655,7 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
             }
             glyph_ms += now_ms() - tick;
             tick = now_ms();
-            if (entry->missing && !is_space(cp)) {
+            if (entry->missing && !is_blank(cp)) {
                 paint_tofu(cv, c * cell_w, r * cell_h, span, cell_w, cell_h, cell->fr, cell->fg, cell->fb);
                 blend_ms += now_ms() - tick;
                 continue;

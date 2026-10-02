@@ -2,7 +2,8 @@
 
    - a character the font lacks is an outlined box inset in its cell, and a
      wide one's box spans both cells;
-   - a space separator the font lacks (U+3000) stays blank;
+   - a space separator the font lacks (U+3000) stays blank, as do the line and
+     paragraph separators and the blank Braille pattern;
    - a wide character's glyph is centered over its two cells: the same glyph
      narrow and wide differs only by half a cell, also when both are in one render.
 
@@ -102,6 +103,16 @@ int main(int argc, char **argv) {
     fclose(fp);
     font = data;
     scratch = argv[2];
+    stbtt_fontinfo info;
+    if (!init_font(&info, font)) return 1;
+    /* The blank checks are about characters no font has. */
+    const uint32_t lacked[] = {0x3000, 0x2800, 0x2028, 0x2029};
+    for (size_t i = 0; i < sizeof lacked / sizeof lacked[0]; i++) {
+        if (stbtt_FindGlyphIndex(&info, (int)lacked[i])) {
+            printf("FAIL: the font has U+%04X; pick a character it lacks\n", lacked[i]);
+            return 1;
+        }
+    }
 
     const double sizes[] = {1, 5, 9, 16, 23, 47.5, 128, 255};
     int checks = 0;
@@ -116,6 +127,8 @@ int main(int argc, char **argv) {
 
         Cell spaces[] = {cell(0x3000, ATTR_WIDE), cell(0, ATTR_TAIL), cell(0xa0, 0), cell(0x2003, 0)};
         expect(ink(spaces, 4, px).x1 == 0, "space separators are blank", px);
+        Cell blanks[] = {cell(0x2800, 0), cell(0x2028, 0), cell(0x2029, 0)};
+        expect(ink(blanks, 3, px).x1 == 0, "U+2800, U+2028 and U+2029 are blank", px);
 
         Cell narrow[] = {cell(' ', 0), cell('A', 0), cell(' ', 0)};
         Cell wide[] = {cell(' ', 0), cell('A', ATTR_WIDE), cell(0, ATTR_TAIL), cell(' ', 0)};
@@ -129,7 +142,7 @@ int main(int argc, char **argv) {
         Cell mixed[] = {cell(' ', 0), cell('A', 0), cell(' ', 0), cell('A', ATTR_WIDE), cell(0, ATTR_TAIL), cell(' ', 0)};
         Ink c = ink_in(mixed, 6, px, 3, 6);
         expect(c.x0 - 2 * c.cell_w == b.x0 && c.x1 - 2 * c.cell_w == b.x1, "narrow and wide A in one render", px);
-        checks += 7;
+        checks += 8;
     }
     free(data);
     if (failures) return 1;

@@ -16,6 +16,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A hint on stderr when a log has line feeds but no CR and `--lf-newline`
   is not given. The image is still written and the exit status is 0.
 
+### Fixed
+
+- U+2800 BRAILLE PATTERN BLANK, which TUIs such as btop use for empty graph
+  dots, and the line and paragraph separators U+2028 and U+2029 drew as
+  boxes when the font lacked them. They are blank, like space separators.
+
 ## [0.1.0] - 2026-10-01
 
 ### Added
