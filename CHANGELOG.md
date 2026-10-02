@@ -5,8 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-01
+
 ### Added
 
+- Release archives on GitHub: a universal macOS binary (arm64 and x86_64,
+  macOS 11 or newer) and static Linux binaries for x86_64 and aarch64, with
+  SHA256SUMS. Each binary renders the samples byte for byte like the build
+  the pixel goldens check.
 - Wide characters (CJK, Hangul, fullwidth forms, emoji) take two cells, by
   the Unicode 17.0 widths in `src/unicode_tables.rs` (`tools/unicode-tables.sh`
   regenerates them). They wrap instead of splitting, and an edit that cuts
@@ -97,5 +103,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Report PNG short writes and close failures instead of reporting success.
 - Produce a valid zlib stream for empty input in both compression implementations.
 - Release compressed data if allocating the final PNG buffer fails.
+- termshot did not build on aarch64 Linux, where C `char` is unsigned and
+  the system libraries need the C code linked before them.
 
-[Unreleased]: https://github.com/solcreek/termshot/commits/main/
+[Unreleased]: https://github.com/solcreek/termshot/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/solcreek/termshot/releases/tag/v0.1.0
