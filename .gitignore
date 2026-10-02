@@ -4,3 +4,5 @@
 !docs/*.png
 /target/
 __pycache__/
+/dist/
+/libtermshot_c.a

@@ -125,7 +125,7 @@ extern "C" {
         // Another such font for the characters the first lacks, or null.
         fallback: *const u8,
         font_size: f64,
-        out_path: *const i8,
+        out_path: *const std::ffi::c_char,
         verbose: i32,
     ) -> i32;
 }

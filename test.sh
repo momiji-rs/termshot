@@ -27,7 +27,7 @@ fi
 echo "== unit tests"
 # shellcheck disable=SC2086
 rustc --edition 2021 --test src/main.rs -o "$out/unit" \
-    -C link-arg="$PWD/draw.o" -C link-arg="$PWD/deflate.o" -C link-arg=-lm ${RUSTC_LINK_ARGS:-}
+    -L native="$PWD" -l static=termshot_c ${RUSTC_LINK_ARGS:-}
 "$out/unit" -q
 
 echo "== deflate matches stb"
@@ -45,6 +45,8 @@ cc tests/boxes.c src/deflate.c -o "$out/boxes" -O2 -ffp-contract=off -Wno-deprec
 echo "== glyph placement"
 # The decoder is test-only, so it is built without sanitizers or our warnings.
 cc -c tests/png_read.c -o "$out/png_read.o" -O2 -I third_party/stb
+rm -f "$out/libpng_read.a"
+ar rcs "$out/libpng_read.a" "$out/png_read.o"
 # shellcheck disable=SC2086
 cc tests/glyphs.c src/deflate.c "$out/png_read.o" -o "$out/glyphs" -O2 -Wno-deprecated-declarations \
     -I src -I third_party/stb -lm ${CFLAGS:-}
@@ -119,7 +121,7 @@ fi
 
 echo "== goldens"
 rustc --edition 2021 tests/golden.rs -o "$out/golden" -C opt-level=2 \
-    -C link-arg="$PWD/$out/png_read.o" -C link-arg=-lm
+    -L native="$PWD/$out" -l static=png_read
 if [ "$mode" = update ]; then
     "$out/golden" --update
 else

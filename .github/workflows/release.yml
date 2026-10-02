@@ -1,0 +1,93 @@
+name: release
+
+# A v* tag builds, checks and publishes the archives. A pull request that
+# touches the release path builds and checks them without publishing.
+#
+# To release 1.2.3: set VERSION in src/main.rs to "1.2.3", rename
+# CHANGELOG.md's [Unreleased] to "[1.2.3] - <date>", merge, then push tag
+# v1.2.3. The build fails if the tag and --version differ, and publish fails
+# if CHANGELOG.md has no section for the version.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - build.sh
+      - scripts/release.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-universal
+            os: macos-latest
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+          - platform: linux-x86_64-musl
+            os: ubuntu-latest
+            targets: x86_64-unknown-linux-musl
+          - platform: linux-aarch64-musl
+            os: ubuntu-24.04-arm
+            targets: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y musl-tools
+          fi
+          rustup target add ${{ matrix.targets }}
+          rustc --version
+          cc --version
+      - name: build and check
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: scripts/release.sh ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: notes from CHANGELOG.md
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v head="## [$version]" '
+            index($0, head) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "CHANGELOG.md has no '## [$version]' section" >&2
+            exit 1
+          fi
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" *.tar.gz SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "termshot ${GITHUB_REF_NAME#v}" --notes-file ../notes.md

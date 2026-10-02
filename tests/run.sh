@@ -17,6 +17,6 @@ cc tests/deflate_alloc.c -O2 $sanitize -o "$scratch/deflate-alloc"
 cc tests/draw.c src/deflate.c -I third_party/stb -O2 -ffp-contract=off -Wno-deprecated-declarations $sanitize -lm -o "$scratch/draw"
 "$scratch/draw" third_party/jetbrains-mono/JetBrainsMono-Regular.ttf "$scratch/draw.png"
 rustc --edition 2021 --test src/main.rs -o "$scratch/unit" \
-    -C link-arg="$PWD/draw.o" -C link-arg="$PWD/deflate.o" -C link-arg=-lm
+    -L native="$PWD" -l static=termshot_c
 rustc --edition 2021 tests/profile.rs -o "$scratch/profile"
 "$scratch/profile" "$scratch/unit"
