@@ -18,8 +18,10 @@ SANITIZE=1 ./tests/run.sh       # extended: codec round trips, deflate alloc fai
 
 ```sh
 ./target/test/unit <name-substring>   # a single test or a filter
-./target/test/unit --ignored          # #[ignore] tests: correct behaviour for a known bug, each names its issue
+./target/test/unit --ignored          # #[ignore] tests only
 ```
+
+The convention (README, `src/tests.rs`) is that an `#[ignore]` test states the correct behaviour for a known bug and names its issue. The only one now is `poc_workloads`, which isn't that kind of test: it writes benchmark inputs to `$TERMSHOT_POC_DIR`, does nothing when the variable isn't set, and is described in `docs/c-vs-rust.md`.
 
 Rebuild it after editing Rust without running the whole suite:
 
@@ -49,6 +51,6 @@ Unit tests live in `src/tests.rs` and `src/draw_tests.rs` (both `#[cfg(test)]` m
 - **Determinism across platforms is a feature.** The same input must give the same pixels on macOS arm64, x86-64 Linux, and aarch64 Linux, with glibc or musl. `draw.c` is built with `-ffp-contract=off` so Apple clang doesn't fuse multiply-adds, which would change pixels (px 46 is in the goldens to catch exactly this). Never add `-ffast-math`.
 - The C is linked as a static library (`-l static=termshot_c`), not as bare objects, so rustc orders it before libc and libm. That ordering is what makes static musl and glibc on aarch64 link. Keep `build.sh`, `test.sh`, and `tests/run.sh` consistent if you change the link line.
 - Local changes to vendored stb are listed in `third_party/stb/CHANGES.md`; record any new ones there. `stb_truetype.h` is unmodified.
-- CLI exit codes are part of the contract: 0 done, 1 unreadable or unwritable file or bad font, 2 bad arguments (including an image over 2^27 pixels). A failed run removes the output file it created. It is quiet on success, except for the hint about `--lf-newline`. `test.sh` checks all of this.
+- CLI exit codes are part of the contract: 0 done, 1 unreadable or unwritable file or bad font, 2 bad arguments (including an image over 2^27 pixels) or an allocation failure in `draw.c`, whose return code `main` passes through. A failed run removes the output file it created. It is quiet on success, except for the hint about `--lf-newline`. `test.sh` checks all of this.
 - A bare LF moves down without a carriage return, as in a real terminal. `--lf-newline` exists for logs not captured through a PTY, such as `tmux capture-pane`.
 - User-visible changes go in `CHANGELOG.md` under `[Unreleased]`, in Keep a Changelog format.
