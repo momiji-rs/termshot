@@ -321,6 +321,18 @@ fn the_cursor_keeps_concealed_text_hidden() {
 }
 
 #[test]
+fn cursor_option_counts_from_0_as_tmux_does() {
+    assert_eq!(parse_cursor("4,2", 10, 4), Ok(Some((2, 4))));
+    assert_eq!(parse_cursor("0,0", 10, 4), Ok(Some((0, 0))));
+    assert_eq!(parse_cursor("none", 10, 4), Ok(None));
+    // tmux reports a pending wrap as one past the last column.
+    assert_eq!(parse_cursor("10,3", 10, 4), Ok(Some((3, 9))));
+    for bad in ["11,0", "0,4", "4", "4,", ",2", "-1,0", "4,2,1", "4;2", "", "None"] {
+        assert!(parse_cursor(bad, 10, 4).is_err(), "{bad:?} accepted");
+    }
+}
+
+#[test]
 fn ed2_clears_the_screen() {
     let g = grid(b"\x1b[3;3Hzz\x1b[2J");
     assert!((0..R).all(|r| line(&g, r) == "          "));

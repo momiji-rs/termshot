@@ -127,20 +127,40 @@ check "--lf-newline leaves a final CR LF alone" 'cmp -s "$out/lf-crlf-end.png" "
 # Needs tmux, which CI doesn't have.
 if command -v tmux >/dev/null; then
     socket="termshot-test-$$"
-    printf '\033[31mred\033[m\r\nplain\r\n\r\nlast' > "$out/pane.pty"
+    # It ends with the cursor away from the text, which capture-pane loses; --cursor gives it back.
+    printf '\033[31mred\033[m\r\nplain\r\n\r\nlast\033[2;3H' > "$out/pane.pty"
     tmux -L "$socket" -f /dev/null new-session -d -x 10 -y 4 "cat '$out/pane.pty'; sleep 30"
     tries=0
     until tmux -L "$socket" capture-pane -p | grep -q last || [ "$tries" -ge 50 ]; do
         sleep 0.1
         tries=$((tries + 1))
     done
-    tmux -L "$socket" capture-pane -e -p | ./termshot --lf-newline --size 10x4 - "$out/pane.png"
+    at=$(tmux -L "$socket" display -p '#{?cursor_flag,#{cursor_x}#,#{cursor_y},none}')
+    tmux -L "$socket" capture-pane -e -p | ./termshot --lf-newline --size 10x4 --cursor "$at" - "$out/pane.png"
     tmux -L "$socket" kill-server
     ./termshot --size 10x4 "$out/pane.pty" "$out/pane-direct.png"
     check "tmux capture-pane renders like the bytes the pane was sent" 'cmp -s "$out/pane.png" "$out/pane-direct.png"'
 else
     echo "skip: tmux capture-pane check (no tmux)"
 fi
+# --cursor: COL,ROW from 0 (COL may be the column count, as tmux reports a
+# pending wrap) or none, in place of where the log leaves the cursor.
+expect 2 "$log" "$out/x.png" --cursor
+expect 2 "$log" "$out/x.png" --cursor 3
+expect 2 "$log" "$out/x.png" --cursor -1,0
+expect 2 "$log" "$out/x.png" --cursor 101,0
+expect 2 "$log" "$out/x.png" --cursor 0,30
+expect 2 "$log" "$out/x.png" --cursor hidden
+check "--cursor names the grid it is off" './termshot --size 10x4 --cursor 0,4 "$log" "$out/x.png" 2>&1 | grep -q "off the 10x4 grid"'
+printf 'ab' | ./termshot --size 10x4 --cursor none - "$out/cursor-none.png"
+printf 'ab\033[?25l' | ./termshot --size 10x4 - "$out/cursor-hidden.png"
+check "--cursor none hides the cursor" 'cmp -s "$out/cursor-none.png" "$out/cursor-hidden.png"'
+printf 'ab\033[?25l' | ./termshot --size 10x4 --cursor 1,2 - "$out/cursor-at.png"
+printf 'ab\033[3;2H' | ./termshot --size 10x4 - "$out/cursor-moved.png"
+check "--cursor draws it there, even if the log hid it" 'cmp -s "$out/cursor-at.png" "$out/cursor-moved.png"'
+printf 'ab' | ./termshot --size 10x4 --cursor=10,3 - "$out/cursor-pending.png"
+printf 'ab\033[4;10H' | ./termshot --size 10x4 - "$out/cursor-last.png"
+check "--cursor at the column count is the last column" 'cmp -s "$out/cursor-pending.png" "$out/cursor-last.png"'
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
