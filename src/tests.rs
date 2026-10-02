@@ -269,6 +269,75 @@ fn private_and_unknown_csi_are_skipped() {
     assert_eq!(at(&g, 0, 0).attrs & BOLD, 0);
 }
 
+/// The grid with the cursor drawn where the log leaves it, if shown.
+fn with_cursor(s: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
+    let Grid { mut cells, cursor } = replay(s, cols, rows, Lf::Index);
+    if let Some((row, col)) = cursor {
+        draw_cursor(&mut cells, cols, row, col);
+    }
+    cells
+}
+
+#[test]
+fn the_cursor_is_a_block_in_reverse_video() {
+    // On a blank cell: the default colours swapped.
+    let g = with_cursor(b"ab", C, R);
+    assert_eq!((fg(at(&g, 0, 2)), bg(at(&g, 0, 2))), (DEFAULT_BG, DEFAULT_FG));
+    assert_eq!(bg(at(&g, 0, 1)), DEFAULT_BG);
+    // On a character: its colours swapped, the character and attributes kept.
+    let g = with_cursor(b"\x1b[1;4;31;42ma\x1b[m\x1b[H", C, R);
+    let a = at(&g, 0, 0);
+    assert_eq!((a.ch, a.attrs), ('a' as u32, BOLD | UNDERLINE));
+    assert_eq!((fg(a), bg(a)), (palette(2).unwrap(), palette(1).unwrap()));
+    // Hidden: nothing drawn.
+    let g = with_cursor(b"ab\x1b[?25l", C, R);
+    assert_eq!(bg(at(&g, 0, 2)), DEFAULT_BG);
+}
+
+#[test]
+fn the_cursor_covers_both_halves_of_a_wide_character() {
+    // On either half: both cells, and not the one after.
+    for log in ["a中\x1b[1;2H", "a中\x1b[1;3H"] {
+        let g = with_cursor(log.as_bytes(), C, R);
+        assert_eq!((bg(at(&g, 0, 1)), bg(at(&g, 0, 2))), (DEFAULT_FG, DEFAULT_FG), "{log:?}");
+        assert_eq!((bg(at(&g, 0, 0)), bg(at(&g, 0, 3))), (DEFAULT_BG, DEFAULT_BG), "{log:?}");
+    }
+    // On a one-column screen the wide character is narrow: one cell, no panic.
+    let g = with_cursor("中".as_bytes(), 1, 1);
+    assert_eq!(bg(&g[0]), DEFAULT_FG);
+    // Wide at the end of a row: the block stays in the row.
+    let g = with_cursor("\x1b[1;9H中\x1b[1;10H".as_bytes(), C, R);
+    assert_eq!((bg(at(&g, 0, 8)), bg(at(&g, 0, 9)), bg(at(&g, 1, 0))), (DEFAULT_FG, DEFAULT_FG, DEFAULT_BG));
+}
+
+#[test]
+fn the_cursor_keeps_concealed_text_hidden() {
+    let g = with_cursor(b"\x1b[8mx\x1b[H", C, R);
+    let x = at(&g, 0, 0);
+    assert_eq!(fg(x), bg(x), "the text stays hidden");
+    assert_ne!(bg(x), DEFAULT_BG, "the block still shows");
+    // Concealed on a background the default foreground colour: still a block.
+    let g = with_cursor(b"\x1b[8;48;2;219;231;247mx\x1b[H", C, R);
+    let x = at(&g, 0, 0);
+    assert_eq!((fg(x), bg(x)), (DEFAULT_BG, DEFAULT_BG));
+}
+
+#[test]
+fn cursor_option_counts_from_0_as_tmux_does() {
+    assert_eq!(parse_cursor("4,2", 10, 4), Ok(Some((2, 4))));
+    assert_eq!(parse_cursor("0,0", 10, 4), Ok(Some((0, 0))));
+    assert_eq!(parse_cursor("none", 10, 4), Ok(None));
+    // tmux reports a pending wrap as one past the last column.
+    assert_eq!(parse_cursor("10,3", 10, 4), Ok(Some((3, 9))));
+    for bad in ["11,0", "0,4", "4", "4,", ",2", "-1,0", "4,2,1", "4;2", "", "None"] {
+        assert!(parse_cursor(bad, 10, 4).is_err(), "{bad:?} accepted");
+    }
+    // The message gives the range that is accepted, pending wrap included.
+    let message = parse_cursor("11,0", 10, 4).unwrap_err();
+    assert!(message.contains("columns go from 0 to 10 (10 is a pending wrap"), "{message}");
+    assert!(message.contains("rows from 0 to 3"), "{message}");
+}
+
 #[test]
 fn ed2_clears_the_screen() {
     let g = grid(b"\x1b[3;3Hzz\x1b[2J");
@@ -847,8 +916,21 @@ fn printf_bytes(format: &str) -> Vec<u8> {
     out
 }
 
-/// Every case in tests/vt/cases.txt renders the screen in expected.txt, which
-/// tmux produced (tests/vt/oracle.sh) except for the documented deviations.
+/// A screen as tests/vt/ writes it: each row with trailing spaces trimmed,
+/// then where the cursor is.
+fn screen_lines(g: &Grid, cols: usize, rows: usize) -> Vec<String> {
+    let mut lines: Vec<String> =
+        (0..rows).map(|r| shown(&g.cells[r * cols..(r + 1) * cols]).trim_end().to_string()).collect();
+    lines.push(match g.cursor {
+        Some((row, col)) => format!("cursor {col},{row}"),
+        None => "cursor hidden".into(),
+    });
+    lines
+}
+
+/// Every case in tests/vt/cases.txt renders the screen and cursor in
+/// expected.txt, which tmux produced (tests/vt/oracle.sh) except for the
+/// documented deviations.
 #[test]
 fn vt_cases_match_the_reference_screens() {
     let cases = fs::read_to_string("tests/vt/cases.txt").unwrap();
@@ -861,13 +943,7 @@ fn vt_cases_match_the_reference_screens() {
         let input = line[line.find(size).unwrap() + size.len()..].trim_start();
         let (cols, rows) = size.split_once('x').unwrap();
         let (cols, rows): (usize, usize) = (cols.parse().unwrap(), rows.parse().unwrap());
-        let g = parse(&printf_bytes(input), cols, rows);
-        let got: Vec<String> = (0..rows)
-            .map(|r| {
-                let row = shown(&g[r * cols..(r + 1) * cols]);
-                row.trim_end().to_string()
-            })
-            .collect();
+        let got = screen_lines(&replay(&printf_bytes(input), cols, rows, Lf::Index), cols, rows);
         let header = format!("== {name}");
         let want: Vec<&str> = expected
             .lines()
@@ -876,7 +952,7 @@ fn vt_cases_match_the_reference_screens() {
             .take_while(|l| !l.starts_with("== "))
             .collect();
         count += 1;
-        if want.len() != rows || got.iter().zip(&want).any(|(g, w)| g != w) {
+        if want.len() != rows + 1 || got.iter().zip(&want).any(|(g, w)| g != w) {
             failures.push(format!("{name}:\n  got  {got:?}\n  want {want:?}"));
         }
     }
@@ -885,20 +961,15 @@ fn vt_cases_match_the_reference_screens() {
 }
 
 /// Real sessions recorded from tmux (tests/vt/record.sh): termshot renders
-/// each log to the screen tmux showed at the end.
+/// each log to the screen tmux showed at the end, with the cursor there.
 #[test]
 fn real_sessions_match_tmux() {
     let (cols, rows) = (80, 24);
     for name in ["shell", "less", "vi"] {
         let log = fs::read(format!("tests/vt/real/{name}.log")).unwrap();
         let want = fs::read_to_string(format!("tests/vt/real/{name}.txt")).unwrap();
-        let g = parse(&log, cols, rows);
-        let got: String = (0..rows)
-            .map(|r| {
-                let row = shown(&g[r * cols..(r + 1) * cols]);
-                row.trim_end().to_string() + "\n"
-            })
-            .collect();
+        let got: String =
+            screen_lines(&replay(&log, cols, rows, Lf::Index), cols, rows).iter().map(|l| l.clone() + "\n").collect();
         assert!(got == want, "{name}: termshot shows\n{got}\ntmux showed\n{want}");
     }
 }

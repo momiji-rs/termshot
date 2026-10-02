@@ -1,6 +1,8 @@
 # VT behaviour cases: name, grid size, then the log as a printf(1) format
 # string (\033 is ESC; use %% for a percent sign). The screen termshot must
-# produce is in expected.txt, generated from tmux by tests/vt/oracle.sh.
+# produce, and its last line where the cursor is ("cursor COL,ROW" from 0, or
+# "cursor hidden"), is in expected.txt, generated from tmux by
+# tests/vt/oracle.sh.
 # Rows with tabs are pre-filled so tmux records no tab cells (capture-pane
 # would print them as \t).
 
@@ -109,3 +111,11 @@ wide-1col-margins	1x3	\033[2;3r\033[3;1H\347\225\214\347\225\214
 wide-2col	2x2	a\347\225\214
 wide-2col-fit	2x2	\347\225\214a
 wide-2col-rep	2x3	\347\225\214\033[2b
+cursor-hidden	10x4	ab\033[?25l
+cursor-shown-again	10x4	\033[?25lab\033[?25h
+cursor-hidden-ris	10x4	\033[?25lab\033c
+cursor-hidden-alt	10x4	\033[?25l\033[?1049hx\033[?1049l
+cursor-hidden-decrc	10x4	\0337\033[?25l\0338
+cursor-wide	10x4	a\344\270\255\033[1;3H
+cursor-wide-first	10x4	a\344\270\255\033[1;2H
+cursor-pending	10x4	\033[2;1H0123456789

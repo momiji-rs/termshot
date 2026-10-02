@@ -28,6 +28,8 @@ It draws one final frame, not an animation. The screen model follows xterm and c
   that full-screen programs use (`vi`, `less`)
 - cursor movement, tabs, erase, inserting and deleting characters, saving the cursor, and DEC
   line drawing (`ESC ( 0`)
+- the cursor, drawn as a block in reverse video where the log leaves it, unless the log hides
+  it (`ESC [ ? 25 l`)
 
 `tests/vt/` checks this against tmux, on short cases and on recorded `ls`, `less` and `vi`
 sessions. A bare LF moves down without returning to column 0, as in a terminal; logs captured
@@ -109,11 +111,13 @@ cat session.pty | ./termshot - - > screen.png   # stdin to stdout
 ```
 
 To screenshot a TUI that is still running, drive it in tmux and capture the pane. tmux ends
-each row with a bare LF, so pass `--lf-newline` and the pane's size:
+each row with a bare LF, so pass `--lf-newline` and the pane's size. The capture doesn't say
+where the cursor is, so ask tmux and pass it with `--cursor`:
 
 ```sh
 tmux new-session -d -s app -x 100 -y 30 top
-tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 - top.png
+cursor=$(tmux display -p -t app '#{?cursor_flag,#{cursor_x}#,#{cursor_y},none}')
+tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 --cursor "$cursor" - top.png
 ```
 
 | option | |
@@ -123,6 +127,7 @@ tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 - top.png
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
 | `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
+| `--cursor COL,ROW` or `none` | draw the cursor there, counting from 0 as tmux's `#{cursor_x},#{cursor_y}` do, or not at all (default: where the log leaves it, unless it hides it) |
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 

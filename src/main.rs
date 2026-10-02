@@ -210,6 +210,9 @@ struct Screen {
     last: Option<u32>,
     /// Where it went (a storage index), for combining marks that follow.
     last_at: Option<usize>,
+    /// DECTCEM (mode 25): whether the cursor is shown. One setting for both
+    /// screens, and DECSC does not save it, as in xterm.
+    cursor_shown: bool,
     /// Not terminal state: RIS keeps it, as a reset keeps the tty's settings.
     lf: Lf,
 }
@@ -238,6 +241,7 @@ impl Screen {
             shifted: false,
             last: None,
             last_at: None,
+            cursor_shown: true,
             lf,
         }
     }
@@ -406,6 +410,7 @@ impl Screen {
                 self.home();
             }
             7 => self.autowrap = on,
+            25 => self.cursor_shown = on,
             47 | 1047 => self.use_alternate(on, mode == 1047 && !on),
             1048 => {
                 if on {
@@ -969,7 +974,19 @@ fn parse(data: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
     parse_lf(data, cols, rows, Lf::Index)
 }
 
+#[cfg(test)]
 fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
+    replay(data, cols, rows, lf).cells
+}
+
+/// The screen a log leaves: its cells in screen order, and the cursor as
+/// (row, col) unless the log hid it.
+struct Grid {
+    cells: Vec<Cell>,
+    cursor: Option<(usize, usize)>,
+}
+
+fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
     let data = match lf {
         Lf::Newline => strip_final_bare_lf(data),
         Lf::Index => data,
@@ -1052,7 +1069,34 @@ fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
         }
         i += 1;
     }
-    screen.into_cells()
+    // With a wrap pending the cursor stays on the last column, where
+    // terminals draw it.
+    let cursor = screen.cursor_shown.then_some((screen.row, screen.col));
+    Grid { cells: screen.into_cells(), cursor }
+}
+
+/// Draw the cursor as a block in reverse video over the cell at (row, col),
+/// or over both cells of the wide character it is on.
+fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
+    let line = row * cols..(row + 1) * cols;
+    let mut start = line.start + col;
+    if cells[start].attrs & TAIL != 0 && start > line.start {
+        start -= 1;
+    }
+    let end = if cells[start].attrs & WIDE != 0 { start + 2 } else { start + 1 };
+    for cell in &mut cells[start..end.min(line.end)] {
+        let (fg, bg) = ((cell.fr, cell.fg, cell.fb), (cell.br, cell.bg, cell.bb));
+        // Concealed text (the colours alike) stays hidden in a block that
+        // still shows.
+        let (fg, bg) = if fg != bg {
+            (bg, fg)
+        } else {
+            let block = if bg == DEFAULT_FG { DEFAULT_BG } else { DEFAULT_FG };
+            (block, block)
+        };
+        (cell.fr, cell.fg, cell.fb) = fg;
+        (cell.br, cell.bg, cell.bb) = bg;
+    }
 }
 
 /// Parse one CSI sequence whose parameters start at i, apply it, and return
@@ -1166,6 +1210,10 @@ options:
                     through a PTY: text files, cmd > out.log, and
                     tmux capture-pane -e -p; a final bare LF ends the
                     last line instead of scrolling
+      --cursor COL,ROW|none
+                    draw the cursor there, counting from 0 as tmux's
+                    #{cursor_x},#{cursor_y} do, or not at all (default:
+                    where the log leaves it, unless it hides it)
   -v, --verbose     print the cell and image size to stderr
   -h, --help        show this help
   -V, --version     show the version
@@ -1187,6 +1235,8 @@ struct Options {
     cols: usize,
     rows: usize,
     lf: Lf,
+    /// --cursor: Some(None) hides the cursor; None leaves it to the log.
+    cursor: Option<Option<(usize, usize)>>,
     verbose: bool,
 }
 
@@ -1217,6 +1267,29 @@ fn parse_size(value: &str) -> Result<(usize, usize), String> {
     Ok((parse_count(cols, "cols", 500)?, parse_count(rows, "rows", 200)?))
 }
 
+/// --cursor's value, checked against the grid: Some((row, col)), or None for
+/// none. COL may equal the column count, which tmux reports with a wrap
+/// pending; it means the last column, where terminals draw the cursor then.
+fn parse_cursor(value: &str, cols: usize, rows: usize) -> Result<Option<(usize, usize)>, String> {
+    if value == "none" {
+        return Ok(None);
+    }
+    let parsed = value
+        .split_once(',')
+        .and_then(|(col, row)| Some((col.parse::<usize>().ok()?, row.parse::<usize>().ok()?)));
+    let Some((col, row)) = parsed else {
+        return Err(format!("cursor must look like 4,2 (column and row from 0) or none, not {value:?}"));
+    };
+    if col > cols || row >= rows {
+        return Err(format!(
+            "cursor {value} is off the {cols}x{rows} grid: columns go from 0 to {cols} \
+             ({cols} is a pending wrap, drawn on the last column), rows from 0 to {}",
+            rows - 1
+        ));
+    }
+    Ok(Some((row, col.min(cols - 1))))
+}
+
 /// The value of an option: attached (--px=48, -p48) or the next argument.
 fn option_value(
     name: &str,
@@ -1231,6 +1304,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
     let mut lf = Lf::Index;
+    let mut cursor = None;
     let mut options_done = false;
     while let Some(arg) = args.next() {
         if options_done || arg == "-" || !arg.starts_with('-') {
@@ -1264,6 +1338,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "--fallback-font" => fallback_font = Some(option_value(&name, attached, &mut args)?),
             "-p" | "--px" => px = Some(parse_px(&option_value(&name, attached, &mut args)?)?),
             "-s" | "--size" => size = Some(parse_size(&option_value(&name, attached, &mut args)?)?),
+            // Checked once the grid size is known.
+            "--cursor" => cursor = Some(option_value(&name, attached, &mut args)?),
             _ => return Err(format!("unknown option {arg}")),
         }
     }
@@ -1296,7 +1372,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         legacy_cols.unwrap_or(DEFAULT_COLS),
         legacy_rows.unwrap_or(DEFAULT_ROWS),
     ));
-    Ok(Command::Render(Options { log, out, font, fallback_font, px: px.unwrap_or(48.0), cols, rows, lf, verbose }))
+    let cursor = cursor.map(|value| parse_cursor(&value, cols, rows)).transpose()?;
+    Ok(Command::Render(Options { log, out, font, fallback_font, px: px.unwrap_or(48.0), cols, rows, lf, cursor, verbose }))
 }
 
 /// Print an error the way every failure path reports it, and pick the status.
@@ -1397,7 +1474,10 @@ fn main() -> ExitCode {
 
     let parse_started = Instant::now();
     let input_bytes = data.len();
-    let cells = parse_lf(&data, options.cols, options.rows, options.lf);
+    let Grid { mut cells, cursor } = replay(&data, options.cols, options.rows, options.lf);
+    if let Some((row, col)) = options.cursor.unwrap_or(cursor) {
+        draw_cursor(&mut cells, options.cols, row, col);
+    }
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);

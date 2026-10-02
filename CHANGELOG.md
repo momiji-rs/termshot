@@ -15,6 +15,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the same with the flag as without.
 - A hint on stderr when a log has line feeds but no CR and `--lf-newline`
   is not given. The image is still written and the exit status is 0.
+- The cursor is drawn where the log leaves it, as a block in reverse video
+  (#33). On a wide character it covers both cells. With a wrap pending it
+  stays on the last column, as terminals draw it.
+- `--cursor COL,ROW` draws the cursor there instead, counting from 0 as
+  tmux's `#{cursor_x},#{cursor_y}` do, and `--cursor none` leaves it out.
+  A tmux capture-pane has no cursor, so the README's tmux example now asks
+  tmux for it. COL may be the column count, which is how tmux reports a
+  pending wrap.
+
+### Changed
+
+- Renders now show the cursor unless the log hides it with `ESC [ ? 25 l`
+  (DECTCEM), as full-screen programs and progress bars often do.
 
 ### Fixed
 
