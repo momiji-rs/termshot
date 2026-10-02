@@ -29,6 +29,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   text-only run takes about 1 ms where a PNG takes 10. `tests/grids/` holds
   the text of every golden fixture, and the tmux references in `tests/vt/`
   check it too.
+- `--json FILE` writes the screen with its colours and the cursor (#32):
+  per row, runs of cells alike in colour (`#rrggbb`, as drawn) and
+  attributes, each with the column it starts at, and the cursor as
+  `{"col","row"}` or null. Like `--text`, it needs no PNG and no font.
+  `tests/grids/` holds it for every golden fixture, and
+  `tests/grids/check.py` checks that it parses and agrees with `--text`.
 
 ### Changed
 

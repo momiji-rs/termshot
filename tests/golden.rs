@@ -2,7 +2,8 @@
 //! decodes each PNG with tests/png_read.c (stb_image), and compares the sha256
 //! of the RGBA pixels with tests/goldens.txt. Hashing pixels rather than file bytes keeps the
 //! goldens valid when the encoder changes but the image does not. The same runs
-//! write --text, which is compared byte for byte with tests/grids/<log>.txt.
+//! write --text and --json, which are compared byte for byte with
+//! tests/grids/<log>.txt and <log>.json.
 //!
 //! Built and run by test.sh from the repo root:
 //!   golden             check
@@ -117,16 +118,20 @@ fn sha256(data: &[u8]) -> String {
     h.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-/// A case's golden line, and its --text output.
-fn render(log: &str, px: &str, cols: u32, rows: u32) -> Result<(String, String), String> {
+/// The grid outputs: their option, and the extension of their files.
+const GRID_FORMATS: [(&str, &str); 2] = [("--text", "txt"), ("--json", "json")];
+
+/// A case's golden line, and its grid outputs in GRID_FORMATS order.
+fn render(log: &str, px: &str, cols: u32, rows: u32) -> Result<(String, Vec<String>), String> {
     let png = format!("{OUT}/{log}-{px}.png");
-    let text = format!("{OUT}/{log}-{px}.txt");
+    let grids = GRID_FORMATS.map(|(_, ext)| format!("{OUT}/{log}-{px}.{ext}"));
     let mut src = format!("examples/{log}.pty");
     if fs::metadata(&src).is_err() {
         src = format!("tests/fixtures/{log}.pty");
     }
     let output = Command::new("./termshot")
-        .args(["--text", &text, &src, &png, FONT, px, &cols.to_string(), &rows.to_string()])
+        .args(["--text", &grids[0], "--json", &grids[1]])
+        .args([&src, &png, FONT, px, &cols.to_string(), &rows.to_string()])
         .env_remove("TERMSHOT_PROFILE")
         .output()
         .map_err(|error| format!("./termshot: {error}"))?;
@@ -137,31 +142,33 @@ fn render(log: &str, px: &str, cols: u32, rows: u32) -> Result<(String, String),
         return Err(format!("./termshot {log} {px}: profile records without TERMSHOT_PROFILE"));
     }
     let (width, height, rgba) = decode(&png)?;
-    let text = fs::read_to_string(&text).map_err(|error| format!("{text}: {error}"))?;
-    Ok((format!("{} {width}x{height} {log} {px}", sha256(&rgba)), text))
+    let grids = grids.iter().map(|path| fs::read_to_string(path).map_err(|error| format!("{path}: {error}")));
+    Ok((format!("{} {width}x{height} {log} {px}", sha256(&rgba)), grids.collect::<Result<_, _>>()?))
 }
 
-/// Check each log's --text against tests/grids/, or rewrite them. A log's
-/// cases share a grid size, so they must agree on the text.
-fn check_grids(texts: &[(&str, String)], update: bool) -> bool {
+/// Check each log's grid outputs against tests/grids/, or rewrite them. A
+/// log's cases share a grid size, so they must agree on them.
+fn check_grids(grids: &[(&str, Vec<String>)], update: bool) -> bool {
     let mut ok = true;
-    for (i, (log, text)) in texts.iter().enumerate() {
-        if let Some((_, first)) = texts[..i].iter().find(|(other, _)| other == log) {
-            if first != text {
-                println!("FAIL {log}: --text differs between its cases");
+    for (i, (log, outputs)) in grids.iter().enumerate() {
+        if let Some((_, first)) = grids[..i].iter().find(|(other, _)| other == log) {
+            if first != outputs {
+                println!("FAIL {log}: the grid outputs differ between its cases");
                 ok = false;
             }
             continue;
         }
-        let path = format!("{GRIDS}/{log}.txt");
-        if update {
-            if let Err(error) = fs::create_dir_all(GRIDS).and_then(|()| fs::write(&path, text)) {
-                eprintln!("{path}: {error}");
+        for ((option, ext), output) in GRID_FORMATS.iter().zip(outputs) {
+            let path = format!("{GRIDS}/{log}.{ext}");
+            if update {
+                if let Err(error) = fs::create_dir_all(GRIDS).and_then(|()| fs::write(&path, output)) {
+                    eprintln!("{path}: {error}");
+                    ok = false;
+                }
+            } else if fs::read_to_string(&path).ok().as_ref() != Some(output) {
+                println!("FAIL {path} differs from {option}; see {OUT}/{log}-*.{ext}");
                 ok = false;
             }
-        } else if fs::read_to_string(&path).ok().as_ref() != Some(text) {
-            println!("FAIL {path} differs from --text; see {OUT}/{log}-*.txt");
-            ok = false;
         }
     }
     ok
@@ -171,12 +178,12 @@ fn main() -> ExitCode {
     assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     let update = std::env::args().nth(1).as_deref() == Some("--update");
     let mut fresh = vec![HEADER.to_string()];
-    let mut texts = Vec::new();
+    let mut grids = Vec::new();
     for (log, px, cols, rows) in CASES {
         match render(log, px, cols, rows) {
-            Ok((line, text)) => {
+            Ok((line, outputs)) => {
                 fresh.push(line);
-                texts.push((log, text));
+                grids.push((log, outputs));
             }
             Err(error) => {
                 eprintln!("{error}");
@@ -185,7 +192,7 @@ fn main() -> ExitCode {
         }
     }
     let fresh = fresh.join("\n") + "\n";
-    let grids_ok = check_grids(&texts, update);
+    let grids_ok = check_grids(&grids, update);
     if update {
         if let Err(error) = fs::write(GOLDENS, &fresh) {
             eprintln!("{GOLDENS}: {error}");

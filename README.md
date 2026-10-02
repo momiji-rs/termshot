@@ -129,6 +129,21 @@ trimmed. Without a PNG no font is read, so it takes about a tenth of the time:
 ./termshot --text screen.txt session.pty screen.png     # both
 ```
 
+`--json` adds the colours, the attributes and the cursor. Each row is a line of runs of cells
+that look alike, with the column each starts at (a wide character takes two):
+
+```json
+{"cols":100,"rows":30,"cursor":{"col":2,"row":5},"lines":[
+[{"col":0,"text":"ok","fg":"#00cd00","bg":"#111823","bold":true},{"col":2,"text":" done","fg":"#dbe7f7","bg":"#111823"}],
+...
+]}
+```
+
+`cursor` is null when the log hides it. `bold`, `underline`, `double_underline` and `strike`
+appear only when set. Blank cells that end a row are left out unless their background or a line
+shows. Colours are as drawn: reverse video and dim are already applied, and concealed text has
+`fg` equal to `bg`.
+
 | option | |
 |---|---|
 | `-f`, `--font FILE` | TrueType font (default: built-in JetBrains Mono) |
@@ -138,6 +153,7 @@ trimmed. Without a PNG no font is read, so it takes about a tenth of the time:
 | `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
 | `--cursor COL,ROW` or `none` | draw the cursor there, counting from 0 as tmux's `#{cursor_x},#{cursor_y}` do, or not at all (default: where the log leaves it, unless it hides it) |
 | `--text FILE` | write the screen as text, a line per row with trailing spaces trimmed; the PNG is then optional |
+| `--json FILE` | write the screen as JSON: the cursor, and per row the runs of cells alike in colour and attributes; the PNG is then optional |
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 

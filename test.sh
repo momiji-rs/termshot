@@ -176,6 +176,25 @@ expect 1 --text "$out/no-such-dir/x.txt" "$log"
 rm -f "$out/gone.txt"
 ./termshot --text "$out/gone.txt" "$log" "$out/gone.png" "$font" 255 500 73 2>/dev/null || true
 check "failed run removes the text file it created" '[ ! -e "$out/gone.txt" ]'
+# --json: the cursor, and runs of cells alike in colour and attributes.
+printf '\033[1;31mab\033[m c\r\n\344\270\255x\033[?25l' | ./termshot --size 10x2 --json "$out/grid.json" -
+printf '%s\n' '{"cols":10,"rows":2,"cursor":null,"lines":[' \
+    '[{"col":0,"text":"ab","fg":"#cd0000","bg":"#111823","bold":true},{"col":2,"text":" c","fg":"#dbe7f7","bg":"#111823"}],' \
+    '[{"col":0,"text":"中x","fg":"#dbe7f7","bg":"#111823"}]' ']}' > "$out/grid-want.json"
+check "--json writes the runs and the cursor" 'cmp -s "$out/grid.json" "$out/grid-want.json"'
+printf 'ab' | ./termshot --size 10x2 --cursor 4,1 --json - - > "$out/grid-cursor.json"
+check "--json reports --cursor" 'grep -q "\"cursor\":{\"col\":4,\"row\":1}" "$out/grid-cursor.json"'
+./termshot --text "$out/both.txt" --json "$out/both.json" "$log"
+check "--text and --json together match each alone" 'cmp -s "$out/both.txt" "$out/text-png.txt"'
+expect 2 --json - --text - "$log"
+expect 2 --json - "$log" -
+expect 1 --json "$out/no-such-dir/x.json" "$log"
+# Every golden's JSON parses, and its runs spell the --text rows.
+if command -v python3 >/dev/null; then
+    check "the golden JSON parses and agrees with --text" 'python3 tests/grids/check.py tests/grids'
+else
+    echo "skip: golden JSON check (no python3)"
+fi
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.

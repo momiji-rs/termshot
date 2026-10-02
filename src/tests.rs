@@ -339,6 +339,29 @@ fn cursor_option_counts_from_0_as_tmux_does() {
 }
 
 #[test]
+fn json_has_runs_of_alike_cells_and_the_cursor() {
+    let log = "\x1b[1;31mab\x1b[m c\x1b[4m \x1b[m\r\n中\x1b[32mx\x1b[44m  \x1b[m\r\n\"\\";
+    let g = replay(log.as_bytes(), 8, 4, Lf::Index);
+    let want = r##"{"cols":8,"rows":4,"cursor":{"col":2,"row":2},"lines":[
+[{"col":0,"text":"ab","fg":"#cd0000","bg":"#111823","bold":true},{"col":2,"text":" c","fg":"#dbe7f7","bg":"#111823"},{"col":4,"text":" ","fg":"#dbe7f7","bg":"#111823","underline":true}],
+[{"col":0,"text":"中","fg":"#dbe7f7","bg":"#111823"},{"col":2,"text":"x","fg":"#00cd00","bg":"#111823"},{"col":3,"text":"  ","fg":"#00cd00","bg":"#0000ee"}],
+[{"col":0,"text":"\"\\","fg":"#dbe7f7","bg":"#111823"}],
+[]
+]}
+"##;
+    assert_eq!(grid_json(&g.cells, 8, 4, g.cursor), want);
+}
+
+#[test]
+fn json_escapes_controls_and_reports_a_hidden_cursor() {
+    let mut cells = parse(b"\x1b[9;21mab", 3, 1);
+    cells[1].ch = 0x1b;
+    let want = "{\"cols\":3,\"rows\":1,\"cursor\":null,\"lines\":[\n\
+        [{\"col\":0,\"text\":\"a\\u001b\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"double_underline\":true,\"strike\":true}]\n]}\n";
+    assert_eq!(grid_json(&cells, 3, 1, None), want);
+}
+
+#[test]
 fn ed2_clears_the_screen() {
     let g = grid(b"\x1b[3;3Hzz\x1b[2J");
     assert!((0..R).all(|r| line(&g, r) == "          "));

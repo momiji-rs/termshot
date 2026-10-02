@@ -1112,6 +1112,61 @@ fn grid_text(cells: &[Cell], cols: usize) -> String {
     text
 }
 
+/// The screen as JSON: the grid size; the cursor, or null when hidden; and a
+/// line per row of the runs of cells alike in colour and attributes, each with
+/// the column it starts at (a wide character takes two). Blank cells that end a
+/// row are left out, as in --text, unless their background or a line shows.
+fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, usize)>) -> String {
+    use std::fmt::Write as _;
+    const LINES: u8 = UNDERLINE | DOUBLE_UNDERLINE | STRIKE;
+    const STYLE: u8 = BOLD | LINES;
+    let style = |c: &Cell| ((c.fr, c.fg, c.fb), (c.br, c.bg, c.bb), c.attrs & STYLE);
+    let blank = |c: &Cell| c.ch == ' ' as u32 && (c.br, c.bg, c.bb) == DEFAULT_BG && c.attrs & LINES == 0;
+    // Writing to a String cannot fail.
+    let mut json = String::with_capacity(cells.len() * 2);
+    let _ = write!(json, "{{\"cols\":{cols},\"rows\":{rows},\"cursor\":");
+    let _ = match cursor {
+        Some((row, col)) => write!(json, "{{\"col\":{col},\"row\":{row}}}"),
+        None => write!(json, "null"),
+    };
+    json.push_str(",\"lines\":[");
+    for (r, row) in cells.chunks(cols).enumerate() {
+        json.push_str(if r == 0 { "\n[" } else { ",\n[" });
+        let end = row.iter().rposition(|c| !blank(c)).map_or(0, |i| i + 1);
+        let mut c = 0;
+        while c < end {
+            let start = c;
+            let key = style(&row[c]);
+            let _ = write!(json, "{}{{\"col\":{start},\"text\":\"", if start == 0 { "" } else { "," });
+            // A wide character's tail is part of the run its first half is in.
+            while c < end && (style(&row[c]) == key || row[c].attrs & TAIL != 0) {
+                if row[c].attrs & TAIL == 0 {
+                    match char::from_u32(row[c].ch).unwrap_or('\u{fffd}') {
+                        '"' => json.push_str("\\\""),
+                        '\\' => json.push_str("\\\\"),
+                        ch if ch < ' ' || ch == '\u{7f}' => {
+                            let _ = write!(json, "\\u{:04x}", ch as u32);
+                        }
+                        ch => json.push(ch),
+                    }
+                }
+                c += 1;
+            }
+            let ((fr, fg, fb), (br, bg, bb), attrs) = key;
+            let _ = write!(json, "\",\"fg\":\"#{fr:02x}{fg:02x}{fb:02x}\",\"bg\":\"#{br:02x}{bg:02x}{bb:02x}\"");
+            for (bit, name) in [(BOLD, "bold"), (UNDERLINE, "underline"), (DOUBLE_UNDERLINE, "double_underline"), (STRIKE, "strike")] {
+                if attrs & bit != 0 {
+                    let _ = write!(json, ",\"{name}\":true");
+                }
+            }
+            json.push('}');
+        }
+        json.push(']');
+    }
+    json.push_str("\n]}\n");
+    json
+}
+
 /// Parse one CSI sequence whose parameters start at i, apply it, and return
 /// where parsing resumes. C0 controls inside it execute in place; ESC aborts
 /// it and starts the next sequence; CAN and SUB abort it.
@@ -1207,7 +1262,7 @@ static EMBEDDED_FONT: &[u8] = include_bytes!("../third_party/jetbrains-mono/JetB
 
 const USAGE: &str = "\
 usage: termshot [options] <log> <out.png>
-       termshot [options] --text FILE <log> [<out.png>]
+       termshot [options] --text FILE --json FILE <log> [<out.png>]
        termshot <log> <out.png> <font.ttf> [px] [cols] [rows]
 
 Render the final screen of a terminal log (raw PTY output) as a PNG.
@@ -1231,6 +1286,9 @@ options:
       --text FILE   write the screen as text, a line per row with trailing
                     spaces trimmed, as tmux capture-pane -p prints it; the
                     PNG is then optional, and fonts are only read for it
+      --json FILE   write the screen as JSON: the cursor, and for each row
+                    the runs of cells alike in colour (#rrggbb) and
+                    attributes, with the column each starts at
   -v, --verbose     print the cell and image size to stderr
   -h, --help        show this help
   -V, --version     show the version
@@ -1245,9 +1303,10 @@ unusable; 2 bad arguments, including an image over 134217728 pixels.
 /// A rendering request from the command line.
 struct Options {
     log: String,
-    /// The PNG; None when only --text is wanted.
+    /// The PNG; None when only --text or --json is wanted.
     out: Option<String>,
     text: Option<String>,
+    json: Option<String>,
     font: Option<String>,
     fallback_font: Option<String>,
     px: f64,
@@ -1323,7 +1382,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
     let mut lf = Lf::Index;
-    let (mut cursor, mut text) = (None, None);
+    let (mut cursor, mut text, mut json) = (None, None, None);
     let mut options_done = false;
     while let Some(arg) = args.next() {
         if options_done || arg == "-" || !arg.starts_with('-') {
@@ -1360,6 +1419,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             // Checked once the grid size is known.
             "--cursor" => cursor = Some(option_value(&name, attached, &mut args)?),
             "--text" => text = Some(option_value(&name, attached, &mut args)?),
+            "--json" => json = Some(option_value(&name, attached, &mut args)?),
             _ => return Err(format!("unknown option {arg}")),
         }
     }
@@ -1367,10 +1427,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let (Some(log), out) = (positional.next(), positional.next()) else {
         return Err("expected <log> and <out.png>".into());
     };
-    if out.is_none() && text.is_none() {
-        return Err("expected <log> and <out.png>, or --text FILE and <log>".into());
+    if out.is_none() && text.is_none() && json.is_none() {
+        return Err("expected <log> and <out.png>, or --text or --json FILE and <log>".into());
     }
-    if [&out, &text].iter().filter(|path| path.as_deref() == Some("-")).count() > 1 {
+    if [&out, &text, &json].iter().filter(|path| path.as_deref() == Some("-")).count() > 1 {
         return Err("only one output can be - (stdout)".into());
     }
     // The original form: <log> <out.png> <font.ttf> [px] [cols] [rows].
@@ -1403,6 +1463,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         log,
         out,
         text,
+        json,
         font,
         fallback_font,
         px: px.unwrap_or(48.0),
@@ -1483,7 +1544,7 @@ fn main() -> ExitCode {
             let _ = fs::remove_file(path);
         }
     };
-    for path in [&options.out, &options.text].into_iter().flatten().filter(|path| *path != "-") {
+    for path in [&options.out, &options.text, &options.json].into_iter().flatten().filter(|path| *path != "-") {
         let existed = std::path::Path::new(path).exists();
         if let Err(error) = fs::OpenOptions::new().write(true).create(true).open(path) {
             remove_created(&created);
@@ -1522,7 +1583,7 @@ fn main() -> ExitCode {
 
     let font_started = Instant::now();
     let mut font_timings = font::LoadTimings::default();
-    // Only the PNG needs fonts; the text comes from the cells alone.
+    // Only the PNG needs fonts; text and JSON come from the cells alone.
     let fonts = match options.out.is_some().then(|| load_fonts(&options, profile, &mut font_timings)).transpose() {
         Ok(fonts) => fonts,
         Err(error) => return cleanup(1, error),
@@ -1536,14 +1597,23 @@ fn main() -> ExitCode {
     // allocating the raster and compressor buffers.
     drop(data);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
-    if let Some(path) = &options.text {
-        if let Err(error) = write_output(path, grid_text(&cells, options.cols).as_bytes()) {
-            return cleanup(1, format!("{}: {error}", if path == "-" { "stdout" } else { path }));
-        }
+    let cursor = options.cursor.unwrap_or(cursor);
+    let write = |path: &String, output: String| {
+        write_output(path, output.as_bytes())
+            .map_err(|error| format!("{}: {error}", if path == "-" { "stdout" } else { path }))
+    };
+    let written = (options.text.as_ref())
+        .map_or(Ok(()), |path| write(path, grid_text(&cells, options.cols)))
+        .and_then(|()| {
+            (options.json.as_ref())
+                .map_or(Ok(()), |path| write(path, grid_json(&cells, options.cols, options.rows, cursor)))
+        });
+    if let Err(message) = written {
+        return cleanup(1, message);
     }
     let code = match (&options.out, fonts) {
         (Some(out), Some((font, fallback))) => {
-            if let Some((row, col)) = options.cursor.unwrap_or(cursor) {
+            if let Some((row, col)) = cursor {
                 draw_cursor(&mut cells, options.cols, row, col);
             }
             let out = if out == "-" { "/dev/stdout" } else { out };
