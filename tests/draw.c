@@ -8,8 +8,9 @@ static void images(void) {
     // Negative origins, vertical clipping and partial alpha exercise the actual
     // painter with guarded scanlines. Source quadrants expand to 2x2 pixels.
     ImageView image = {.pixels = pixels, .width = 2, .height = 2,
-        .x = -1, .y = -1, .w = 4, .h = 4, .clip_top = 0, .clip_bottom = 2};
-    paint_images(&cv, &image, 1);
+        .x = -1, .y = -1, .w = 4, .h = 4, .clip_top = 0, .clip_bottom = 2,
+        .src_w = 2, .src_h = 2};
+    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
     assert(buffer[1] == 255); // red at (0,0)
     assert(buffer[5] == 128); // half-alpha green at (1,0)
     assert(buffer[14] == 0);  // transparent blue at (0,1)
@@ -20,8 +21,56 @@ static void images(void) {
     }
     for (int i = 26; i < 52; i++) assert(buffer[i] == 0);
 }
+
+/* Crops, layers and the mask of default backgrounds, on a 4x4 canvas of two
+   2x4 cells: the first in the default background, the second red. */
+static void layered_images(void) {
+    unsigned char pixels[4 * 4] = {255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255};
+    unsigned char buffer[4 * 13];
+    Cell cells[2] = {{.ch = ' ', .br = DEFAULT_BG_R, .bg = DEFAULT_BG_G, .bb = DEFAULT_BG_B},
+                     {.ch = ' ', .br = 205}};
+    Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = 4, .h = 4, .stride = 13};
+    /* The bottom right source pixel, yellow, stretched over the canvas. */
+    ImageView image = {.pixels = pixels, .width = 2, .height = 2, .x = 0, .y = 0, .w = 4, .h = 4,
+                       .clip_top = 0, .clip_bottom = 4, .src_x = 1, .src_y = 1, .src_w = 1, .src_h = 1};
+    for (int32_t z = -3; z <= 3; z++) assert(image_layer(z) == (z < 0 ? LAYER_UNDER_TEXT : LAYER_OVER_TEXT));
+    assert(image_layer(INT32_MIN / 2) == LAYER_UNDER_TEXT);
+    assert(image_layer(INT32_MIN / 2 - 1) == LAYER_BELOW && image_layer(INT32_MIN) == LAYER_BELOW);
+    assert(image_layer(INT32_MAX) == LAYER_OVER_TEXT);
+    for (int layer = LAYER_BELOW; layer <= LAYER_OVER_TEXT; layer++) {
+        image.z = layer == LAYER_BELOW ? INT32_MIN : layer == LAYER_UNDER_TEXT ? -1 : 0;
+        for (int mask = 0; mask < 2; mask++) {
+            memset(buffer, 0, sizeof buffer);
+            /* Another layer paints nothing. */
+            paint_images(&cv, &image, 1, (layer + 1) % 3, mask ? cells : NULL, 2, 4);
+            for (size_t i = 0; i < sizeof buffer; i++) assert(buffer[i] == 0);
+            paint_images(&cv, &image, 1, layer, mask ? cells : NULL, 2, 4);
+            for (int y = 0; y < 4; y++) {
+                for (int x = 0; x < 4; x++) {
+                    const unsigned char *p = buffer + y * 13 + 1 + x * 3;
+                    int shown = !mask || x < 2;
+                    assert(p[0] == (shown ? 255 : 0) && p[1] == (shown ? 255 : 0) && p[2] == 0);
+                }
+            }
+        }
+    }
+    /* Opaque cells hide it even in the default colour; other colours do too. */
+    cells[0].attrs = ATTR_OPAQUE;
+    assert(!clear_background(&cells[0]) && !clear_background(&cells[1]));
+    cells[0].attrs = ATTR_BOLD;
+    assert(clear_background(&cells[0]));
+    /* A crop of the top row, sampled across: red then green. */
+    image = (ImageView){.pixels = pixels, .width = 2, .height = 2, .x = 0, .y = 0, .w = 4, .h = 1,
+                        .clip_top = 0, .clip_bottom = 4, .src_x = 0, .src_y = 0, .src_w = 2, .src_h = 1};
+    memset(buffer, 0, sizeof buffer);
+    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 2, 4);
+    assert(buffer[1] == 255 && buffer[4] == 255 && buffer[8] == 255 && buffer[11] == 255);
+    assert(buffer[2] == 0 && buffer[7] == 0 && buffer[10] == 0);
+    for (int i = 13; i < 52; i++) assert(buffer[i] == 0);
+}
 int main(int argc, char **argv) {
     images();
+    layered_images();
     if (argc != 3) return 1;
     /* Only the trusted vendored fixture is used by this C harness. Production
        and the Rust draw tests validate and pad fonts with font::load. */

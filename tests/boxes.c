@@ -248,7 +248,7 @@ static int cell_w, cell_h, grid_w, grid_h;
 static void paint(uint32_t cp, int bold) {
     memset(pixels, 0, (size_t)grid_w * grid_h * 3);
     Canvas cv = {.px = pixels, .filtered = pixels, .w = grid_w, .h = grid_h, .stride = (size_t)grid_w * 3};
-    paint_geometry(&cv, 1, 1, cell_w, cell_h, cp, bold, 255, 255, 255, 0, 0, 0);
+    paint_geometry(&cv, 1, 1, cell_w, cell_h, cp, bold, 255, 255, 255);
     for (int k = 0; k < 4; k++) free(cv.arc_offsets[k]);
 }
 

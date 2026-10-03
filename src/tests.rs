@@ -312,10 +312,13 @@ fn the_cursor_is_a_block_in_reverse_video() {
     let g = with_cursor(b"ab", C, R);
     assert_eq!((fg(at(&g, 0, 2)), bg(at(&g, 0, 2))), (DEFAULT_BG, DEFAULT_FG));
     assert_eq!(bg(at(&g, 0, 1)), DEFAULT_BG);
-    // On a character: its colours swapped, the character and attributes kept.
+    // On a character: its colours swapped, the character and attributes kept,
+    // and its background opaque, as kitty draws the block over images below
+    // the cell backgrounds.
     let g = with_cursor(b"\x1b[1;4;31;42ma\x1b[m\x1b[H", C, R);
     let a = at(&g, 0, 0);
-    assert_eq!((a.ch, a.attrs), ('a' as u32, BOLD | UNDERLINE));
+    assert_eq!((a.ch, a.attrs), ('a' as u32, BOLD | UNDERLINE | OPAQUE));
+    assert_eq!(at(&g, 0, 1).attrs & OPAQUE, 0);
     assert_eq!((fg(a), bg(a)), (palette(2).unwrap(), palette(1).unwrap()));
     // Hidden: nothing drawn.
     let g = with_cursor(b"ab\x1b[?25l", C, R);
@@ -920,6 +923,9 @@ fn sgr_reverse_swaps_the_cell_colours() {
     assert_eq!((fg(at(&g, 0, 0)), bg(at(&g, 0, 0))), (DEFAULT_BG, DEFAULT_FG));
     assert_eq!((fg(at(&g, 0, 1)), bg(at(&g, 0, 1))), (DEFAULT_FG, DEFAULT_BG));
     assert_eq!((fg(at(&g, 0, 2)), bg(at(&g, 0, 2))), ((0, 0, 238), (205, 0, 0)));
+    // Reverse video is opaque over an image below the backgrounds, as in kitty.
+    let opaque: Vec<_> = (0..3).map(|c| at(&g, 0, c).attrs & OPAQUE != 0).collect();
+    assert_eq!(opaque, [true, false, true]);
 }
 
 #[test]
