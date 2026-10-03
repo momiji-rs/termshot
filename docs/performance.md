@@ -7,6 +7,11 @@ below it (2026-10-01, `c44d83c`, Apple M3) is history: a different revision,
 a different machine and a different harness. Do not subtract its numbers from
 the current ones.
 
+Figures published elsewhere (the repository's About description, issue #1, the
+changelog) are traced, or marked unverified, in
+[Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
+at the end.
+
 ## Current baseline: font paths and Linux (2026-10-03, `d83c8fd`)
 
 Issue #19 asked for the default built-in font, an explicit font, real CJK
@@ -656,3 +661,80 @@ executables had the exact same hashes as the earlier 30.59 / 19.50 ms report.
 This demonstrates why absolute timings from separate batches need context.
 The current README omits a fixed millisecond claim in its introduction and
 presents versioned, paired results with their measurement conditions instead.
+
+## Published claims and their evidence (checked 2026-10-03)
+
+This section records each latency figure published outside this report, where
+it came from, and whether its evidence is in the repository. A figure is traceable only when its
+raw samples, revision, input, font, image size, machine, statistic and timing
+boundary are all recorded. The measurement rounds above, with their JSON files,
+meet that bar. The historical “~20 ms” notes above and the figures below do
+not, so none of them should be quoted as a current result.
+
+### “~20 ms for 2200×1440” (the repository's About description)
+
+**Provenance: partly documented, the measurement itself unverified.**
+
+- **Where it first appears**: the README at
+  [`fb714a5`](https://github.com/momiji-rs/termshot/blob/fb714a5/README.md)
+  (2026-10-01): “The screenshot below, 2200×1440, takes about 20 ms from start
+  to finished file”. Its Speed table gave 21 ms for px 48 on an Apple M3
+  (macOS) and 15 ms on a Ryzen 7 8745HS (Linux).
+- **Command and input**: `./termshot examples/reply-sent.pty out.png <font> 48`,
+  the positional CLI, when a font file was still required. The font is not
+  named; the README's example at that revision passes
+  `third_party/jetbrains-mono/JetBrainsMono-Regular.ttf`. 100×30 cells, so a
+  2200×1440 image.
+- **Revision**: `fb714a5` changes only `README.md`, so the source it describes
+  is its parent `c1ff1f9`'s (RGB PNGs with no row filter, on top of the faster
+  deflate in `7a7eb19`), built with `build.sh`. No binary hash was kept, so
+  which build was timed is inferred, not recorded.
+- **Boundary and statistic**: one whole CLI process, “process start, parse,
+  rasterize, PNG encode, and the file write”; the **mean** of 40 runs, with
+  hyperfine on macOS and a shell loop on Linux (the commit message). Whether
+  hyperfine used warmups or a shell is not recorded.
+- **Not recorded anywhere**: the samples, the macOS version, the compilers,
+  hyperfine's options and the machine's load. The 21 ms cannot be recomputed.
+- **Later remeasurement**: [the historical audit](performance-history-audit.json)
+  (2026-10-01T21:29Z, the same M3) has a binary labelled `historical`, sha256
+  `c4fb34d1bbea…`, at a **16.06 ms median** of 60 runs. The JSON does not
+  record that binary's revision; the third round's notes say it was rebuilt
+  from `fb714a5`. Confirming that needs a rebuild with the audit's toolchain
+  (Apple clang 17.0.0, rustc 1.98.1) on that machine; it was not repeated.
+- **The “newer ~19–20 ms” results** #23 mentions are PR #10's
+  **19.50 ms median** (30 runs) for `34ceb1a` against 30.59 ms for main
+  `1eaf7dd`, kept in
+  [`34ceb1a:docs/performance-results.json`](https://github.com/momiji-rs/termshot/blob/34ceb1a/docs/performance-results.json)
+  (the file was overwritten by later rounds). That batch was disturbed: its
+  means were 45.28 and 24.82 ms. The audit timed the same two binaries (sha256
+  `a04a42c5ec96…` and `74314e5a09c0…`) at 13.76 and 8.77 ms one batch later.
+  Neither 21 ms nor 19.50 ms is a stable property of the code.
+- **Today's nearest equivalent** is `font-builtin` / `reply-sent` in the current
+  baseline: 9.17-9.89 ms median on an Apple M2 Max and 9.58-9.81 ms on the
+  Ryzen 7 8745HS (both cases, both batches, `22b77e8`). The machine, revision,
+  harness and font path all differ from `fb714a5`'s, so the gap from 21 ms is
+  not a measured speedup.
+
+### “~130 ms render”, “about 90% is stb's PNG deflate” (issue #1)
+
+From #4: reply-sent at px 48 on the Apple M3, 2026-10-01, about 128 ms
+(128.6 ± 2.3 ms), with stb's `stbi_zlib_compress` 84-92% of it. That was the
+code before `7a7eb19`; #4's own samples are not in the repository. It no longer
+describes termshot. In the current baseline (`font-builtin`, the same log at
+px 48, batch A profiled runs), the median `png_deflate_ms` is 3.60 ms against a
+median `total_ms` of 5.94 ms on macOS and 5.79 against 8.59 ms on Linux; the
+median per-run share is 61% and 68%, and `glyph_ms`'s 4% and 3%. These are
+internal timers, which leave out process start-up and exit.
+
+### “about 18 ms for a 2200×1440 frame instead of about 140 ms” (CHANGELOG, 0.1.0)
+
+Added in `0454114`. No command, machine, statistic or samples are recorded
+with it; it agrees with #4 and the `fb714a5` table only roughly.
+**Provenance unverified.** It stays as written because it is part of a
+released changelog entry.
+
+### “a text-only run takes about 1 ms where a PNG takes 10” (README, CHANGELOG)
+
+From `f2d0863`'s commit message (0.85 vs 9.9 ms for reply-sent), with no
+machine or samples recorded. **Provenance unverified**; the README and the
+unreleased changelog entry no longer give a ratio.

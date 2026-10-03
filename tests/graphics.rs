@@ -122,6 +122,8 @@ fn main() {
     grid_outputs(&bin);
     cursor_shapes(&bin);
     stored_placements(&bin);
+    crops_and_offsets(&bin);
+    layers(&bin);
     sixel(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes, plain and zlib-compressed; native clipping, text layering, transparency and deletion");
 }
@@ -323,6 +325,168 @@ fn grid_outputs(bin: &str) {
         );
     }
     println!("ok, graphics text/JSON outputs match with and without PNG, including cursor metrics");
+}
+
+fn base64(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// Alpha blending as the renderer rounds it: a over b.
+fn over(a: [u8; 3], alpha: u32, b: [u8; 3]) -> [u8; 3] {
+    let mut out = [0; 3];
+    for c in 0..3 {
+        out[c] = ((u32::from(a[c]) * alpha + u32::from(b[c]) * (255 - alpha) + 127) / 255) as u8;
+    }
+    out
+}
+
+fn run_cli(bin: &str, name: &str, log: &[u8], args: &[&str]) -> (usize, usize, Vec<u8>) {
+    let input = format!("target/test/graphics-{name}.pty");
+    let out = format!("target/test/graphics-{name}.png");
+    fs::write(&input, log).unwrap();
+    let ok = Command::new(bin).args(args).args([&input, &out]).status().unwrap().success();
+    assert!(ok, "{name}");
+    decode(&out)
+}
+
+/// A 4x2 RGB image: red, green, blue, yellow over cyan, magenta, white, black.
+const QUAD: [[u8; 3]; 8] = [
+    [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0],
+    [0, 255, 255], [255, 0, 255], [255, 255, 255], [0, 0, 0],
+];
+
+// Source crops and offsets in the first cell, at three sizes, and the same
+// scene scrolled up a row. The expected raster is built from the protocol's
+// rules: the crop is the part of x, y, w, h inside the image; X and Y move
+// the image inside its cell, at most a pixel short of its edge; c counts
+// cells from the cell's edge, so X shrinks the space; the image keeps the
+// crop's aspect ratio; each screen pixel shows the source pixel its position
+// scales to. An empty crop draws nothing.
+fn crops_and_offsets(bin: &str) {
+    let payload = base64(&QUAD.concat());
+    let image = |keys: &str| format!("\x1b_Ga=T,f=24,s=4,v=2,C=1,{keys};{payload}\x1b\\");
+    let scene = [
+        // The middle 2x2 (green, blue over magenta, white), X=3, Y=2, over 3 cells.
+        format!("\x1b[2;2H{}", image("x=1,y=0,w=2,h=2,X=3,Y=2,c=3")),
+        // Past the right edge: only the last column, yellow over black, at the
+        // far corner of cell (0, 5); X and Y past the cell are clamped.
+        format!("\x1b[1;6H{}", image("x=3,w=9,X=99,Y=99")),
+        // Nothing: the crop starts past the image.
+        format!("\x1b[4;1H{}", image("x=4,c=2")),
+    ]
+    .concat();
+    for px in ["9", "24", "47.5"] {
+        for scrolled in [false, true] {
+            let mut log = scene.clone().into_bytes();
+            if scrolled {
+                log.extend_from_slice(b"\x1b[S");
+            }
+            let name = format!("crop-{px}-{scrolled}");
+            let (w, h, pixels) = run_cli(bin, &name, &log, &["--cursor", "none", "--size", "6x4", "--px", px]);
+            let (cw, ch) = (w / 6, h / 4);
+            let (ox, oy) = (3.min(cw - 1), 2.min(ch - 1));
+            let side = 3 * cw - ox;
+            let dy = if scrolled { ch as isize } else { 0 };
+            // (left, top, width, height, source x, y, w, h) of each image.
+            let images = [
+                (cw + ox, ch + oy, side, side, 1, 0, 2, 2),
+                (5 * cw + cw - 1, ch - 1, 1, 2, 3, 0, 1, 2),
+            ];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut want = BG;
+                    for &(left, top, iw, ih, sx, sy, sw, sh) in &images {
+                        let (fx, fy) = (x as isize - left as isize, y as isize + dy - top as isize);
+                        if fx >= 0 && fy >= 0 && (fx as usize) < iw && (fy as usize) < ih {
+                            let (u, v) = (sx + fx as usize * sw / iw, sy + fy as usize * sh / ih);
+                            want = QUAD[v * 4 + u];
+                        }
+                    }
+                    assert_eq!(&pixels[(y * w + x) * 4..][..3], &want, "{name} at ({x},{y})");
+                }
+            }
+        }
+    }
+    println!("ok, kitty source crops and cell offsets at 3 sizes, scrolled and not; an empty crop draws nothing");
+}
+
+// The layers of the z-index over one row of cells: an upper half block, a red
+// background, a background set to the default colour, reverse video, a light
+// shade and a plain cell. A green image covers the row. From kitty: z >= 0 is
+// over everything; z < 0 is over every background and under the text; below
+// -2^30 the image shows only through default backgrounds, which reverse video
+// and the block cursor are not. The bar cursor is over everything.
+fn layers(bin: &str) {
+    const FG: [u8; 3] = [219, 231, 247];
+    const RED: [u8; 3] = [205, 0, 0];
+    const GREEN: [u8; 3] = [0, 255, 0];
+    let text = "\x1b[H\u{2580}\x1b[41m \x1b[48;2;17;24;35m \x1b[0;7m \x1b[0m\u{2591} ";
+    let mut checked = 0;
+    // The image is 1x1, scaled to 6 cells wide and cut at the screen's bottom.
+    for (alpha, data) in [(255, "AP8A/w=="), (128, "AP8AgA==")] {
+        for z in ["-1073741825", "-2147483648", "-1073741824", "-1", "0", "7"] {
+            for cursor in ["none", "block", "bar"] {
+                let at = if cursor == "none" { "" } else { "\x1b[1;1H" };
+                let shape = if cursor == "bar" { "\x1b[6 q" } else { "" };
+                let log = format!("{shape}\x1b_Ga=T,s=1,v=1,c=6,z={z},C=1;{data}\x1b\\{text}{at}");
+                for px in ["9", "24", "47.5"] {
+                    let name = format!("layers-{alpha}-{z}-{cursor}-{px}");
+                    let mut args = vec!["--size", "6x1", "--px", px];
+                    if cursor == "none" {
+                        args.extend(["--cursor", "none"]);
+                    }
+                    let (w, h, pixels) = run_cli(bin, &name, log.as_bytes(), &args);
+                    let cw = w / 6;
+                    let z: i64 = z.parse().unwrap();
+                    let block = cursor == "block";
+                    let thick = (cw / 8).max(1);
+                    for y in 0..h {
+                        for x in 0..w {
+                            let cell = x / cw;
+                            let (mut fg, mut bg, mut opaque) = match cell {
+                                1 => (FG, RED, false),
+                                3 => (BG, FG, true),
+                                _ => (FG, BG, false),
+                            };
+                            if block && cell == 0 {
+                                (fg, bg, opaque) = (bg, fg, true);
+                            }
+                            // The text's coverage of the cell, in quarters.
+                            let coverage = match cell {
+                                0 if y < h / 2 => 4,
+                                4 => 1,
+                                _ => 0,
+                            };
+                            let mut want = bg;
+                            if z < -1073741824 && bg == BG && !opaque || (-1073741824..0).contains(&z) {
+                                want = over(GREEN, alpha, want);
+                            }
+                            for c in 0..3 {
+                                want[c] = ((u32::from(fg[c]) * coverage + u32::from(want[c]) * (4 - coverage) + 2) / 4) as u8;
+                            }
+                            if z >= 0 {
+                                want = over(GREEN, alpha, want);
+                            }
+                            if cursor == "bar" && x < thick {
+                                want = FG;
+                            }
+                            assert_eq!(&pixels[(y * w + x) * 4..][..3], &want, "{name} at ({x},{y})");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("ok, {checked} kitty z-index layer pixel checks: below backgrounds, under text, over text; reverse video, shades and cursors at 3 sizes");
 }
 
 // Sixel images (DCS q), pixel by pixel. Every expectation comes from the

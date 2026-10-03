@@ -46,36 +46,44 @@ dropped ([#14](https://github.com/momiji-rs/termshot/issues/14)).
 
 ## Speed
 
-The latest comparison uses main at `c44d83c` (including Unicode support and
-the native test harnesses) and the current optimizations. These are whole CLI runs, including startup, input, font validation,
-parsing, rendering, encoding, file close, and exit.
+How long a run takes depends on the log, the image size, the fonts, the disk
+cache and the machine, so termshot has no single latency figure. The current
+figures below come from the **[versioned benchmark report](docs/performance.md)**,
+whose JSON files keep every raw sample of the round with the binary hashes,
+toolchains, fonts and inputs. The historical figure at the end of this section
+has no retained samples and is quoted only to say where it came from.
 
-| Workload | Batch A: main → optimized (median ms) | Batch B: main → optimized (median ms) |
-| --- | ---: | ---: |
-| reply-sent | 9.09 → 8.66 | 9.35 → 8.97 |
-| ascii-overflow | 17.02 → 6.34 | 16.56 → 6.10 |
-| ansi-replay | 21.11 → 20.13 | 20.42 → 19.31 |
-| large | 43.36 → 39.98 | 41.57 → 38.11 |
-| unicode | 9.71 → 7.84 | 9.23 → 7.52 |
+Current baseline: measured 2026-10-03 with `scripts/bench.py`, on termshot
+built from `22b77e8` (main `d83c8fd` plus profiling timers that change no
+output; on main since #57) with `build.sh`'s flags. Each figure is the median
+of 40 **whole CLI runs**, wall time from spawn to exit: start-up, reading the
+log and the fonts, parsing, drawing, PNG encoding and closing the file, with a
+warm page cache and no `fsync`. They are not `TERMSHOT_PROFILE`'s internal
+stage timers, which leave out process start-up and exit. Two batches with
+different run orders are shown as A / B.
 
-Apple M3, 24 GiB RAM, macOS 26.3.1, measured 2026-10-01. Each batch uses five
-warmups and 40 interleaved runs per binary/workload, with different ordering seeds.
-The benchmarks use the explicit external font. All 15 workloads produce
-byte-identical PNGs. Stage profiling, child CPU time,
-and peak RSS are measured as well; both batches retain every sample and p95.
+| workload | grid / px | image | fonts | Apple M2 Max, macOS 26.6.2 (ms) | Ryzen 7 8745HS, Arch Linux (ms) |
+| --- | --- | --- | --- | ---: | ---: |
+| `examples/reply-sent.pty` (`font-builtin`) | 100×30 / 48 | 2200×1440 | built-in JetBrains Mono | 9.27 / 9.24 | 9.64 / 9.58 |
+| same log (`reply-24px`) | 100×30 / 24 | 1100×720 | JetBrains Mono file | 5.83 / 5.97 | 5.63 / 5.59 |
+| same log (`reply-128px`) | 100×30 / 128 | 5800×3840 | JetBrains Mono file | 31.56 / 33.73 | 38.06 / 38.42 |
+| `large` (generated) | 240×80 / 48 | 5280×3840 | JetBrains Mono file | 41.91 / 41.96 | 49.24 / 49.57 |
+| `tests/perf/cjk-dense.pty` (`cjk-full`) | 100×30 / 24 | 1100×720 | built-in + `--fallback-font NotoSansCJK-Regular.ttc#3` (19 MB) | 12.67 / 13.53 | 14.85 / 14.67 |
 
-This round reduces work in ASCII scrolling, CSI parsing, glyph caching,
-and DEFLATE matching/emission. It also releases input storage before rendering.
-Small-case gains and tail latencies vary; the shared-machine measurements do not
-establish a universal millisecond figure. The
-[current baseline](docs/performance.md#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)
-(2026-10-03, `d83c8fd`) remeasures all of these on an Apple M2 Max and on
-Linux x86-64, and adds the built-in font, CJK fallback fonts, mixed scripts and
-glyph working sets beyond the cache.
+The report covers 25 workloads; their batch-A medians range from 5.17 ms
+(macOS) and 4.90 ms (Linux) for `cjk-none` to 41.91 and 49.24 ms for `large`.
+It also gives p95, child CPU time, peak RSS, a per-stage breakdown and a
+Linux cold-cache run, which adds 6.9-8.2 ms to three small-font cases. These
+are two machines with warm caches; a different log, font, disk or a busy
+machine can take longer. The release archives use the same compiler flags
+but link musl statically on Linux; they were not measured.
 
-See [performance measurements](docs/performance.md) for all cases, paired
-confidence intervals, memory tradeoffs, rejected experiments, remaining
-bottlenecks, reproduction, and the origin of the historical “~20 ms” claim.
+Earlier rounds (2026-10-01, Apple M3, revisions up to `c44d83c`) are kept in
+the report as history. They used a different machine, revision and harness, so
+their numbers must not be subtracted from these. The "~20 ms for 2200×1440"
+quoted in older descriptions was a 21 ms mean of 40 hyperfine runs on that M3
+at `fb714a5`, whose samples were not kept; the report records
+[what is known about it](docs/performance.md#published-claims-and-their-evidence-checked-2026-10-03).
 
 ## Build
 
@@ -128,8 +136,9 @@ tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 --cursor 
 
 To check what a screen shows rather than how it looks (in a test, or as an agent), write it as
 text. It is laid out as `tmux capture-pane -p` prints it: a line per row, trailing spaces
-trimmed. For logs without graphics, omitting the PNG skips font loading and takes about
-a tenth of the time. Kitty graphics still need font metrics to replay cursor movement,
+trimmed. For logs without graphics, omitting the PNG skips font loading, drawing and PNG
+encoding; how much time that saves depends on the log, and the benchmark report does not
+time text-only runs. Kitty graphics still need font metrics to replay cursor movement,
 even for text/JSON-only output; images themselves are not included in these formats:
 
 ```sh
@@ -195,9 +204,12 @@ RGBA (`f=32`, the default), and PNG (`f=100`), including `m=1`/`m=0` chunks
 and zlib-compressed payloads (`o=z`; a compressed PNG gives its size in `S`).
 `a=T` transmits and places an image; `a=t` only stores it, under an id `i` or
 a number `I`, and each `a=p` places a stored one again, sharing its pixels.
-Images start at the cursor, use their native pixel size or fit a `c`/`r` cell
+Images start at the cursor, or `X`/`Y` pixels into its cell (at most a pixel
+short of the cell's edge), use their native pixel size or fit a `c`/`r` cell
 rectangle while preserving aspect ratio, and blend alpha over the existing
-screen. Scaling uses deterministic nearest-neighbor sampling. Cell dimensions
+screen. `x`, `y`, `w`, `h` choose a source rectangle in pixels, and the part of
+it inside the image is shown; that crop's aspect ratio is the one kept, and an
+empty crop draws nothing. Scaling uses deterministic nearest-neighbor sampling. Cell dimensions
 come from the selected font and `--px`. `C=1` keeps the cursor in place;
 otherwise it advances by the placement's columns and rows, clamped to the
 screen/scroll area's bottom and right edges.
@@ -208,8 +220,11 @@ id (`i`, with `p`), by number (`n`), by id range (`r`), at the cursor (`c`), at
 a cell (`p`, `q` with a z-index), in a column (`x`), a row (`y`), or by z-index
 (`z`). Lowercase keeps the image data for another `a=p`; uppercase also frees
 the images it leaves without a placement. Retransmitting an id replaces its
-image and removes its placements. Nonnegative `z` orders overlays, then the
-order images and placements were made. Only images wholly inside a scrolling
+image and removes its placements. Images draw by `z`, then the order images
+and placements were made: from 0 over the text, below 0 under the text but over
+every cell background, and below -1,073,741,824 under the backgrounds that are
+not the default colour, so they show only through default ones. Reverse-video
+cells and the block cursor are opaque there, as in kitty. Only images wholly inside a scrolling
 region move and clip at its edges; images crossing a margin stay stationary.
 Full-screen erase and reset remove every placement and free every stored image,
 as kitty does. Explicit image ids and numbers must be nonzero; omitting `i` is
@@ -217,8 +232,7 @@ valid. Main and alternate screens keep separate images. See
 [the regression evidence](docs/kitty-graphics.md).
 
 This is a subset, not full kitty emulation: file/shared-memory transfer,
-source cropping, pixel offsets, negative z-index, animation, relative placements and Unicode
-placeholders are not supported. Unsupported or malformed commands are ignored
+animation, relative placements and Unicode placeholders are not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain
 `tmux capture-pane` text capture cannot recover them. This does not make every

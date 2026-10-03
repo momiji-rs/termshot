@@ -50,6 +50,10 @@ _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 #define ATTR_WIDE 16 /* the first of a wide character's two cells */
 #define ATTR_TAIL 32 /* the second; ch is 0 */
 #define ATTR_ITALIC 64
+/* The background hides an image placed below the cell backgrounds. main.rs
+   sets it on every background that is not the default colour, and on reverse
+   video and the block cursor, as kitty treats them. */
+#define ATTR_OPAQUE 128
 
 /* The canvas is RGB: alpha would always be 255, and an opaque RGBA PNG is
    larger and blocks palette quantization in downstream optimizers. */
@@ -152,17 +156,37 @@ static void put(Canvas *cv, int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     p[2] = b;
 }
 
-static void fill_rect(Canvas *cv, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > cv->w) x1 = cv->w;
-    if (y1 > cv->h) y1 = cv->h;
+/* Clip [x0, x1) x [y0, y1) to the canvas and, while clipped, to the clip. */
+static int clip_rect(const Canvas *cv, int *x0, int *y0, int *x1, int *y1) {
+    if (*x0 < 0) *x0 = 0;
+    if (*y0 < 0) *y0 = 0;
+    if (*x1 > cv->w) *x1 = cv->w;
+    if (*y1 > cv->h) *y1 = cv->h;
     if (cv->clipped) {
-        if (x0 < cv->clip_x0) x0 = cv->clip_x0;
-        if (y0 < cv->clip_y0) y0 = cv->clip_y0;
-        if (x1 > cv->clip_x1) x1 = cv->clip_x1;
-        if (y1 > cv->clip_y1) y1 = cv->clip_y1;
+        if (*x0 < cv->clip_x0) *x0 = cv->clip_x0;
+        if (*y0 < cv->clip_y0) *y0 = cv->clip_y0;
+        if (*x1 > cv->clip_x1) *x1 = cv->clip_x1;
+        if (*y1 > cv->clip_y1) *y1 = cv->clip_y1;
     }
+    return *x0 < *x1 && *y0 < *y1;
+}
+
+/* A shade: the colour at k quarters over what is painted, which is the cell's
+   background unless an image under the text shows there. */
+static void shade_rect(Canvas *cv, int x0, int y0, int x1, int y1, int k, uint8_t r, uint8_t g, uint8_t b) {
+    if (!clip_rect(cv, &x0, &y0, &x1, &y1)) return;
+    for (int y = y0; y < y1; y++) {
+        uint8_t *p = cv->px + (size_t)y * cv->stride + (size_t)x0 * BPP;
+        for (int x = x0; x < x1; x++, p += BPP) {
+            p[0] = (uint8_t)((r * k + p[0] * (4 - k) + 2) / 4);
+            p[1] = (uint8_t)((g * k + p[1] * (4 - k) + 2) / 4);
+            p[2] = (uint8_t)((b * k + p[2] * (4 - k) + 2) / 4);
+        }
+    }
+}
+
+static void fill_rect(Canvas *cv, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
+    if (!clip_rect(cv, &x0, &y0, &x1, &y1)) return;
     for (int y = y0; y < y1; y++) {
         uint8_t *row = cv->px + (size_t)y * cv->stride + (size_t)x0 * BPP;
         for (int x = x0; x < x1; x++) {
@@ -412,9 +436,8 @@ static void paint_segment(Canvas *cv, int x, int y, int w, int h, float ax, floa
 
 /* Block elements, U+2580..U+259F. Eighths round down from the top or left
    edge, so a block and its complement (upper and lower half, left and right
-   half) fill the cell exactly. Shades mix the colours instead of dithering. */
-static int paint_block(Canvas *cv, int x, int y, int w, int h, uint32_t cp,
-                       uint8_t r, uint8_t g, uint8_t b, uint8_t br, uint8_t bgc, uint8_t bb) {
+   half) fill the cell exactly. Shades blend the colour over what is painted instead of dithering. */
+static int paint_block(Canvas *cv, int x, int y, int w, int h, uint32_t cp, uint8_t r, uint8_t g, uint8_t b) {
     int right = x + w, bottom = y + h, mx = x + w / 2, my = y + h / 2;
     if (cp == 0x2580) {
         fill_rect(cv, x, y, right, my, r, g, b);
@@ -428,8 +451,7 @@ static int paint_block(Canvas *cv, int x, int y, int w, int h, uint32_t cp,
         fill_rect(cv, mx, y, right, bottom, r, g, b);
     } else if (cp >= 0x2591 && cp <= 0x2593) { /* light, medium, dark shade */
         int k = (int)(cp - 0x2590);
-        fill_rect(cv, x, y, right, bottom, (uint8_t)((r * k + br * (4 - k) + 2) / 4),
-                  (uint8_t)((g * k + bgc * (4 - k) + 2) / 4), (uint8_t)((b * k + bb * (4 - k) + 2) / 4));
+        shade_rect(cv, x, y, right, bottom, k, r, g, b);
     } else if (cp == 0x2594) {
         fill_rect(cv, x, y, right, y + h / 8, r, g, b);
     } else if (cp == 0x2595) {
@@ -449,10 +471,10 @@ static int paint_block(Canvas *cv, int x, int y, int w, int h, uint32_t cp,
 }
 
 static int paint_cell_geometry(Canvas *cv, int col, int row, int cell_w, int cell_h, uint32_t cp, int bold,
-                               uint8_t r, uint8_t g, uint8_t b, uint8_t br, uint8_t bgc, uint8_t bb) {
+                               uint8_t r, uint8_t g, uint8_t b) {
     int x = col * cell_w;
     int y = row * cell_h;
-    if (cp >= 0x2580 && cp <= 0x259F) return paint_block(cv, x, y, cell_w, cell_h, cp, r, g, b, br, bgc, bb);
+    if (cp >= 0x2580 && cp <= 0x259F) return paint_block(cv, x, y, cell_w, cell_h, cp, r, g, b);
     if (cp < 0x2500 || cp > 0x257F) return 0;
     int right = x + cell_w;
     int bottom = y + cell_h;
@@ -506,14 +528,14 @@ static int paint_cell_geometry(Canvas *cv, int col, int row, int cell_w, int cel
 
 /* Box drawing and blocks, clipped to the cell. Returns 0 for other characters. */
 static int paint_geometry(Canvas *cv, int col, int row, int cell_w, int cell_h, uint32_t cp, int bold,
-                          uint8_t r, uint8_t g, uint8_t b, uint8_t br, uint8_t bgc, uint8_t bb) {
+                          uint8_t r, uint8_t g, uint8_t b) {
     if (cp < 0x2500 || cp > 0x259F) return 0;
     cv->clipped = 1;
     cv->clip_x0 = col * cell_w;
     cv->clip_y0 = row * cell_h;
     cv->clip_x1 = cv->clip_x0 + cell_w;
     cv->clip_y1 = cv->clip_y0 + cell_h;
-    int painted = paint_cell_geometry(cv, col, row, cell_w, cell_h, cp, bold, r, g, b, br, bgc, bb);
+    int painted = paint_cell_geometry(cv, col, row, cell_w, cell_h, cp, bold, r, g, b);
     cv->clipped = 0;
     return painted;
 }
@@ -687,7 +709,18 @@ typedef struct {
     const unsigned char *pixels;
     uint32_t width, height;
     int64_t x, y, w, h, clip_top, clip_bottom;
+    /* The source rectangle sampled: the crop, inside width x height. */
+    uint32_t src_x, src_y, src_w, src_h;
+    int32_t z;
 } ImageView;
+
+/* kitty's three image layers, by z-index: under the cell backgrounds that are
+   not the default (z below INT32_MIN / 2), over every background but under
+   the text (other negative z), and over the text. */
+enum { LAYER_BELOW, LAYER_UNDER_TEXT, LAYER_OVER_TEXT };
+static int image_layer(int32_t z) {
+    return z < INT32_MIN / 2 ? LAYER_BELOW : z < 0 ? LAYER_UNDER_TEXT : LAYER_OVER_TEXT;
+}
 
 /* The cells drawn as a box because a font maps the character to an empty
    glyph, as color bitmap fonts do: how many, and the first one, its
@@ -701,11 +734,19 @@ typedef struct {
     size_t cells;
 } EmptyGlyphs;
 
+/* Whether the cell's background is the default one, which shows an image of
+   LAYER_BELOW through it. */
+static int clear_background(const Cell *cell) { return !(cell->attrs & ATTR_OPAQUE); }
+
 /* Rust validates dimensions and owns each RGBA buffer. Clip before looping,
-   and use integer nearest-neighbor sampling for reproducible screenshots. */
-static void paint_images(Canvas *cv, const ImageView *images, size_t count) {
+   and use integer nearest-neighbor sampling for reproducible screenshots.
+   Paints the images of one layer, in their order. With cells, of cell_w x
+   cell_h pixels and cv->w / cell_w to a row, only over clear backgrounds. */
+static void paint_images(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
+                         int cell_w, int cell_h) {
     for (size_t i = 0; i < count; i++) {
         const ImageView *im = &images[i];
+        if (image_layer(im->z) != layer) continue;
         int64_t x0 = im->x > 0 ? im->x : 0;
         int64_t y0 = im->y > im->clip_top ? im->y : im->clip_top;
         if (y0 < 0) y0 = 0;
@@ -715,9 +756,11 @@ static void paint_images(Canvas *cv, const ImageView *images, size_t count) {
         if (y1 > im->clip_bottom) y1 = im->clip_bottom;
         if (y1 > cv->h) y1 = cv->h;
         for (int64_t y = y0; y < y1; y++) {
-            size_t sy = (size_t)((y - im->y) * im->height / im->h);
+            size_t sy = im->src_y + (size_t)((y - im->y) * im->src_h / im->h);
+            const Cell *row = cells ? cells + (size_t)(y / cell_h) * (size_t)(cv->w / cell_w) : NULL;
             for (int64_t x = x0; x < x1; x++) {
-                size_t sx = (size_t)((x - im->x) * im->width / im->w);
+                if (row && !clear_background(&row[x / cell_w])) continue;
+                size_t sx = im->src_x + (size_t)((x - im->x) * im->src_w / im->w);
                 const unsigned char *src = im->pixels + (sy * im->width + sx) * 4;
                 unsigned char *dst = cv->px + (size_t)y * cv->stride + (size_t)x * BPP;
                 unsigned a = src[3];
@@ -811,6 +854,10 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
         }
     }
 
+    /* Images under the text: those below the backgrounds show only through
+       the default ones, then those over every background. */
+    paint_images(cv, images, image_count, LAYER_BELOW, cells, cell_w, cell_h);
+    paint_images(cv, images, image_count, LAYER_UNDER_TEXT, NULL, cell_w, cell_h);
     double background = now_ms();
     double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
     size_t glyphs = 0, cache_hits = 0, evictions = 0, missing = 0;
@@ -823,8 +870,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
             uint32_t cp = cell->ch;
             if (cp == 0 || cp == ' ') continue;
             double tick = now_ms();
-            int geometry = paint_geometry(cv, c, r, cell_w, cell_h, cp, cell->attrs & ATTR_BOLD, cell->fr, cell->fg, cell->fb,
-                                          cell->br, cell->bg, cell->bb);
+            int geometry = paint_geometry(cv, c, r, cell_w, cell_h, cp, cell->attrs & ATTR_BOLD, cell->fr, cell->fg, cell->fb);
             geometry_ms += now_ms() - tick;
             if (geometry) continue;
             tick = now_ms();
@@ -978,7 +1024,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
     for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
     free(scratch.v);
-    paint_images(cv, images, image_count);
+    paint_images(cv, images, image_count, LAYER_OVER_TEXT, NULL, cell_w, cell_h);
     double foreground = now_ms();
     int png_len = 0;
     STBIW_PNG_PROFILE(0);

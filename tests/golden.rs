@@ -23,7 +23,7 @@ const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
 // (log, px, cols, rows, font options). A log is examples/<log>.pty or
 // tests/fixtures/<log>.pty; with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 43] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 47] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -42,6 +42,12 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 43] = [
     ("kitty-rgba-z", "24", 6, 4, &[]),
     ("kitty-png-z", "24", 6, 4, &[]),
     ("kitty-png-alpha-z", "24", 6, 4, &[]),
+    // Source crops and cell offsets (#44 stage 3).
+    ("kitty-crop", "24", 6, 4, &[]),
+    ("kitty-crop", "47.5", 6, 4, &[]),
+    // The z-index layers: below backgrounds, under text, over text.
+    ("kitty-layers", "24", 8, 4, &[]),
+    ("kitty-layers", "47.5", 8, 4, &[]),
     ("blank", "24", 20, 8, &[]),
     ("geometry", "1", 12, 2, &[]),
     ("geometry", "9", 12, 2, &[]),
