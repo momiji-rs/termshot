@@ -1,0 +1,30 @@
+
+  crisp / support inbox                                                          DEMO · local only
+
+INBOX · page 1                   │
+                                 │  Demo Customer B  ·  unresolved
+/ Search conversations           │  customer-b@example.com · onboarding
+                                 │──────────────────────────────────────────────────────────────────
+ ● Demo Customer A (1)           │┌────────────────────────────────────────────────────────────────┐
+ Can you help m...nd my invoice? ││                                                                │
+                                 ││  Demo Customer B  10:57 AM                                     │
+ ● Demo Customer B (2)           ││  How do I invite my teammates?                                 │
+ How do I invite my teammates?   ││                                                                │
+                                 ││                                                                │
+ ✓ Demo Customer C               ││                                                                │
+ That worked. Thank you!         ││                                                                │
+                                 ││                                                                │
+                                 ││                                                                │
+                                 ││                                                                │
+                                 ││                                                                │
+                                 ││                                                                │
+                                 ││                                                                │
+                                 ││                                                                │
+                                 │└────────────────────────────────────────────────────────────────┘
+                                 │ ╭─ Reply · Ctrl+N for internal note ───────────────────────────╮
+                                 │ │Let me help you check your settings.                          │
+                                 │ │                                                              │
+[ previous ] next                │ │                                                              │
+                                 │ ╰──────────────────────────────────────────────────────────────╯
+Agent draft ready · review and press Enter to send
+Tab panes · / search · ^R refresh · ^E resolve/reopen · ^U read · ^C quit

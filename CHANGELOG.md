@@ -23,6 +23,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A tmux capture-pane has no cursor, so the README's tmux example now asks
   tmux for it. COL may be the column count, which is how tmux reports a
   pending wrap.
+- `--text FILE` writes the screen as text, as `tmux capture-pane -p` prints
+  it: a line per row, trailing spaces trimmed, a wide character once (#32).
+  `<out.png>` is optional with it; without a PNG no font is read, so a
+  text-only run takes about 1 ms where a PNG takes 10. `tests/grids/` holds
+  the text of every golden fixture, and the tmux references in `tests/vt/`
+  check it too.
+- `--json FILE` writes the screen with its colours and the cursor (#32):
+  per row, runs of cells alike in colour (`#rrggbb`, as drawn) and
+  attributes, each with the column it starts at, and the cursor as
+  `{"col","row"}` or null. Like `--text`, it needs no PNG and no font.
+  `tests/grids/` holds it for every golden fixture, and
+  `tests/grids/check.py` checks that it parses and agrees with `--text`.
 
 ### Changed
 
@@ -39,6 +51,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   characters to one (µ in iA Writer Duospace). It now counts as missing:
   the fallback font draws the character, or it is drawn as a box. Blank
   characters keep their empty glyphs.
+- An output that names the log or a font overwrote it, and two outputs
+  that name one file overwrote each other. Both are refused with exit 2,
+  however the paths are spelled (`a`, `./a`, a symlink).
 
 ## [0.1.0] - 2026-10-01
 
