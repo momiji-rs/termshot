@@ -158,54 +158,33 @@ placement and a delete by column, against pixels it computes itself.
 
 ## Compressed payloads
 
-The second stage of #44 accepts `o=z`, following kitty's
-`docs/graphics-protocol.rst` and `inflate_zlib`, `initialize_load_data` and
-`load_image_data` in `kitty/graphics.c` (master, read 2026-10-03):
+`o=z` follows kitty's `inflate_zlib` and `initialize_load_data` (master, read
+2026-10-03). The payload, after base64 and chunking, is an RFC 1950 zlib
+stream that must inflate to exactly the data's size: `w*h*3` or `w*h*4` for
+raw pixels, and for PNG the `S` key, or 100 KiB without it, as kitty assumes.
+Any other `o` is ignored, as kitty refuses it. `S` changes nothing on an
+uncompressed transmission.
 
-- The payload is an RFC 1950 zlib stream of the data, base64-encoded after
-  compression. Chunks are joined before inflating, so a stream may be cut
-  anywhere between them; only the first command's keys count.
-- kitty inflates into a buffer of exactly the expected size and requires
-  `Z_STREAM_END` with the buffer full: `s*v*3` or `s*v*4` bytes for RGB and
-  RGBA, and for a PNG `S` bytes, or 102,400 without `S`. The PNG is then
-  decoded as usual. termshot does the same. `S` is otherwise ignored.
-- kitty refuses a direct RGB or RGBA payload over its buffer, which for
-  `o=z` is the decoded size plus 1,024 bytes. termshot uses the same bound,
-  checked as each chunk arrives. A compressed PNG may be up to 16 MiB, the
-  existing payload limit; its decoded `S` is limited to 16 MiB too.
-- Unknown `o` values are refused, as kitty's parser refuses them.
+The inflater is stb_image's, already built into `src/image.c` for PNG, so
+nothing new is vendored. `image_inflate` adds what kitty gets from zlib and
+stb skips: the Adler-32 trailer, the window field (at most 32 KiB) and the
+exact output size; bytes after the trailer are ignored, as zlib ignores them.
+It finds the trailer from the bits stb has buffered, and the caller pads the
+input with 8 zero bytes so that read-ahead stays in the buffer. The output is
+the image buffer itself, sized before inflating and limited to 16 MiB, so a
+stream cannot allocate more than its size promises.
 
-The inflater is vendored stb_image's, unmodified, called with a fixed output
-buffer (`src/image.c`, `image_zlib_decode`). Output past the expected size is
-an error the moment it is produced, so a stream that would inflate to
-gigabytes costs no more than the image, and nothing is allocated. stb checks
-neither Adler-32 nor where the stream ends, so `image_zlib_decode` checks both:
-the DEFLATE data must end in the byte before the 4-byte trailer and the
-trailer must match. A window over 32 KiB (`CINFO` > 7) is refused, as zlib
-refuses it. Two differences from zlib remain: trailing bytes after the
-trailer are refused, where kitty ignores them; and a back-reference farther
-than a smaller declared window is accepted, as stb does not track the window.
-
-Evidence:
-
-- `src/graphics/zlib_tests.rs`: RGB and RGBA up to 300×200, from stored
-  blocks built in the test and from `src/deflate.c`; every chunk size over a
-  stream; interrupted uploads; every truncation, trailing bytes, every
-  Adler-32 bit, wrong dimensions, one byte short or long; bad headers and
-  blocks; 3,000 mutations; the payload bound at exactly 1,027 and 1,029
-  bytes; 100,000 zeros for one pixel and 16 MiB of zeros for slightly
-  smaller images; PNG with exact, wrong and default `S`.
-- `tests/image.c`, under ASan and UBSan with `SANITIZE=1 ./tests/run.sh`:
-  output into heap buffers of exactly the size, every truncation, trailing
-  bytes, every bit flip, 2,000 mutations, a 104 KiB stream of 16,908,289
-  zeros against small, near and exact sizes, and inflation with the
-  allocation quota spent.
-- Three PTY fixtures, `kitty-zlib-rgb` (three chunks), `kitty-zlib-rgba` and
-  `kitty-zlib-png`, are the renderer's own compression of the pixels in
-  `kitty-rgb`, `kitty-rgba` and `kitty-png-alpha`; a unit test checks that.
-  `tests/graphics.rs` checks their pixels at five sizes against expected
-  values it computes, and their four new goldens have the same hashes as the
-  uncompressed fixtures'. The existing goldens are unchanged.
+`tests/image.c`, also run under ASan and UBSan, round-trips noise, runs and
+mixtures up to 70,000 bytes through the renderer's compressor, and checks
+sizes one short and one long, trailing bytes, every change to the trailer,
+truncations, the window and dictionary fields, and 2,000 mutations. It
+includes data whose Adler-32 has a zero low half, where the zero padding
+matches a trailer cut short, so only the bounds checks can refuse it.
+`src/graphics/tests.rs` checks each format, `S`, the 100 KiB default, chunks
+and the 16 MiB limit at its edge. `tests/graphics.rs` renders the four
+fixture images again from `tests/fixtures/kitty-*-z.pty`, compressed by
+Python's zlib, against the same expected pixels. Ten hand-made mutants of
+the checks all fail the tests.
 
 
 ## ASCII autowrap regression

@@ -59,43 +59,33 @@ int image_png_decode(const unsigned char *data, int len, unsigned char *out, int
     return ok;
 }
 
-/* Kitty's o=z: inflate a zlib stream (RFC 1950) to exactly size bytes. The
-   output buffer is not expandable, so inflation stops at the bound instead of
-   inflating everything and checking afterwards, and nothing is allocated.
-   stb neither checks Adler-32 nor reports where the stream ended, so this does
-   both: the DEFLATE data must end in the byte before the 4-byte trailer, and
-   the trailer must match. Every read stays within data[0, len). */
-static uint32_t image_adler32(const unsigned char *p, size_t n) {
-    uint32_t a = 1, b = 0;
-    while (n) {
-        size_t k = n < 5552 ? n : 5552; /* the most bytes before b can overflow */
-        n -= k;
-        while (k--) {
-            a += *p++;
-            b += a;
+/* Inflate a zlib stream (kitty's o=z) into exactly olen bytes, checking what
+   zlib checks and stb does not: the window field and the Adler-32 trailer.
+   Bytes after the trailer are ignored, as zlib ignores them. The caller pads
+   the input with 8 zero bytes after len, so stb's read-ahead stays inside the
+   buffer and the stream's end can be found from the bits it has buffered. A
+   stream that reads into the padding ends past len - 4 and fails. */
+int image_inflate(const unsigned char *in, int len, unsigned char *out, int olen) {
+    if (len < 2 || in[0] >> 4 > 7) return 0;
+    stbi__zbuf a;
+    a.zbuffer = (stbi_uc *)in;
+    a.zbuffer_end = (stbi_uc *)in + len + 8;
+    if (!stbi__do_zlib(&a, (char *)out, olen, 0, 1)) return 0;
+    if (a.zout - a.zout_start != olen) return 0;
+    /* The trailer starts at the first whole byte stb has not consumed. */
+    const unsigned char *end = a.zbuffer - a.num_bits / 8;
+    if (end + 4 > in + len) return 0;
+    uint32_t s1 = 1, s2 = 0;
+    for (int i = 0; i < olen;) {
+        int n = olen - i < 5552 ? olen - i : 5552;
+        for (int j = 0; j < n; j++) {
+            s1 += out[i + j];
+            s2 += s1;
         }
-        a %= 65521;
-        b %= 65521;
+        s1 %= 65521;
+        s2 %= 65521;
+        i += n;
     }
-    return b << 16 | a;
-}
-int image_zlib_decode(const unsigned char *data, int len, unsigned char *out, int size) {
-    /* Two header bytes, at least one of DEFLATE, four of trailer. stb checks
-       the method, the check bits and the preset dictionary; a window over
-       32 KiB (CINFO > 7) is invalid too. */
-    if (len < 7 || size <= 0 || (data[0] >> 4) > 7) return 0;
-    stbi__zbuf z;
-    z.zbuffer = (stbi_uc *)data;
-    z.zbuffer_end = (stbi_uc *)data + len;
-    if (!stbi__do_zlib(&z, (char *)out, size, 0, 1)) return 0;
-    if (z.zout - z.zout_start != size) return 0;
-    /* At the end of input stb pads with zero bits it never fetched, which
-       would make the count below wrong. A stream that ends before the trailer
-       reads at most four bytes ahead, so it never gets there. */
-    if (z.hit_zeof_once || z.zbuffer >= z.zbuffer_end || z.num_bits < 0) return 0;
-    size_t bits = (size_t)(z.zbuffer - (const stbi_uc *)data) * 8 - (size_t)z.num_bits;
-    if ((bits + 7) / 8 != (size_t)len - 4) return 0;
-    const unsigned char *t = data + len - 4;
-    uint32_t adler = (uint32_t)t[0] << 24 | (uint32_t)t[1] << 16 | (uint32_t)t[2] << 8 | t[3];
-    return image_adler32(out, (size_t)size) == adler;
+    uint32_t want = (uint32_t)end[0] << 24 | (uint32_t)end[1] << 16 | (uint32_t)end[2] << 8 | end[3];
+    return want == (s2 << 16 | s1);
 }

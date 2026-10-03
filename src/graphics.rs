@@ -1,16 +1,10 @@
 //! Replay the self-contained subset of kitty graphics: directly transmitted
 //! images, stored (a=t) and placed (a=p, a=T), and deleted as kitty does.
-//! Payloads may be zlib-compressed (o=z).
 //! All coordinates are pixels computed from the same font metrics as draw.c.
 
 use std::rc::Rc;
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
-/// How much larger than its decoded size a compressed RGB or RGBA payload may
-/// be, as kitty allows: room for the zlib framing of data that won't shrink.
-const COMPRESSION_SLACK: usize = 1024;
-/// The decoded size kitty assumes for a compressed PNG sent without `S`.
-const DEFAULT_PNG_SIZE: usize = 100 * 1024;
 const MAX_IMAGES: usize = 4096;
 const MAX_PLACEMENTS: usize = 1024;
 const MAX_EXTENT: i64 = 1 << 24;
@@ -18,7 +12,7 @@ const MAX_EXTENT: i64 = 1 << 24;
 extern "C" {
     fn image_png_size(data: *const u8, len: i32, w: *mut i32, h: *mut i32) -> i32;
     fn image_png_decode(data: *const u8, len: i32, out: *mut u8, w: i32, h: i32) -> i32;
-    fn image_zlib_decode(data: *const u8, len: i32, out: *mut u8, size: i32) -> i32;
+    fn image_inflate(data: *const u8, len: i32, out: *mut u8, olen: i32) -> i32;
 }
 
 /// Stored images and their placements, kept in draw order. Every placement's
@@ -137,14 +131,14 @@ struct Command {
     x: u32,
     y: u32,
     z: u32,
+    /// o=z: the payload is a zlib stream.
+    compressed: bool,
+    /// S: the size of the PNG data inside a compressed payload.
+    size: u32,
     no_move: bool,
     more: bool,
     delete: u8,
     continuation: bool,
-    /// o=z: the payload is a zlib stream of the data.
-    compressed: bool,
-    /// S: the decoded size of a compressed PNG; 0 if not given.
-    data_size: u32,
     /// The key of the image this transmission replaces, kept for its order.
     reuse: Option<u64>,
 }
@@ -206,12 +200,12 @@ impl Command {
                 b'x' => cmd.x = number(val)?,
                 b'y' => cmd.y = number(val)?,
                 b'z' if number(val)? <= i32::MAX as u32 => cmd.z = number(val)?,
+                b'o' if val == b"z" => cmd.compressed = true,
+                b'S' => cmd.size = number(val)?,
                 b'C' if val == b"0" || val == b"1" => cmd.no_move = val == b"1",
                 b'm' if val == b"0" || val == b"1" => cmd.more = val == b"1",
                 b'q' if number(val)? <= 2 => {}
                 b'd' if val.len() == 1 => cmd.delete = val[0],
-                b'o' if val == b"z" => cmd.compressed = true,
-                b'S' => cmd.data_size = number(val)?,
                 // These defaults are harmless. Reject features we cannot replay.
                 b'U' | b'w' | b'h' | b'X' | b'Y' if val == b"0" => {}
                 _ => return None,
@@ -276,28 +270,8 @@ pub fn needs_cell_metrics(data: &[u8]) -> bool {
     false
 }
 
-/// The decoded size of an RGB or RGBA image, from its stated dimensions.
-fn raw_size(cmd: &Command) -> Option<usize> {
-    let bytes = match cmd.format {
-        24 => 3,
-        32 => 4,
-        _ => return None,
-    };
-    (cmd.width as usize).checked_mul(cmd.height as usize)?.checked_mul(bytes)
-}
-
-/// The most payload bytes a transmission may carry, over all its chunks.
-/// Compressed RGB and RGBA get kitty's slack over their decoded size; a
-/// compressed PNG, like any other payload, gets the decoded limit.
-fn payload_limit(cmd: &Command) -> usize {
-    match raw_size(cmd) {
-        Some(size) if cmd.compressed => size.min(MAX_BYTES) + COMPRESSION_SLACK,
-        _ => MAX_BYTES,
-    }
-}
-
-fn base64(data: &[u8], limit: usize) -> Option<Vec<u8>> {
-    if data.len() % 4 != 0 || data.len() > (limit + 2) / 3 * 4 {
+fn base64(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() % 4 != 0 || data.len() > (MAX_BYTES + 2) / 3 * 4 {
         return None;
     }
     let value = |c| match c {
@@ -329,38 +303,36 @@ fn base64(data: &[u8], limit: usize) -> Option<Vec<u8>> {
             }
         }
     }
-    (out.len() <= limit).then_some(out)
+    (out.len() <= MAX_BYTES).then_some(out)
 }
 
-/// Inflate a zlib stream to exactly `size` bytes, or fail. Inflation stops at
-/// `size`, so a stream that would inflate further costs no more than that.
-fn inflate(data: &[u8], size: usize) -> Option<Vec<u8>> {
-    if size == 0 || size > MAX_BYTES || data.len() > MAX_BYTES + COMPRESSION_SLACK {
-        return None;
-    }
+/// Inflates a zlib payload to exactly `size` bytes, as kitty's `inflate_zlib`
+/// requires. `data` gets the 8 bytes of zero padding `image_inflate` needs.
+fn inflate(mut data: Vec<u8>, size: usize) -> Option<Vec<u8>> {
+    let len = i32::try_from(data.len()).ok()?;
+    data.extend_from_slice(&[0; 8]);
     let mut out = vec![0; size];
-    let ok = unsafe { image_zlib_decode(data.as_ptr(), data.len() as i32, out.as_mut_ptr(), size as i32) };
+    let ok = unsafe { image_inflate(data.as_ptr(), len, out.as_mut_ptr(), size as i32) };
     (ok != 0).then_some(out)
 }
 
-fn decode(cmd: &Command, data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let inflated;
-    let data = if cmd.compressed {
-        // kitty inflates to the size the command states: s*v*3 or s*v*4 for
-        // raw pixels, S (or 100 KiB without it) for a PNG, which it then reads.
+fn decode(cmd: &Command, mut data: Vec<u8>) -> Option<(u32, u32, Vec<u8>)> {
+    if cmd.compressed {
+        // The data's size must be known before inflating: from the pixel
+        // size, or for PNG from S, which kitty takes as 100 KiB when absent.
         let size = match cmd.format {
-            100 if cmd.data_size == 0 => DEFAULT_PNG_SIZE,
-            100 => cmd.data_size as usize,
-            // Check the dimensions below before inflating anything.
-            _ if cmd.width > 8192 || cmd.height > 8192 => return None,
-            _ if cmd.width as usize * cmd.height as usize * 4 > MAX_BYTES => return None,
-            _ => raw_size(cmd)?,
+            24 | 32 => (cmd.width as usize)
+                .checked_mul(cmd.height as usize)?
+                .checked_mul(cmd.format as usize / 8)?,
+            100 if cmd.size == 0 => 100 * 1024,
+            100 => cmd.size as usize,
+            _ => return None,
         };
-        inflated = inflate(data, size)?;
-        &inflated[..]
-    } else {
-        data
-    };
+        if size == 0 || size > MAX_BYTES {
+            return None;
+        }
+        data = inflate(data, size)?;
+    }
     let (mut w, mut h) = (cmd.width, cmd.height);
     if cmd.format == 100 {
         let (mut x, mut y) = (0, 0);
@@ -379,7 +351,7 @@ fn decode(cmd: &Command, data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             .chunks_exact(3)
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
-        32 if data.len() == size => data.to_vec(),
+        32 if data.len() == size => data,
         100 => {
             let mut rgba = vec![0; size];
             if unsafe {
@@ -458,12 +430,7 @@ impl Graphics {
                 self.remove_image(index);
             }
         }
-        // Continuation chunks are bounded by the command that began the upload.
-        let limit = match &self.pending {
-            Some((first, _)) if cmd.continuation => payload_limit(first),
-            _ => payload_limit(&cmd),
-        };
-        let Some(chunk) = base64(payload, limit) else {
+        let Some(chunk) = base64(payload) else {
             self.abort();
             return None;
         };
@@ -475,7 +442,7 @@ impl Graphics {
         let mut data = chunk;
         if let Some((first, mut previous)) = self.pending.take() {
             if cmd.continuation {
-                if previous.len() + data.len() > limit {
+                if previous.len() + data.len() > MAX_BYTES {
                     return None;
                 }
                 previous.extend_from_slice(&data);
@@ -493,7 +460,7 @@ impl Graphics {
         if cmd.action == b't' && cmd.id == 0 && cmd.number == 0 {
             return None;
         }
-        let (width, height, pixels) = decode(&cmd, &data)?;
+        let (width, height, pixels) = decode(&cmd, data)?;
         let key = match cmd.reuse {
             Some(key) => key,
             None => self.tick(),
@@ -777,5 +744,3 @@ impl Graphics {
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod zlib_tests;

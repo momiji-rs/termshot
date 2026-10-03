@@ -187,11 +187,8 @@ refused with the list (exit 1), and `-v` prints the face used. If the file's own
 ## Images in PTY logs
 
 Kitty graphics sent inline (`t=d`) render above the text: RGB (`f=24`),
-RGBA (`f=32`, the default), and PNG (`f=100`), including `m=1`/`m=0` chunks.
-Any of them may be zlib-compressed (`o=z`), with the stream cut anywhere
-between chunks. The stream must inflate to exactly the image's `s`×`v`×3 or
-×4 bytes, or for a PNG to exactly `S` bytes (102,400 without `S`, as kitty
-assumes), and end with a correct Adler-32 and nothing after it.
+RGBA (`f=32`, the default), and PNG (`f=100`), including `m=1`/`m=0` chunks
+and zlib-compressed payloads (`o=z`; a compressed PNG gives its size in `S`).
 `a=T` transmits and places an image; `a=t` only stores it, under an id `i` or
 a number `I`, and each `a=p` places a stored one again, sharing its pixels.
 Images start at the cursor, use their native pixel size or fit a `c`/`r` cell
@@ -216,10 +213,9 @@ valid. Main and alternate screens keep separate images. See
 [the regression evidence](docs/kitty-graphics.md).
 
 This is a subset, not full kitty emulation: Sixel, file/shared-memory transfer,
-source cropping,
-pixel offsets, negative z-index, animation, relative placements and Unicode
+source cropping, pixel offsets, negative z-index, animation, relative placements and Unicode
 placeholders are not supported. Unsupported or malformed commands are ignored
-without printing their payload.
+without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain
 `tmux capture-pane` text capture cannot recover them. This does not make every
 image-using TUI capture compatible automatically. Sixel remains tracked in
@@ -232,10 +228,7 @@ without a placement, then the least recently placed ones, as kitty's storage
 quota does; a placement past its limit is discarded. Each upload is limited to 16 MiB of decoded payload and 8,192 pixels per source
 axis (at most 4,194,304 source pixels). A display rectangle is limited to
 16,777,216 pixels per axis. The PNG decoder has a separate 64 MiB allocation
-budget, including inflation. A compressed RGB or RGBA payload may be at most
-1,024 bytes over its decoded size, as in kitty; a compressed PNG at most
-16 MiB. `o=z` inflation stops at the decoded size rather than running to the end of
-the stream, and allocates nothing. Over-limit commands are discarded.
+budget, including inflation; over-limit commands are discarded.
 
 ## Samples
 

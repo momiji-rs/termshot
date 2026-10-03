@@ -111,6 +111,10 @@ canvas use-after-free (#8). That safety record, not speed, is the argument for m
 ## Limits
 
 - One machine per OS. Linux was measured once per compiler; macOS three times.
+- aarch64 Linux was not measured. The bench links, runs and matches byte for byte there
+  (ubuntu-24.04-arm, gcc 13.3.0), checked by a 1-round CI step
+  ([run](https://github.com/momiji-rs/termshot/actions/runs/37140972349/job/111255160837),
+  2026-10-03). Shared-runner timings aren't kept.
 - M3 timings move about ±10% with background load. The ratios come from alternating runs in one
   process, which is why they are steadier than the absolute times.
 - stb_truetype and stb_image_write were not ported. They are third-party and stay C either way.
