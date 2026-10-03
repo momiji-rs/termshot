@@ -1,0 +1,8 @@
+{"cols":40,"rows":6,"cursor":{"col":0,"row":0,"shape":"block"},"lines":[
+[{"col":0,"text":"q́ q̃́ x̣ b̄̆ ŋ̊ ","fg":"#dbe7f7","bg":"#111823"},{"col":10,"text":"q́","fg":"#cd0000","bg":"#111823","bold":true},{"col":11,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":12,"text":"q́","fg":"#00cd00","bg":"#111823","italic":true},{"col":13,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":14,"text":"q́","fg":"#dbe7f7","bg":"#111823","underline":true},{"col":15,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":16,"text":"q́","fg":"#111823","bg":"#dbe7f7"},{"col":17,"text":" ̂","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"กั กิ กี กึ กื กุ กู กฺ","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"ก็ ก่ ก้ ก๊ ก๋ ก์ กํ ก๎ กั่ ปี้","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"שָׁלוֹם בּ בִ בַ שׂ","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"नमस्ते हिंदी कु","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"a‍b x⃝゙","fg":"#dbe7f7","bg":"#111823"},{"col":4,"text":"y","fg":"#dbe7f7","bg":"#111823","bold":true}]
+]}

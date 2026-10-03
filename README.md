@@ -41,8 +41,12 @@ Colors are the 16 and 256 color palettes (xterm's defaults) and 24-bit color, in
 `:` forms. Bold, dim, italic, underline, double underline, strike-through, reverse video and
 hidden text are drawn; blink is not. Italic is the font's own glyph slanted by 12 degrees, and
 box drawing stays upright in it. Wide characters (CJK, fullwidth forms, emoji) take two
-cells. A combining mark is kept only when Unicode has a precomposed form for it; other marks are
-dropped ([#14](https://github.com/momiji-rs/termshot/issues/14)).
+cells. A combining mark composes with the character before it when Unicode has a precomposed
+form (e + U+0301 is é); otherwise the cell keeps it, up to four marks, and draws it over the
+character, so Thai, Hebrew points and stacked Latin accents show
+([#14](https://github.com/momiji-rs/termshot/issues/14)). There is no shaping: a mark sits where
+its font draws it, stacked marks may overlap, and Indic scripts are only approximate. Emoji
+sequences (ZWJ, skin tones, VS16) are not joined into one picture.
 
 ## Speed
 
@@ -167,8 +171,8 @@ guessed from where the cursor went; give it with `--size`.
 
 To check what a screen shows rather than how it looks (in a test, or as an agent), write it as
 text. It is laid out as `tmux capture-pane -p` prints it: a line per row, trailing spaces
-trimmed. For logs without graphics, omitting the PNG skips font loading, drawing and PNG
-encoding; how much time that saves depends on the log, and the benchmark report does not
+trimmed, each character followed by its combining marks. For logs without graphics, omitting
+the PNG skips font loading, drawing and PNG encoding; how much time that saves depends on the log, and the benchmark report does not
 time text-only runs. Kitty graphics still need font metrics to replay cursor movement,
 even for text/JSON-only output; images themselves are not included in these formats:
 
@@ -189,7 +193,8 @@ that look alike, with the column each starts at (a wide character takes two):
 
 `cursor` is null when the log hides it; its `shape` is `block`, `underline` or `bar`. `bold`, `italic`, `underline`, `double_underline` and `strike`
 appear only when set. Blank cells that end a row are left out unless their background or a line
-shows. Colours are as drawn: reverse video and dim are already applied, and concealed text has
+shows. A run's `text` has each character followed by its combining marks, as in `--text`,
+so a mark takes no column of its own. Colours are as drawn: reverse video and dim are already applied, and concealed text has
 `fg` equal to `bg`.
 
 | option | |
@@ -219,7 +224,7 @@ files it created.
 
 The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, still works.
 
-`M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces, the line and paragraph separators, and the blank Braille pattern U+2800. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both (on a one-column screen, where no row can hold two, they take the one cell); a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é) and is otherwise dropped. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
+`M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces, the line and paragraph separators, and the blank Braille pattern U+2800. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both (on a one-column screen, where no row can hold two, they take the one cell); a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é); otherwise the cell keeps up to four marks, and each is drawn over the character in its colours, from the font or else `--fallback-font` (a mark neither has is left out, not boxed). Without shaping (no GPOS anchors), a mark its font draws left of its origin, as most fonts do, is drawn from where the character ends; one drawn right of its origin, as in right-to-left fonts, is centered over the character. Joiners, variation selectors, Hangul fillers and the other default-ignorable characters are kept in `--text` and `--json` but draw nothing. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
 
 The font may have TrueType (`glyf`), CFF or CFF2 outlines, so `.ttf`, `.otf` and collections such as Noto Sans CJK's `.ttc` all work. A variable font with CFF2 outlines (such as `NotoSansCJKtc-VF.otf`) is drawn at its default instance, which for Noto Sans CJK is the Thin weight; choosing another instance is not supported yet. Color emoji fonts are bitmaps, not outlines, so emoji need a monochrome outline font such as Noto Emoji. A glyph with no outline counts as missing, so the emoji of a color font that has `glyf` (Apple Color Emoji) go on to `--fallback-font` or are drawn as boxes rather than left blank, with a warning. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`), and runs CFF and CFF2 charstrings itself (`src/cff.rs`), with a limit on the work a glyph may take; stb only rasterizes the outline. A damaged or hostile font is refused with a reason, and the run exits 1.
 

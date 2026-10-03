@@ -97,6 +97,7 @@ fn ascii_scroll_batches_match_individual_prints() {
                                    "cols={cols} rows={rows} wrap={wrap} alternate={alternate} len={len}");
                         fast.combine(0x0301);
                         reference.combine(0x0301);
+                        assert_eq!(fast.screen_marks(), reference.screen_marks());
                         for (a, b) in fast.into_cells().iter().zip(reference.into_cells()) {
                             assert_eq!((a.ch, fg(a), bg(a), a.attrs), (b.ch, fg(&b), bg(&b), b.attrs));
                         }
@@ -456,8 +457,8 @@ fn json_has_runs_of_alike_cells_and_the_cursor() {
 []
 ]}
 "##;
-    assert_eq!(grid_json(&g.cells, 8, 4, g.cursor, g.cursor_shape), want);
-    let bar = grid_json(&g.cells, 8, 4, g.cursor, CursorShape::Bar);
+    assert_eq!(grid_json(&g.cells, &g.marks, 8, 4, g.cursor, g.cursor_shape), want);
+    let bar = grid_json(&g.cells, &g.marks, 8, 4, g.cursor, CursorShape::Bar);
     assert!(bar.starts_with(r#"{"cols":8,"rows":4,"cursor":{"col":2,"row":2,"shape":"bar"},"#), "{bar}");
 }
 
@@ -467,7 +468,7 @@ fn json_escapes_controls_and_reports_a_hidden_cursor() {
     cells[1].ch = 0x1b;
     let want = "{\"cols\":3,\"rows\":1,\"cursor\":null,\"lines\":[\n\
         [{\"col\":0,\"text\":\"a\\u001b\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"italic\":true,\"double_underline\":true,\"strike\":true}]\n]}\n";
-    assert_eq!(grid_json(&cells, 3, 1, None, CursorShape::Bar), want);
+    assert_eq!(grid_json(&cells, &[], 3, 1, None, CursorShape::Bar), want);
 }
 
 #[test]
@@ -568,11 +569,44 @@ fn wide_pairs_are_whole(cells: &[Cell], cols: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Combining marks that are consistent with their cells: sorted by cell, one
+/// entry per cell, on the grid, each one to MAX_MARKS zero-width code points
+/// packed at the front, and never on the tail of a wide character, nor on a
+/// space where the log prints none.
+fn marks_are_consistent(g: &Grid, cols: usize) -> Result<(), String> {
+    for (k, m) in g.marks.iter().enumerate() {
+        let i = m.cell as usize;
+        let at = format!("row {} col {}", i / cols, i % cols);
+        if k > 0 && g.marks[k - 1].cell >= m.cell {
+            return Err(format!("marks out of order at {at}"));
+        }
+        if i >= g.cells.len() {
+            return Err(format!("marks past the grid at {at}"));
+        }
+        let points = m.code_points();
+        if points.is_empty() || m.marks[points.len()..].iter().any(|&c| c != 0) {
+            return Err(format!("marks {:x?} badly packed at {at}", m.marks));
+        }
+        if let Some(c) = points.iter().find(|&&c| unicode::width(c) != 0) {
+            return Err(format!("U+{c:04X} kept as a mark at {at}"));
+        }
+        if g.cells[i].attrs & TAIL != 0 || g.cells[i].ch == 0 {
+            return Err(format!("marks on the tail of a wide character at {at}"));
+        }
+        if g.cells[i].ch == ' ' as u32 {
+            return Err(format!("marks on an erased cell at {at}"));
+        }
+    }
+    Ok(())
+}
+
 /// Random logs on random grid sizes, weighted toward the edges (one row or
 /// column, and rarely the CLI's 500x200 limit), mixing wide and zero-width
 /// characters with the sequences that move, wrap, insert, erase and scroll,
-/// and with OSC and DCS strings. Checks that parse doesn't panic and
-/// leaves no half of a wide character. Rounds and seed come from
+/// and with OSC and DCS strings. Checks that parse doesn't panic, leaves no
+/// half of a wide character, and keeps combining marks consistent; and,
+/// as none of the marks composes with any character here, that the cells
+/// are those of the same log without them. Rounds and seed come from
 /// TERMSHOT_FUZZ_ROUNDS and TERMSHOT_FUZZ_SEED; a failure prints both.
 #[test]
 fn fuzz_sizes_and_wide_characters() {
@@ -586,9 +620,14 @@ fn fuzz_sizes_and_wide_characters() {
         x ^= x << 17;
         x
     };
-    // Wide (CJK, Hangul, fullwidth, emoji), zero-width (combining acute, Thai
-    // vowel, ZWJ, VS16, skin tone), DEC graphics letters, and plain ASCII.
-    let chars = ["界", "한", "Ｗ", "😀", "\u{301}", "\u{e31}", "\u{200d}", "\u{fe0f}", "🏽", "q", "x", " ", "é"];
+    // Wide (CJK, Hangul, fullwidth, emoji, skin tone), DEC graphics
+    // letters, plain ASCII and a no-break space (only erased cells are
+    // spaces, so no space may keep a mark); then zero-width marks (combining acute, Thai
+    // vowel and tone, Hebrew dagesh, Devanagari virama, ZWJ, VS16, and more
+    // marks than a cell keeps).
+    let chars = ["界", "한", "Ｗ", "😀", "🏽", "q", "x", "\u{a0}", "é"];
+    let zero_width = ["\u{301}", "\u{e31}", "\u{e48}", "\u{5bc}", "\u{94d}", "\u{200d}", "\u{fe0f}",
+                      "\u{301}\u{302}\u{303}\u{304}\u{305}"];
     let finals = b"HfABCDEFGd`a@PXKJbrLMSTIZ";
     let modes = ["?7h", "?7l", "?6h", "?6l", "?1049h", "?1049l", "?47h", "?47l", "4h", "4l", "?80h", "?80l"];
     let escapes = ["\x1b7", "\x1b8", "\x1bD", "\x1bE", "\x1bM", "\x1bc", "\x1b#8", "\x1b(0", "\x1b(B", "\x0e", "\x0f"];
@@ -614,10 +653,20 @@ fn fuzz_sizes_and_wide_characters() {
                 _ => (1 + next() as usize % 40, 1 + next() as usize % 12),
             },
         };
-        let mut log = Vec::new();
+        // plain is log without most of its marks; only a mark after a lone
+        // UTF-8 lead byte stays, as leaving it out would join the lead to
+        // what follows.
+        let (mut log, mut plain) = (Vec::new(), Vec::new());
         for _ in 0..next() % 48 {
             let r = next();
-            match r % 10 {
+            let start = log.len();
+            match r % 12 {
+                10 | 11 => {
+                    log.extend_from_slice(zero_width[(r >> 8) as usize % zero_width.len()].as_bytes());
+                    if !matches!(plain.last(), Some(0xe7 | 0xf0)) {
+                        continue;
+                    }
+                }
                 0..=3 => log.extend_from_slice(chars[(r >> 8) as usize % chars.len()].as_bytes()),
                 4 => log.push(b"\r\n\x08\t"[(r >> 8) as usize % 4]),
                 5 if r & 0x100 == 0 => log.extend_from_slice(escapes[(r >> 9) as usize % escapes.len()].as_bytes()),
@@ -631,12 +680,18 @@ fn fuzz_sizes_and_wide_characters() {
                     log.extend_from_slice(format!("\x1b[{};{}{final_byte}", param(r >> 16), param(r >> 40)).as_bytes());
                 }
             }
+            plain.extend_from_slice(&log[start..]);
         }
-        let outcome = std::panic::catch_unwind(|| parse(&log, cols, rows));
+        let outcome = std::panic::catch_unwind(|| (replay(&log, cols, rows, Lf::Index), parse(&plain, cols, rows)));
         let mut failure = match &outcome {
             Err(_) => Some("panicked".to_string()),
-            Ok(cells) if cells.len() != cols * rows => Some(format!("{} cells", cells.len())),
-            Ok(cells) => wide_pairs_are_whole(cells, cols).err(),
+            Ok((g, _)) if g.cells.len() != cols * rows => Some(format!("{} cells", g.cells.len())),
+            Ok((g, plain)) => wide_pairs_are_whole(&g.cells, cols).and_then(|()| marks_are_consistent(g, cols)).and_then(|()| {
+                match g.cells.iter().map(cell_key).eq(plain.iter().map(cell_key)) {
+                    true => Ok(()),
+                    false => Err("the marks changed the cells".into()),
+                }
+            }).err(),
         };
         // --lf-newline is exactly CR LF for every LF but a final bare one,
         // wherever the LF lands: at top level, inside a CSI, after an ESC,
@@ -644,10 +699,12 @@ fn fuzz_sizes_and_wide_characters() {
         if failure.is_none() {
             let text = if log.ends_with(b"\n") && !log.ends_with(b"\r\n") { &log[..log.len() - 1] } else { &log[..] };
             let crlf: Vec<u8> = text.iter().flat_map(|b| if *b == b'\n' { &b"\r\n"[..] } else { std::slice::from_ref(b) }).copied().collect();
-            let outcome = std::panic::catch_unwind(|| (parse_lf(&log, cols, rows, Lf::Newline), parse(&crlf, cols, rows)));
+            let outcome = std::panic::catch_unwind(|| (replay(&log, cols, rows, Lf::Newline), replay(&crlf, cols, rows, Lf::Index)));
             failure = match &outcome {
                 Err(_) => Some("panicked with --lf-newline".to_string()),
-                Ok((newline, crlf)) if !newline.iter().map(cell_key).eq(crlf.iter().map(cell_key)) => {
+                Ok((newline, crlf))
+                    if !newline.cells.iter().map(cell_key).eq(crlf.cells.iter().map(cell_key)) || newline.marks != crlf.marks =>
+                {
                     Some("--lf-newline differs from CR LF".to_string())
                 }
                 Ok(_) => None,
@@ -1095,7 +1152,7 @@ fn printf_bytes(format: &str) -> Vec<u8> {
 /// then where the cursor is. The rows are --text's output, so the tmux
 /// references check --text too.
 fn screen_lines(g: &Grid, cols: usize, rows: usize) -> Vec<String> {
-    let mut lines: Vec<String> = grid_text(&g.cells, cols).lines().map(String::from).collect();
+    let mut lines: Vec<String> = grid_text(&g.cells, &g.marks, cols).lines().map(String::from).collect();
     assert_eq!(lines.len(), rows);
     lines.push(match (g.cursor, g.cursor_shape) {
         (Some((row, col)), CursorShape::Block) => format!("cursor {col},{row}"),
@@ -1212,14 +1269,151 @@ fn edits_that_cut_a_wide_character_remove_all_of_it() {
     }
 }
 
+/// The marks a log leaves on a C x R grid, as (row, col, marks) per cell.
+fn marks(log: &str) -> Vec<(usize, usize, Vec<u32>)> {
+    marks_on(log, C, R)
+}
+
+fn marks_on(log: &str, cols: usize, rows: usize) -> Vec<(usize, usize, Vec<u32>)> {
+    let g = replay(log.as_bytes(), cols, rows, Lf::Index);
+    g.marks.iter().map(|m| (m.cell as usize / cols, m.cell as usize % cols, m.code_points().to_vec())).collect()
+}
+
 #[test]
-fn combining_marks_compose_or_are_dropped() {
-    let g = grid("e\u{0301}a\u{0308}x\u{0301}y".as_bytes());
-    assert_eq!(line(&g, 0), "éäxy      ");
-    // Zero-width joiners and variation selectors take no cell.
-    assert_eq!(line(&grid("a\u{200D}b\u{FE0F}c".as_bytes()), 0), "abc       ");
+fn combining_marks_compose_or_join_the_cell() {
+    // é and ä compose; x + U+0301 has no precomposed form, so the acute is
+    // kept with the x.
+    let log = "e\u{0301}a\u{0308}x\u{0301}y";
+    assert_eq!(line(&grid(log.as_bytes()), 0), "éäxy      ");
+    assert_eq!(marks(log), [(0, 2, vec![0x301])]);
+    // Zero-width joiners and variation selectors take no cell either.
+    let log = "a\u{200D}b\u{FE0F}c";
+    assert_eq!(line(&grid(log.as_bytes()), 0), "abc       ");
+    assert_eq!(marks(log), [(0, 0, vec![0x200d]), (0, 1, vec![0xfe0f])]);
     // A mark with nothing before it is dropped.
     assert_eq!(line(&grid("\u{0301}z".as_bytes()), 0), "z         ");
+    assert_eq!(marks("\u{0301}z"), []);
+    // Once a cell has a mark, later ones are kept in order rather than
+    // composed: q + U+0301 + U+0304 + U+0301, and é + U+0302 + U+0301.
+    assert_eq!(marks("q\u{301}\u{304}\u{301}"), [(0, 0, vec![0x301, 0x304, 0x301])]);
+    assert_eq!(marks("e\u{301}\u{302}\u{301}"), [(0, 0, vec![0x302, 0x301])]);
+    // Thai: a vowel above and a tone mark, neither precomposed.
+    assert_eq!(marks("\u{e01}\u{e31}\u{e48}"), [(0, 0, vec![0xe31, 0xe48])]);
+    // At most MAX_MARKS; the rest are dropped.
+    assert_eq!(marks("q\u{301}\u{302}\u{303}\u{304}\u{305}x"), [(0, 0, vec![0x301, 0x302, 0x303, 0x304])]);
+}
+
+#[test]
+fn marks_join_the_last_printed_character() {
+    // On a wide character: its first cell.
+    assert_eq!(marks("界\u{301}x"), [(0, 0, vec![0x301])]);
+    // With a wrap pending: the last column, before anything wraps.
+    assert_eq!(marks("abcdefghij\u{301}k"), [(0, 9, vec![0x301])]);
+    // Wherever the cursor has gone since, as in xterm, and across CR LF.
+    assert_eq!(marks("ab\x1b[3;6H\u{301}"), [(0, 1, vec![0x301])]);
+    assert_eq!(marks("ab\r\n\u{301}x"), [(0, 1, vec![0x301])]);
+    // Not to a character dropped for want of room (no autowrap, wide in
+    // the last column): its marks go with it.
+    assert_eq!(marks("a\x1b[?7l\x1b[1;10H界\u{301}"), []);
+    assert_eq!(line(&grid("a\x1b[?7l\x1b[1;10H界\u{301}".as_bytes()), 0), "a         ");
+    // Not to a cell erased, overwritten or moved since.
+    for log in ["ab\x1b[1;2H\x1b[K\u{301}", "ab\x1b[1;2H\x1b[X\u{301}", "ab\x1b[2J\u{301}", "ab\x1b[1;1H\x1b[@\u{301}",
+                "ab\x1b[1;1H\x1b[P\u{301}", "中\x1b[1;2Hx\x1b[1;1H\x1b[2X\u{301}"] {
+        assert_eq!(marks(log), [], "{:?}", log);
+    }
+    // Scrolling keeps the character, so the mark still finds it.
+    assert_eq!(marks("\x1b[4;1Hab\n\u{301}"), [(2, 1, vec![0x301])]);
+    // The alternate screen has its own last character; leaving it forgets it.
+    assert_eq!(marks("ab\x1b[?1049h\u{301}"), []);
+    assert_eq!(marks("ab\x1b[?1049hx\x1b[?1049l\u{301}"), []);
+}
+
+#[test]
+fn marks_go_with_the_cell_they_are_on() {
+    let q = "q\u{301}";
+    // ICH and DCH move them along the line.
+    assert_eq!(marks(&format!("a{q}x\x1b[1;1H\x1b[2@")), [(0, 3, vec![0x301])]);
+    assert_eq!(marks(&format!("ab{q}x\x1b[1;1H\x1b[2P")), [(0, 0, vec![0x301])]);
+    // IL, DL, SU, SD, IND and RI move them with their row, inside the margins.
+    assert_eq!(marks(&format!("\x1b[2;1H{q}\x1b[1;1H\x1b[L")), [(2, 0, vec![0x301])]);
+    assert_eq!(marks(&format!("\x1b[3;1H{q}\x1b[1;1H\x1b[M")), [(1, 0, vec![0x301])]);
+    assert_eq!(marks(&format!("\x1b[3;1H{q}\x1b[2S")), [(0, 0, vec![0x301])]);
+    assert_eq!(marks(&format!("\x1b[2;1H{q}\x1b[T")), [(2, 0, vec![0x301])]);
+    assert_eq!(marks(&format!("\x1b[2;3r\x1b[3;1H{q}\n")), [(1, 0, vec![0x301])]);
+    assert_eq!(marks(&format!("\x1b[2;3r\x1b[2;1H{q}\x1bM")), [(2, 0, vec![0x301])]);
+    // Outside the margins nothing moves.
+    assert_eq!(marks(&format!("\x1b[4;1H{q}\x1b[1;3r\x1b[3;1H\n")), [(3, 0, vec![0x301])]);
+    // The main screen keeps its marks while the alternate one is shown.
+    assert_eq!(marks(&format!("{q}\x1b[?1049hx\x1b[?1049l")), [(0, 0, vec![0x301])]);
+    assert_eq!(marks(&format!("{q}\x1b[?1049h")), []);
+    assert_eq!(marks(&format!("\x1b[?1049h{q}")), [(0, 0, vec![0x301])]);
+    assert_eq!(marks(&format!("\x1b[?1049h{q}\x1b[?1049l\x1b[?1049h")), []);
+    // Mode 47 does not clear the alternate screen, so its marks come back.
+    assert_eq!(marks(&format!("\x1b[?47h{q}\x1b[?47l\x1b[?47h")), [(0, 0, vec![0x301])]);
+    assert_eq!(marks(&format!("\x1b[?1047h{q}\x1b[?1047l\x1b[?1047h")), []);
+}
+
+#[test]
+fn marks_go_when_their_cell_does() {
+    let q = "q\u{301}";
+    for (log, why) in [
+        (format!("{q}\x1b[1;1Hx"), "overwritten"),
+        (format!("{q}\x1b[1;1Hxyz"), "overwritten by an ASCII run"),
+        (format!("{q}\x1b[1;1H界"), "overwritten by a wide character"),
+        (format!("界\u{301}\x1b[1;2Hx"), "its wide character's tail overwritten"),
+        (format!("\x1b[?7l\x1b[1;10H{q}xyz"), "overwritten in the last column, without autowrap"),
+        (format!("{q}\x1b[1;1H\x1b[X"), "ECH"),
+        (format!("{q}\x1b[K\x1b[1;1H\x1b[K"), "EL"),
+        (format!("{q}\x1b[1;1H\x1b[1K"), "EL 1"),
+        (format!("{q}\x1b[2K"), "EL 2"),
+        (format!("{q}\x1b[J\x1b[1;1H\x1b[J"), "ED"),
+        (format!("{q}\x1b[2;1H\x1b[1J"), "ED 1"),
+        (format!("{q}\x1b[2J"), "ED 2"),
+        (format!("{q}\x1b[1;1H\x1b[P"), "DCH"),
+        (format!("\x1b[1;10H{q}\x1b[1;1H\x1b[@"), "ICH pushing it off the line"),
+        (format!("{q}\x1b[1;1H\x1b[M"), "DL"),
+        (format!("{q}\x1b[4;1H\n"), "scrolled off the top"),
+        (format!("{q}\x1b[S"), "SU"),
+        (format!("{q}\x1bc"), "RIS"),
+    ] {
+        assert_eq!(marks(&log), [], "{why}: {log:?}");
+    }
+    // A wide character cut in two by an edit loses all of itself: ECH of
+    // its tail, ICH pushing its tail off the line.
+    assert_eq!(marks("界\u{301}\x1b[1;2H\x1b[X"), []);
+    assert_eq!(marks("\x1b[1;9H界\u{301}\x1b[1;1H\x1b[@"), []);
+    // Moved whole, it keeps them.
+    assert_eq!(marks("x界\u{301}\x1b[1;1H\x1b[P"), [(0, 0, vec![0x301])]);
+}
+
+#[test]
+fn rep_repeats_a_character_with_its_marks() {
+    let g = replay("q\u{301}\x1b[2b".as_bytes(), C, R, Lf::Index);
+    assert_eq!(grid_text(&g.cells, &g.marks, C).lines().next(), Some("q\u{301}q\u{301}q\u{301}"));
+    // A precomposed character repeats as itself.
+    assert_eq!(line(&grid("e\u{301}\x1b[2b".as_bytes()), 0), "ééé       ");
+    // Once its cell is erased, the character repeats without them.
+    assert_eq!(marks("\u{e01}\u{e31}\u{e48}\x1b[1;1H\x1b[K\x1b[b"), []);
+    assert_eq!(line(&grid("\u{e01}\u{e31}\x1b[1;1H\x1b[K\x1b[b".as_bytes()), 0), "ก         ");
+    // A character printed since has none.
+    assert_eq!(marks("q\u{301}x\x1b[b"), [(0, 0, vec![0x301])]);
+}
+
+#[test]
+fn text_and_json_put_marks_after_their_character() {
+    let log = "q\u{301}\x1b[1mx\x1b[m \u{302}\r\n界\u{e31}\u{e48}";
+    let g = replay(log.as_bytes(), 6, 2, Lf::Index);
+    assert_eq!(grid_text(&g.cells, &g.marks, 6), "q\u{301}x \u{302}\n界\u{e31}\u{e48}\n");
+    // A space with a mark ends no run early: it is not blank.
+    let want = "{\"cols\":6,\"rows\":2,\"cursor\":{\"col\":2,\"row\":1,\"shape\":\"block\"},\"lines\":[\n\
+        [{\"col\":0,\"text\":\"q\u{301}\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\"},\
+        {\"col\":1,\"text\":\"x\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"bold\":true},\
+        {\"col\":2,\"text\":\" \u{302}\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\"}],\n\
+        [{\"col\":0,\"text\":\"界\u{e31}\u{e48}\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\"}]\n]}\n";
+    assert_eq!(grid_json(&g.cells, &g.marks, 6, 2, g.cursor, g.cursor_shape), want);
+    assert_eq!(marks_of(&g.marks, 0), [0x301]);
+    assert_eq!(marks_of(&g.marks, 1), []);
+    assert_eq!(marks_of(&g.marks, 6), [0xe31, 0xe48]);
 }
 
 #[test]
