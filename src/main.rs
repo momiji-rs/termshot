@@ -768,7 +768,16 @@ impl Screen {
 
     /// Before cell i of a row is overwritten: if it is half of a wide
     /// character, blank the other half.
+    #[inline]
     fn split_wide(&mut self, line: &std::ops::Range<usize>, i: usize) {
+        // Most cells are neither half: test that inline, split out of line.
+        if self.cells[i].attrs & (WIDE | TAIL) != 0 {
+            self.split_wide_cell(line, i);
+        }
+    }
+
+    #[inline(never)]
+    fn split_wide_cell(&mut self, line: &std::ops::Range<usize>, i: usize) {
         let attrs = self.cells[i].attrs;
         if attrs & TAIL != 0 && i > line.start {
             self.unwide(i - 1);
