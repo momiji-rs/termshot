@@ -7,7 +7,11 @@
    - a glyph with no outline counts as missing: the fallback font draws it,
      or it is a box when no font has an outline for it;
    - a wide character's glyph is centered over its two cells: the same glyph
-     narrow and wide differs only by half a cell, also when both are in one render.
+     narrow and wide differs only by half a cell, also when both are in one render;
+   - an italic glyph keeps its height and leans right by 12 degrees about the
+     middle of its cell, so it stays centered in it; the same glyph upright
+     and italic in one render are each drawn their own way, and italic leaves
+     box drawing and the box for a missing character upright.
 
    Renders with draw_png, decodes with tests/png_read.c. Built and run by
    test.sh with the vendored font: ./glyphs <font.ttf> <scratch.png>. */
@@ -25,6 +29,7 @@ typedef struct {
     int cell_w, cell_h;
     int hollow;         /* the center of the box is background */
     int sides;          /* how many of the box's four sides have ink at their middle */
+    int top_x0, bottom_x0; /* the leftmost ink in the box's top and bottom rows */
 } Ink;
 
 static Cell cell(uint32_t ch, int attrs) {
@@ -64,6 +69,8 @@ static Ink ink_in(const Cell *cells, int cols, double px, int from, int to) {
         int mx = (box.x0 + box.x1) / 2, my = (box.y0 + box.y1) / 2;
         box.hollow = !LIT(mx, my);
         box.sides = LIT(box.x0, my) + LIT(box.x1 - 1, my) + LIT(mx, box.y0) + LIT(mx, box.y1 - 1);
+        for (box.top_x0 = box.x0; !LIT(box.top_x0, box.y0); box.top_x0++) {}
+        for (box.bottom_x0 = box.x0; !LIT(box.bottom_x0, box.y1 - 1); box.bottom_x0++) {}
 #undef LIT
     }
     png_read_free(rgba);
@@ -185,7 +192,30 @@ int main(int argc, char **argv) {
         expect_tofu(ink(narrow, 3, px), 1, px, "an empty glyph in both fonts is a box");
         font = main_font;
         fallback_font = NULL;
-        checks += 12;
+
+        /* Slanting moves each row of 'l' right by tan(12 degrees) times its
+           height above the middle of the cell, and a row below it left. */
+        Cell upright_l[] = {cell(' ', 0), cell('l', 0), cell(' ', 0)};
+        Cell italic_l[] = {cell(' ', 0), cell('l', ATTR_ITALIC), cell(' ', 0)};
+        Ink u = ink(upright_l, 3, px), it = ink(italic_l, 3, px);
+        double mid = u.cell_h / 2.0, tan12 = 0.2126;
+        double top = tan12 * (mid - (u.y0 + 0.5)), bottom = tan12 * (mid - (u.y1 - 0.5));
+        expect(it.x1 && it.y0 == u.y0 && it.y1 == u.y1, "an italic glyph keeps its height", px);
+        expect(fabs(it.top_x0 - u.top_x0 - top) <= 1 && fabs(it.bottom_x0 - u.bottom_x0 - bottom) <= 1,
+               "an italic glyph leans 12 degrees about the middle of its cell", px);
+        /* The cache must not hand one to the other. */
+        Cell both_l[] = {cell(' ', 0), cell('l', ATTR_ITALIC), cell(' ', 0), cell('l', 0), cell(' ', 0)};
+        Ink bi = ink_in(both_l, 5, px, 0, 3), bu = ink_in(both_l, 5, px, 3, 5);
+        expect(bi.x0 == it.x0 && bi.x1 == it.x1 && bu.x0 - 2 * bu.cell_w == u.x0 && bu.x1 - 2 * bu.cell_w == u.x1,
+               "upright and italic l in one render", px);
+        Cell italic_missing[] = {cell(' ', 0), cell(0x10ffff, ATTR_ITALIC), cell(' ', 0)};
+        expect_tofu(ink(italic_missing, 3, px), 1, px, "italic does not slant the box");
+        Cell box_upright[] = {cell(0x253c, 0), cell(0x2588, 0)}, box_italic[] = {cell(0x253c, ATTR_ITALIC), cell(0x2588, ATTR_ITALIC)};
+        Ink gu = ink(box_upright, 2, px), gi = ink(box_italic, 2, px);
+        expect(gu.x0 == gi.x0 && gu.x1 == gi.x1 && gu.y0 == gi.y0 && gu.y1 == gi.y1 && gu.top_x0 == gi.top_x0 &&
+                   gu.bottom_x0 == gi.bottom_x0,
+               "box drawing stays upright in italic", px);
+        checks += 17;
     }
     free(hollow);
     free(data);

@@ -35,8 +35,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `{"col","row"}` or null. Like `--text`, it needs no PNG and no font.
   `tests/grids/` holds it for every golden fixture, and
   `tests/grids/check.py` checks that it parses and agrees with `--text`.
-- Italic (SGR 3, cleared by 23) is kept, and `--json` reports it as
-  `"italic": true` (#26).
+- Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
+  is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
+  outline is slanted 12 degrees before it is rasterized, so it is as smooth
+  as upright text with any font. Box drawing, block elements and the box
+  for a missing glyph stay upright.
 
 ### Changed
 

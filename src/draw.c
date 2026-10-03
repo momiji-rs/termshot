@@ -48,6 +48,7 @@ _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 #define ATTR_STRIKE 8
 #define ATTR_WIDE 16 /* the first of a wide character's two cells */
 #define ATTR_TAIL 32 /* the second; ch is 0 */
+#define ATTR_ITALIC 64
 
 /* The canvas is RGB: alpha would always be 255, and an opaque RGBA PNG is
    larger and blocks palette quantization in downstream optimizers. */
@@ -61,10 +62,10 @@ _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
    in the benchmark), while keeping metadata to 48 KiB on 64-bit builds. */
 typedef struct {
     uint32_t cp;
-    /* wide is part of the key: a wide glyph is centered over two cells. shift
-       moves the glyph right within its cell (or cells); missing means neither
-       font has it. */
-    int valid, wide, missing, shift, ix0, iy0, w, h;
+    /* wide and italic are part of the key: a wide glyph is centered over two
+       cells, an italic one is slanted. shift moves the glyph right within its
+       cell (or cells); missing means neither font has it. */
+    int valid, wide, italic, missing, shift, ix0, iy0, w, h;
     unsigned char *bitmap;
 } Glyph;
 #define GLYPH_CACHE_SIZE 1024
@@ -455,6 +456,38 @@ static int paint_geometry(Canvas *cv, int col, int row, int cell_w, int cell_h, 
     return painted;
 }
 
+/* Italic is synthetic: the outline is slanted by 12 degrees before it is
+   rasterized, so its edges are as smooth as upright ones. The slant pivots on
+   the middle of the body, pivot font units above the baseline, so a glyph
+   stays centered in its cell and leans as far into each neighbour. Slants
+   the outline in place and returns its pixel box at scale s. */
+#define ITALIC_SLANT 0.21256f /* tan(12 degrees) */
+static void slant_outline(stbtt_vertex *v, int n, float pivot, float s, int *ix0, int *iy0, int *ix1, int *iy1) {
+    float min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+    for (int i = 0; i < n; i++) {
+        /* Control points are inside the box of the curve's points, so the
+           box of all of them holds the outline. A line has none. */
+        int points = v[i].type == STBTT_vcubic ? 3 : v[i].type == STBTT_vcurve ? 2 : 1;
+        stbtt_vertex_type *xs[3] = {&v[i].x, &v[i].cx, &v[i].cx1};
+        stbtt_vertex_type ys[3] = {v[i].y, v[i].cy, v[i].cy1};
+        for (int k = 0; k < points; k++) {
+            float x = *xs[k] + ITALIC_SLANT * (ys[k] - pivot);
+            x = x < -32768 ? -32768 : x > 32767 ? 32767 : x;
+            *xs[k] = (stbtt_vertex_type)lroundf(x);
+            if ((i == 0 && k == 0) || *xs[k] < min_x) min_x = *xs[k];
+            if ((i == 0 && k == 0) || *xs[k] > max_x) max_x = *xs[k];
+            if ((i == 0 && k == 0) || ys[k] < min_y) min_y = ys[k];
+            if ((i == 0 && k == 0) || ys[k] > max_y) max_y = ys[k];
+        }
+    }
+    /* As stbtt_GetGlyphBitmapBox rounds the glyph's own box; y grows down. */
+    *ix0 = (int)floorf(min_x * s);
+    *iy0 = (int)floorf(-max_y * s);
+    *ix1 = (int)ceilf(max_x * s);
+    *iy1 = (int)ceilf(-min_y * s);
+    if (n <= 0) *ix0 = *iy0 = *ix1 = *iy1 = 0;
+}
+
 static void blend(Canvas *cv, int dx, int dy, const unsigned char *bm, int gw, int gh,
                    uint8_t r, uint8_t g, uint8_t b) {
     int x0 = dx < 0 ? -dx : 0;
@@ -547,6 +580,9 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
     int cell_h = body + gap;
     if (cell_h < 1) cell_h = 1;
     int baseline = (int)(ascent * scale + 0.5f) + (cell_h - body) / 2;
+    /* Italic slants around the middle of the body, in pixels above the
+       baseline, for both fonts. */
+    float italic_pivot = (ascent + descent) * scale / 2;
     /* The fallback is sized to the same ascent-to-descent height and shares
        the baseline. */
     float fallback_scale = fallback_ttf ? stbtt_ScaleForPixelHeight(&fallback, (float)body) : 0;
@@ -607,12 +643,14 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
             tick = now_ms();
             int wide = (cell->attrs & ATTR_WIDE) != 0;
             int span = wide ? 2 * cell_w : cell_w;
-            Glyph *entry = &cache[cp % GLYPH_CACHE_SIZE];
-            if (entry->valid && entry->cp == cp && entry->wide == wide) {
+            int italic = (cell->attrs & ATTR_ITALIC) != 0;
+            /* An italic glyph has its own slot, so mixed text doesn't evict. */
+            Glyph *entry = &cache[(cp ^ (italic ? GLYPH_CACHE_SIZE / 2 : 0)) % GLYPH_CACHE_SIZE];
+            if (entry->valid && entry->cp == cp && entry->wide == wide && entry->italic == italic) {
                 cache_hits++;
             } else {
                 free(entry->bitmap);
-                *entry = (Glyph){.cp = cp, .valid = 1, .wide = wide};
+                *entry = (Glyph){.cp = cp, .valid = 1, .wide = wide, .italic = italic};
                 const stbtt_fontinfo *face = &font;
                 float s = scale;
                 /* A glyph with no outline counts as missing unless the
@@ -642,12 +680,20 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
                     }
                     if (wide || face == &fallback) entry->shift = (int)floorf((span - advance) / 2 + 0.5f);
                     int ix1, iy1;
-                    stbtt_GetGlyphBitmapBox(face, glyph, s, s, &entry->ix0, &entry->iy0, &ix1, &iy1);
+                    stbtt_vertex *outline = NULL;
+                    int verts = 0;
+                    if (italic) {
+                        verts = stbtt_GetGlyphShape(face, glyph, &outline);
+                        slant_outline(outline, verts, italic_pivot / s, s, &entry->ix0, &entry->iy0, &ix1, &iy1);
+                    } else {
+                        stbtt_GetGlyphBitmapBox(face, glyph, s, s, &entry->ix0, &entry->iy0, &ix1, &iy1);
+                    }
                     entry->w = ix1 - entry->ix0;
                     entry->h = iy1 - entry->iy0;
                     if (entry->w > 0 && entry->h > 0) {
                         entry->bitmap = (unsigned char *)malloc((size_t)entry->w * entry->h);
                         if (!entry->bitmap) {
+                            stbtt_FreeShape(face, outline);
                             for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
                             for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
                             free(cv->filtered);
@@ -655,9 +701,15 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
                             fprintf(stderr, "termshot: glyph allocation failed\n");
                             return 2;
                         }
-                        stbtt_MakeGlyphBitmap(face, entry->bitmap, entry->w, entry->h, entry->w, s, s, glyph);
+                        if (italic) {
+                            stbtt__bitmap out = {entry->w, entry->h, entry->w, entry->bitmap};
+                            stbtt_Rasterize(&out, 0.35f, outline, verts, s, s, 0, 0, entry->ix0, entry->iy0, 1, face->userdata);
+                        } else {
+                            stbtt_MakeGlyphBitmap(face, entry->bitmap, entry->w, entry->h, entry->w, s, s, glyph);
+                        }
                         glyphs++;
                     }
+                    stbtt_FreeShape(face, outline);
                 }
             }
             glyph_ms += now_ms() - tick;

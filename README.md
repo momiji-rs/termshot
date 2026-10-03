@@ -37,8 +37,9 @@ through a PTY already have CR LF. For output that has bare LFs (a text file, `cm
 pass `--lf-newline`.
 
 Colors are the 16 and 256 color palettes (xterm's defaults) and 24-bit color, in the `;` and
-`:` forms. Bold, dim, underline, double underline, strike-through, reverse video and hidden
-text are drawn; italic and blink are not. Wide characters (CJK, fullwidth forms, emoji) take two
+`:` forms. Bold, dim, italic, underline, double underline, strike-through, reverse video and
+hidden text are drawn; blink is not. Italic is the font's own glyph slanted by 12 degrees, and
+box drawing stays upright in it. Wide characters (CJK, fullwidth forms, emoji) take two
 cells. A combining mark is kept only when Unicode has a precomposed form for it; other marks are
 dropped ([#14](https://github.com/momiji-rs/termshot/issues/14)).
 

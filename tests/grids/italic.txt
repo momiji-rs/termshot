@@ -1,0 +1,5 @@
+plain italic text plain |l|
+bold italic under strike
+// a vim comment
+中文 ─┼─ █▌ ⣿
+aaaa AAAAAA  rev
