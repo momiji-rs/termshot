@@ -487,7 +487,8 @@ fn negative(number: &str) -> bool {
 }
 
 fn event(n: usize, version: u8, text: &str) -> Result<Event, String> {
-    if text.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\r')) || (version == 3 && text.starts_with('#')) {
+    // Only v3 has comments; a blank line is no event, and is refused below.
+    if version == 3 && text.starts_with('#') {
         return Ok(Event::Skip);
     }
     let at = |reason: String| format!("line {n}: {reason}");
@@ -526,8 +527,11 @@ pub fn decode(mut data: Vec<u8>) -> Result<Cast, String> {
     let mut cast: Option<Cast> = None;
     let (mut start, mut n, mut written) = (0, 0, 0);
     // The lines, numbered from 1, without their LF. What follows the last LF
-    // is a line too, empty when the file ends in one.
+    // is a line too, unless the file ends in an LF: nothing follows it then.
     while start <= data.len() {
+        if start == data.len() && start > 0 && data[start - 1] == b'\n' {
+            break;
+        }
         let end = data[start..].iter().position(|&b| b == b'\n').map_or(data.len(), |p| start + p);
         n += 1;
         let text = line_text(n, &data[start..end])?;

@@ -159,7 +159,8 @@ original form's cols and rows, override it, each dimension on its own. A recordi
 than 500×200 needs `--size` (exit 2). Timing is not used, so the replay doesn't depend on it.
 
 The JSON is read strictly: UTF-8, with every escape including `\uXXXX` surrogate pairs, no
-duplicate keys, and nesting at most 16 deep. A lone surrogate, invalid UTF-8, a truncated line,
+duplicate keys, nesting at most 16 deep, and every line after the header an event (in v3, or
+a `#` comment), so a blank line is refused too. A lone surrogate, invalid UTF-8, a truncated line,
 a wrong type, a size that is not a whole number, or a negative or infinite time is refused
 with its line, and for bad JSON or UTF-8 its column (exit 1), as for an unusable font. For a raw log, the size isn't
 guessed from where the cursor went; give it with `--size`.

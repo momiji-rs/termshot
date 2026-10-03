@@ -131,11 +131,20 @@ fn v3_has_term_intervals_and_comments() {
 \"theme\":{\"fg\":\"#ffffff\",\"bg\":\"#000000\",\"palette\":\"#000000:#111111\"}},\"timestamp\":1}\n\
 # a comment, ignored\n\
 [0.5, \"o\", \"a\"]\n\
-\n\
 [0.0, \"x\", \"0\"]\n\
 [1.25, \"o\", \"b\"]\n";
     let cast = decode_str(v3).unwrap();
     assert_eq!((cast.version, cast.size, cast.output.as_slice()), (3, (80, 24), &b"ab"[..]));
+    // A blank line is not an event, in either version, nor is a line of
+    // spaces or a lone CR; only the end of the file may follow the last LF.
+    for version in ["{\"version\":2,\"width\":1,\"height\":1}", "{\"version\":3,\"term\":{\"cols\":1,\"rows\":1}}"] {
+        for blank in ["\n\n[0,\"o\",\"a\"]\n", "\n[0,\"o\",\"a\"]\n\n", "\n  \n", "\n\r\n", "\n\n"] {
+            let got = error(&format!("{version}{blank}"));
+            assert!(got.contains("the line ends where a JSON value was expected"), "{blank:?}: {got}");
+        }
+        assert_eq!(decode_str(&format!("{version}\n[0,\"o\",\"a\"]\n")).unwrap().output, b"a");
+        assert_eq!(decode_str(&format!("{version}\r\n[0,\"o\",\"a\"]\r\n")).unwrap().output, b"a");
+    }
     // A comment is v3's; in v2 it is a malformed event.
     let v2 = "{\"version\":2,\"width\":1,\"height\":1}\n# no\n";
     assert!(error(v2).starts_with("line 2, column 1:"), "{}", error(v2));
