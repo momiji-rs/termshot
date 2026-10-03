@@ -514,9 +514,8 @@ static void blend(Canvas *cv, int dx, int dy, const unsigned char *bm, int gw, i
     }
 }
 
-static int init_font(stbtt_fontinfo *font, const unsigned char *ttf) {
-    int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
-    return offset >= 0 && stbtt_InitFont(font, ttf, offset);
+static int init_font(stbtt_fontinfo *font, const unsigned char *ttf, int start) {
+    return start >= 0 && stbtt_InitFont(font, ttf, start);
 }
 
 /* Characters that draw nothing by design, so blank even when no font has
@@ -572,10 +571,10 @@ static int cell_metrics(const stbtt_fontinfo *font, double font_px, CellMetrics 
 }
 
 /* Uses the exact same metrics as the renderer, including custom fonts. */
-int draw_cell_size(const unsigned char *ttf, double px, int *w, int *h) {
+int draw_cell_size(const unsigned char *ttf, int ttf_start, double px, int *w, int *h) {
     stbtt_fontinfo font;
     CellMetrics m;
-    if (!init_font(&font, ttf) || !cell_metrics(&font, px, &m)) return 0;
+    if (!init_font(&font, ttf, ttf_start) || !cell_metrics(&font, px, &m)) return 0;
     *w = m.cell_w;
     *h = m.cell_h;
     return 1;
@@ -615,21 +614,22 @@ static void paint_images(Canvas *cv, const ImageView *images, size_t count) {
 }
 
 /* Paint cells with the font in ttf (a TrueType file the caller has already
-   checked; see src/font.rs) and write a PNG. fallback_ttf, checked the same
-   way, or NULL, supplies the characters ttf lacks; characters neither has are
-   drawn as an outlined box. The canvas and cache are local; timing hooks use
+   checked; see src/font.rs) and write a PNG. ttf_start is where the face to
+   use starts: 0 for a single font, its offset in a collection. fallback_ttf
+   and fallback_start, checked the same way, or NULL, supply the characters
+   ttf lacks; characters neither has are drawn as an outlined box. The canvas and cache are local; timing hooks use
    thread-local state so concurrent renders remain independent.
    verbose prints the cell and image size to stderr.
    Returns 0; 1 for an unusable font; 2 when the image is too large or memory
    runs out; 3 when the PNG cannot be written. */
-int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *ttf,
-             const unsigned char *fallback_ttf, double font_px, const char *out_path, int verbose,
-             const ImageView *images, size_t image_count) {
+int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *ttf, int ttf_start,
+             const unsigned char *fallback_ttf, int fallback_start, double font_px, const char *out_path,
+             int verbose, const ImageView *images, size_t image_count) {
     profiling = getenv("TERMSHOT_PROFILE") != NULL;
     termshot_deflate_profile.enabled = profiling;
     double started = now_ms();
     stbtt_fontinfo font, fallback;
-    if (!init_font(&font, ttf) || (fallback_ttf && !init_font(&fallback, fallback_ttf))) {
+    if (!init_font(&font, ttf, ttf_start) || (fallback_ttf && !init_font(&fallback, fallback_ttf, fallback_start))) {
         fprintf(stderr, "termshot: font init failed\n");
         return 1;
     }
@@ -852,7 +852,9 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
 }
 
 /* Keep the cell-only entry point for the C and Rust rasterizer tests. */
-int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
-             const unsigned char *fallback_ttf, double font_px, const char *out_path, int verbose) {
-    return draw_png_images(cells, cols, rows, ttf, fallback_ttf, font_px, out_path, verbose, NULL, 0);
+int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, int ttf_start,
+             const unsigned char *fallback_ttf, int fallback_start, double font_px, const char *out_path,
+             int verbose) {
+    return draw_png_images(cells, cols, rows, ttf, ttf_start, fallback_ttf, fallback_start, font_px, out_path,
+                           verbose, NULL, 0);
 }

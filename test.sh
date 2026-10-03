@@ -116,6 +116,24 @@ printf 'A' | ./termshot --size 1x1 --cursor none --font "$out/hollow-A.ttf" --fa
 check "a font missing only A draws B as the font does" 'cmp -s "$out/fb-b.png" "$out/fb-plain.png"'
 check "--fallback-font draws a glyph the font lacks" '! cmp -s "$out/fb-drawn.png" "$out/fb-tofu.png"'
 check "--fallback-font draws it as draw_png does" 'cmp -s "$out/fb-drawn.png" "$out/fb-reference.png"'
+# A face in a collection: the unit tests write $ttc, JetBrains Mono as "Face A"
+# and a taller copy as "Face B".
+ttc=$out/collection.ttc
+expect 1 "$log" "$out/x.png" --font "$ttc#2"
+expect 1 "$log" "$out/x.png" --font "$ttc#Face C"
+expect 1 "$log" "$out/x.png" --font "$font#1"
+expect 2 --font "$ttc#1" "$log" "$ttc"
+cp "$ttc" "$ttc#x"
+expect 2 "$log" "$out/x.png" --font "$ttc#x#1"
+rm "$ttc#x"
+check "a collection without a face says which it used, and lists the others" \
+    './termshot --font "$ttc" "$log" "$out/ttc.png" 2>"$out/ttc.err" &&
+     grep -q "the first, Face A, was used" "$out/ttc.err" && grep -qx "  #1  Face B" "$out/ttc.err"'
+check "#0 picks the first face quietly" '[ -z "$(./termshot --font "$ttc#0" "$log" "$out/ttc-0.png" 2>&1)" ]'
+check "the first face draws as the font it copies" 'cmp -s "$out/ttc-0.png" "$out/legacy.png"'
+check "-v names the face" \
+    './termshot -v --font="$ttc#face b" "$log" "$out/ttc-1.png" 2>&1 | grep -qx -- "--font face #1 Face B"'
+check "another face draws differently" '! cmp -s "$out/ttc-1.png" "$out/legacy.png"'
 # stdin and stdout.
 ./termshot - - < "$log" > "$out/piped.png"
 check "stdin to stdout matches" 'cmp -s "$out/piped.png" "$out/legacy.png"'

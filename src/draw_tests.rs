@@ -7,9 +7,27 @@ use std::ffi::CString;
 
 const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 
-fn render(cells: &[Cell], cols: usize, rows: usize, font: &[u8], px: f64, out: &str) -> i32 {
+fn render(cells: &[Cell], cols: usize, rows: usize, font: &font::Font, px: f64, out: &str) -> i32 {
+    render_with(cells, cols, rows, font, None, px, out)
+}
+
+fn render_with(
+    cells: &[Cell],
+    cols: usize,
+    rows: usize,
+    font: &font::Font,
+    fallback: Option<&font::Font>,
+    px: f64,
+    out: &str,
+) -> i32 {
     let out = CString::new(out).unwrap();
-    unsafe { draw_png(cells.as_ptr(), cols as i32, rows as i32, font.as_ptr(), std::ptr::null(), px, out.as_ptr(), 0) }
+    let (data, start) = (font.data.as_ptr(), font.start as i32);
+    let (fallback, fallback_start) = fallback.map_or((std::ptr::null(), 0), |f| (f.data.as_ptr(), f.start as i32));
+    unsafe { draw_png(cells.as_ptr(), cols as i32, rows as i32, data, start, fallback, fallback_start, px, out.as_ptr(), 0) }
+}
+
+fn load(value: &str) -> font::Font {
+    font::load(&font::Spec::parse(value).unwrap()).unwrap()
 }
 
 /// The mutation tests/fontfuzz used to find stb_truetype crashes, ported
@@ -82,7 +100,7 @@ fn mutated_fonts_are_rejected_or_render() {
 
 #[test]
 fn draw_png_is_reentrant() {
-    let font = font::load(FONT).unwrap();
+    let font = load(FONT);
     let cells = parse("\x1b[1mbold\x1b[0m ─╭╮ plain".as_bytes(), 20, 2);
     let outs: Vec<String> = (0..8).map(|i| format!("target/test/thread-{i}.png")).collect();
     std::thread::scope(|scope| {
@@ -95,4 +113,50 @@ fn draw_png_is_reentrant() {
     for out in &outs[1..] {
         assert!(fs::read(out).unwrap() == first, "{out} differs from {}", outs[0]);
     }
+}
+
+/// Written for test.sh's CLI checks, which run after these tests.
+const COLLECTION: &str = "target/test/collection.ttc";
+
+#[test]
+fn draw_png_draws_the_chosen_face() {
+    fs::write(COLLECTION, font::tests::two_faces()).unwrap();
+    let cells = parse(b"Ag", 2, 1);
+    let draw = |spec: &str, out: &str| {
+        assert_eq!(render(&cells, 2, 1, &load(spec), 16.0, out), 0);
+        fs::read(out).unwrap()
+    };
+    let plain = draw(FONT, "target/test/face-plain.png");
+    assert!(draw(&format!("{COLLECTION}#0"), "target/test/face-0.png") == plain);
+    assert!(draw(&format!("{COLLECTION}#Face B"), "target/test/face-1.png") != plain);
+}
+
+#[test]
+fn draw_png_draws_the_chosen_fallback_face() {
+    // A first font with no outlines at all, so the fallback draws every character.
+    let ttc = font::tests::two_faces();
+    let empty = font::tests::edit_table(&fs::read(FONT).unwrap(), b"loca", |loca| loca.fill(0));
+    let empty = font::prepare(empty).unwrap();
+    let cells = parse(b"Ag", 2, 1);
+    let draw = |fallback: font::Font, out: &str| {
+        assert_eq!(render_with(&cells, 2, 1, &empty, Some(&fallback), 16.0, out), 0);
+        fs::read(out).unwrap()
+    };
+    let plain = draw(load(FONT), "target/test/fallback-plain.png");
+    let face = |face: &str| font::tests::choose_padded(ttc.clone(), face);
+    assert!(draw(face("0"), "target/test/fallback-0.png") == plain);
+    assert!(draw(face("1"), "target/test/fallback-1.png") != plain);
+}
+
+#[test]
+fn a_file_named_with_a_hash_is_that_file() {
+    let odd = "target/test/odd#1.ttf";
+    fs::copy(FONT, odd).unwrap();
+    let font = load(odd);
+    assert!(font.start == 0 && font.face.is_none());
+    assert_eq!(font::Spec::parse(odd), Ok(font::Spec { path: odd.into(), face: None }));
+    assert_eq!(
+        font::Spec::parse("target/test/absent.ttc#Noto Sans"),
+        Ok(font::Spec { path: "target/test/absent.ttc".into(), face: Some("Noto Sans".into()) })
+    );
 }

@@ -119,9 +119,9 @@ impl Cell {
 }
 
 extern "C" {
-    fn draw_cell_size(font: *const u8, px: f64, w: *mut i32, h: *mut i32) -> i32;
-    fn draw_png_images(cells: *const Cell, cols: i32, rows: i32, font: *const u8,
-        fallback: *const u8, font_size: f64, out_path: *const std::ffi::c_char,
+    fn draw_cell_size(font: *const u8, font_start: i32, px: f64, w: *mut i32, h: *mut i32) -> i32;
+    fn draw_png_images(cells: *const Cell, cols: i32, rows: i32, font: *const u8, font_start: i32,
+        fallback: *const u8, fallback_start: i32, font_size: f64, out_path: *const std::ffi::c_char,
         verbose: i32, images: *const graphics::ImageView, count: usize) -> i32;
     #[cfg(test)]
     fn draw_png(
@@ -130,8 +130,11 @@ extern "C" {
         rows: i32,
         // A font that passed font::check, followed by its zero padding.
         font: *const u8,
+        // Where its face starts: font::Font::start.
+        font_start: i32,
         // Another such font for the characters the first lacks, or null.
         fallback: *const u8,
+        fallback_start: i32,
         font_size: f64,
         out_path: *const std::ffi::c_char,
         verbose: i32,
@@ -1354,11 +1357,14 @@ options:
       --json FILE   write the screen as JSON: the cursor, and for each row
                     the runs of cells alike in colour (#rrggbb) and
                     attributes, with the column each starts at
-  -v, --verbose     print the cell and image size to stderr
+  -v, --verbose     print the cell and image size, and the face of each
+                    collection, to stderr
   -h, --help        show this help
   -V, --version     show the version
 
 The second form is the original one and still works.
+For a font collection (.ttc), FILE#N picks face N, from 0, and FILE#NAME the
+face with that full or family name; without either, the first is used.
 An SGR reset uses foreground #dbe7f7 on background #111823.
 
 exit status: 0 done; 1 a file could not be read or written, or the font is
@@ -1372,8 +1378,8 @@ struct Options {
     out: Option<String>,
     text: Option<String>,
     json: Option<String>,
-    font: Option<String>,
-    fallback_font: Option<String>,
+    font: Option<font::Spec>,
+    fallback_font: Option<font::Spec>,
     px: f64,
     cols: usize,
     rows: usize,
@@ -1529,8 +1535,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         out,
         text,
         json,
-        font,
-        fallback_font,
+        font: font.as_deref().map(font::Spec::parse).transpose()?,
+        fallback_font: fallback_font.as_deref().map(font::Spec::parse).transpose()?,
         px: px.unwrap_or(48.0),
         cols,
         rows,
@@ -1545,7 +1551,7 @@ fn load_fonts(
     options: &Options,
     profile: bool,
     timings: &mut font::LoadTimings,
-) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+) -> Result<(font::Font, Option<font::Font>), String> {
     let font = match &options.font {
         Some(path) if profile => font::load_profiled(path, timings)?,
         Some(path) => font::load(path)?,
@@ -1557,7 +1563,7 @@ fn load_fonts(
             font?
         }
     };
-    let fallback = options.fallback_font.as_deref().map(font::load).transpose()?;
+    let fallback = options.fallback_font.as_ref().map(font::load).transpose()?;
     Ok((font, fallback))
 }
 
@@ -1608,7 +1614,10 @@ fn output_clash(options: &Options) -> Option<String> {
         pairs.into_iter().filter_map(|(name, path)| Some((name, path.filter(|p| *p != "-")?))).collect()
     }
     let outputs = named([("<out.png>", options.out.as_ref()), ("--text", options.text.as_ref()), ("--json", options.json.as_ref())]);
-    let inputs = named([("<log>", Some(&options.log)), ("--font", options.font.as_ref()), ("--fallback-font", options.fallback_font.as_ref())]);
+    fn font_file(spec: &Option<font::Spec>) -> Option<&String> {
+        spec.as_ref().map(|spec| &spec.path)
+    }
+    let inputs = named([("<log>", Some(&options.log)), ("--font", font_file(&options.font)), ("--fallback-font", font_file(&options.fallback_font))]);
     for (i, (name, path)) in outputs.iter().enumerate() {
         if let Some((other, ..)) = outputs[..i].iter().find(|(_, earlier)| same_file(path, earlier)) {
             return Some(format!("{name} and {other} name the same file, {path}; give each output its own"));
@@ -1717,12 +1726,23 @@ fn main() -> ExitCode {
         Err(error) => return cleanup(1, error),
     };
     let font_load_ms = font_started.elapsed().as_secs_f64() * 1000.0;
+    // A collection given without a face draws with its first, which may be
+    // the wrong script (Noto CJK's is Japanese): say which, and what the others are.
+    for (flag, font) in fonts.iter().flat_map(|(font, fallback)| [("--font", Some(font)), ("--fallback-font", fallback.as_ref())]) {
+        let Some(font) = font else { continue };
+        if let Some(hint) = &font.hint {
+            eprintln!("termshot: hint: {flag} {hint}");
+        }
+        if let (true, Some((index, name))) = (options.verbose, &font.face) {
+            eprintln!("{flag} face #{index} {name}");
+        }
+    }
 
     let parse_started = Instant::now();
     let input_bytes = data.len();
     let (mut cell_w, mut cell_h) = (1, 1);
     if let Some((font, _)) = &fonts {
-        if unsafe { draw_cell_size(font.as_ptr(), options.px, &mut cell_w, &mut cell_h) } == 0 {
+        if unsafe { draw_cell_size(font.data.as_ptr(), font.start as i32, options.px, &mut cell_w, &mut cell_h) } == 0 {
             return cleanup(1, "font metrics unusable".into());
         }
     }
@@ -1760,8 +1780,10 @@ fn main() -> ExitCode {
                     cells.as_ptr(),
                     options.cols as i32,
                     options.rows as i32,
-                    font.as_ptr(),
-                    fallback.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
+                    font.data.as_ptr(),
+                    font.start as i32,
+                    fallback.as_ref().map_or(std::ptr::null(), |f| f.data.as_ptr()),
+                    fallback.as_ref().map_or(0, |f| f.start as i32),
                     options.px,
                     out.as_ptr(),
                     i32::from(options.verbose),
