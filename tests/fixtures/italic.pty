@@ -1,0 +1,5 @@
+plain [3mitalic text[23m plain |l|
+[1;3mbold italic[m [3;4munder[m [3;9mstrike[m
+[3;38;2;120;200;255m// a vim comment[m
+[3m中文 ─┼─ █▌ ⣿[m
+[3ma[23ma[3ma[23ma [3mAAA[23mAAA [3;7m rev [m

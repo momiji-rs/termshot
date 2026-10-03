@@ -28,7 +28,7 @@ cross-platform reproducibility; it does not promise GPU-filter-identical output.
 
 Local validation passed on Linux x86-64:
 
-- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 131 unit tests passed; one existing
+- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 132 unit tests passed; one existing
   benchmark helper is ignored. All CLI, pixel, codec and geometry checks passed.
 - `SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh`: passed, including
   the image decoder/compositor, codec round trips and concurrent render checks.
@@ -130,3 +130,12 @@ whole-region multiples and extreme counts in both directions. Three additional
 end-to-end pixel comparisons match ASCII autowrap against explicit scroll-up:
 a single row, multiple skipped regions, and a trailing partial row. The contained-image fixture ensures these checks still exercise actual image
 movement under the scroll-margin rule.
+
+
+## Main integration
+
+Merged italic support from `main` at `5bd367f`. The renderer keeps the shared
+cell metrics used by graphics and the italic pivot used by both fonts. Both
+italic PNG goldens retain their upstream hashes alongside all 26 graphics-era
+goldens (28 total). The glyph-placement harness also checks italic and fallback
+font geometry. Text/JSON retain upstream italic attributes.

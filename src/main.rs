@@ -46,6 +46,8 @@ const STRIKE: u8 = 8;
 const WIDE: u8 = 16;
 /// The second cell of a double-width character: ch is 0 and nothing is drawn.
 const TAIL: u8 = 32;
+/// draw.c slants the glyph; box drawing and blocks stay upright.
+const ITALIC: u8 = 64;
 
 /// The colours and attributes SGR sets, applied to each printed character.
 /// Reverse, dim and conceal change the cell's colours as it is printed.
@@ -857,6 +859,7 @@ impl Screen {
                 0 => *pen = Pen::DEFAULT,
                 1 => pen.attrs |= BOLD,
                 2 => pen.dim = true,
+                3 => pen.attrs |= ITALIC,
                 4 => pen.attrs = pen.attrs & !DOUBLE_UNDERLINE | UNDERLINE,
                 7 => pen.reverse = true,
                 8 => pen.conceal = true,
@@ -866,6 +869,7 @@ impl Screen {
                     pen.attrs &= !BOLD;
                     pen.dim = false;
                 }
+                23 => pen.attrs &= !ITALIC,
                 24 => pen.attrs &= !(UNDERLINE | DOUBLE_UNDERLINE),
                 27 => pen.reverse = false,
                 28 => pen.conceal = false,
@@ -876,7 +880,7 @@ impl Screen {
                 100..=107 => pen.bg = palette(v - 100 + 8).unwrap(),
                 39 => pen.fg = DEFAULT_FG,
                 49 => pen.bg = DEFAULT_BG,
-                // Italic (3, 23), blink (5, 6, 25) and the rest are not drawn.
+                // Blink (5, 6, 25) and the rest are not drawn.
                 38 | 48 => match p.get(k + 1, 0) {
                     2 if k + 4 < p.len => {
                         if let Some(color) = rgb(&p.list[k + 2..k + 5]) {
@@ -1180,7 +1184,7 @@ fn grid_text(cells: &[Cell], cols: usize) -> String {
 fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, usize)>) -> String {
     use std::fmt::Write as _;
     const LINES: u8 = UNDERLINE | DOUBLE_UNDERLINE | STRIKE;
-    const STYLE: u8 = BOLD | LINES;
+    const STYLE: u8 = BOLD | ITALIC | LINES;
     let style = |c: &Cell| ((c.fr, c.fg, c.fb), (c.br, c.bg, c.bb), c.attrs & STYLE);
     let blank = |c: &Cell| c.ch == ' ' as u32 && (c.br, c.bg, c.bb) == DEFAULT_BG && c.attrs & LINES == 0;
     // Writing to a String cannot fail.
@@ -1215,7 +1219,7 @@ fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, us
             }
             let ((fr, fg, fb), (br, bg, bb), attrs) = key;
             let _ = write!(json, "\",\"fg\":\"#{fr:02x}{fg:02x}{fb:02x}\",\"bg\":\"#{br:02x}{bg:02x}{bb:02x}\"");
-            for (bit, name) in [(BOLD, "bold"), (UNDERLINE, "underline"), (DOUBLE_UNDERLINE, "double_underline"), (STRIKE, "strike")] {
+            for (bit, name) in [(BOLD, "bold"), (ITALIC, "italic"), (UNDERLINE, "underline"), (DOUBLE_UNDERLINE, "double_underline"), (STRIKE, "strike")] {
                 if attrs & bit != 0 {
                     let _ = write!(json, ",\"{name}\":true");
                 }
