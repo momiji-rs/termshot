@@ -1646,6 +1646,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         Some((cols, rows)) => (Some(cols), Some(rows)),
         None => (legacy_cols, legacy_rows),
     };
+    // Refuse a bad --cursor before reading the log, which may be stdin. Its
+    // bounds wait for the size when a cast may give it; a size too large to
+    // reach checks only the form.
+    if let Some(value) = &cursor {
+        parse_cursor(value, cols.unwrap_or(usize::MAX), rows.unwrap_or(usize::MAX))?;
+    }
     Ok(Command::Render(Options {
         log,
         out,
