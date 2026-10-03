@@ -1,0 +1,7 @@
+{"cols":30,"rows":5,"cursor":{"col":17,"row":4},"lines":[
+[{"col":0,"text":"plain ","fg":"#dbe7f7","bg":"#111823"},{"col":6,"text":"italic text","fg":"#dbe7f7","bg":"#111823","italic":true},{"col":17,"text":" plain |l|","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"bold italic","fg":"#dbe7f7","bg":"#111823","bold":true,"italic":true},{"col":11,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":12,"text":"under","fg":"#dbe7f7","bg":"#111823","italic":true,"underline":true},{"col":17,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":18,"text":"strike","fg":"#dbe7f7","bg":"#111823","italic":true,"strike":true}],
+[{"col":0,"text":"// a vim comment","fg":"#78c8ff","bg":"#111823","italic":true}],
+[{"col":0,"text":"中文 ─┼─ █▌ ⣿","fg":"#dbe7f7","bg":"#111823","italic":true}],
+[{"col":0,"text":"a","fg":"#dbe7f7","bg":"#111823","italic":true},{"col":1,"text":"a","fg":"#dbe7f7","bg":"#111823"},{"col":2,"text":"a","fg":"#dbe7f7","bg":"#111823","italic":true},{"col":3,"text":"a ","fg":"#dbe7f7","bg":"#111823"},{"col":5,"text":"AAA","fg":"#dbe7f7","bg":"#111823","italic":true},{"col":8,"text":"AAA ","fg":"#dbe7f7","bg":"#111823"},{"col":12,"text":" rev ","fg":"#111823","bg":"#dbe7f7","italic":true}]
+]}
