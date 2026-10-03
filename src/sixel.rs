@@ -103,15 +103,18 @@ fn hls(h: u32, l: u32, s: u32) -> [u32; 3] {
 }
 
 /// The data of a Sixel DCS and its P2, from the bytes between ESC P and ST:
-/// parameters (digits and `;`), no intermediates, and the final `q`. Other
-/// DCS strings (DECRQSS `$q`, XTGETTCAP `+q`, ...) are not Sixel.
+/// parameters (digits and `;`), no intermediates, and the final `q`. C0
+/// controls and DEL in the header are ignored, as a DEC parser ignores them
+/// there. Other DCS strings (DECRQSS `$q`, XTGETTCAP `+q`, ...) are not Sixel.
 fn split(body: &[u8]) -> Option<(u32, &[u8])> {
-    let q = body.iter().position(|&b| !matches!(b, b'0'..=b'9' | b';'))?;
+    let ignored = |b: u8| b < 0x20 || b == 0x7f;
+    let q = body.iter().position(|&b| !ignored(b) && !matches!(b, b'0'..=b'9' | b';'))?;
     if body[q] != b'q' {
         return None;
     }
-    let p2 = body[..q].split(|&b| b == b';').nth(1).unwrap_or_default();
-    let p2 = p2.iter().fold(0u32, |n, &d| n.saturating_mul(10).saturating_add(u32::from(d - b'0')));
+    let mut params = body[..q].iter().copied().filter(|&b| !ignored(b));
+    let p2 = params.by_ref().skip_while(|&b| b != b';').skip(1).take_while(|&b| b != b';');
+    let p2 = p2.fold(0u32, |n, d| n.saturating_mul(10).saturating_add(u32::from(d - b'0')));
     Some((p2, &body[q + 1..]))
 }
 

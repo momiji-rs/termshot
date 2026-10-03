@@ -26,6 +26,11 @@ fn only_sixel_dcs_strings_are_sixel() {
     assert_eq!(split(b"0;1;0q#0"), Some((1, &b"#0"[..])));
     assert_eq!(split(b";2q"), Some((2, &b""[..])));
     assert_eq!(split(b"9;99999999999999q").map(|s| s.0), Some(u32::MAX));
+    assert_eq!(split(b"1;;2q").map(|s| s.0), Some(0));
+    // C0 controls and DEL in the header are ignored, as xterm ignores them.
+    assert_eq!(split(b"0;\r1\x7fq~"), Some((1, &b"~"[..])));
+    assert_eq!(split(b"\n0;1\x00;0\tq"), Some((1, &b""[..])));
+    assert_eq!(split(b"\r$q"), None);
     // DECRQSS, XTGETTCAP, DECUDK, and others with intermediates or another final.
     for body in [&b"$q\"p"[..], b"+q4d73", b"1|", b"zz", b"data", b"?q", b"1:2q", b"", b"12"] {
         assert_eq!(split(body), None, "{}", String::from_utf8_lossy(body));
