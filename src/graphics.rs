@@ -214,9 +214,12 @@ impl Command {
 /// cursor. Capability probes and other skipped strings must not require fonts,
 /// nor does a put of an image no earlier transmission named, which replay
 /// ignores. Any earlier transmission counts, so the answer stays conservative.
+/// A numbered image takes the lowest free id, which the scan does not track,
+/// so after one every put by id counts.
 pub fn needs_cell_metrics(data: &[u8]) -> bool {
     // (is a number, value) for every i or I a transmission named so far.
     let mut sent = std::collections::HashSet::new();
+    let mut numbered = false;
     let mut i = 0;
     while i + 1 < data.len() {
         if data[i] == 0x1b && matches!(data[i + 1], b']' | b'P' | b'_' | b'^' | b'X') {
@@ -236,9 +239,10 @@ pub fn needs_cell_metrics(data: &[u8]) -> bool {
                             if name.1 != 0 {
                                 sent.insert(name);
                             }
+                            numbered |= c.number != 0;
                             c.action == b'T'
                         }
-                        b'p' => sent.contains(&name),
+                        b'p' => sent.contains(&name) || (numbered && c.id != 0),
                         _ => false,
                     };
                     if moves && !c.no_move {

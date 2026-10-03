@@ -492,13 +492,26 @@ fn font_metrics_are_needed_only_for_potential_cursor_movement() {
     assert!(needs_cell_metrics(&red("")));
     assert!(!needs_cell_metrics(&red(",C=1")));
     assert!(needs_cell_metrics(b"\x1b_Ga=T,f=24,s=2,v=1,m=1;/wAA\x1b\\"));
-    let stored = "\x1b_Ga=t,i=1,f=24,s=1,v=1;/wAA\x1b\\\x1b_Ga=t,I=7,f=24,s=1,v=1;/wAA\x1b\\";
-    assert!(!needs_cell_metrics(stored.as_bytes()));
-    for (put, needed) in [("i=1", true), ("I=7", true), ("i=1,C=1", false), ("i=7", false), ("I=1", false), ("i=2", false)] {
+    let by_id = "\x1b_Ga=t,i=1,f=24,s=1,v=1;/wAA\x1b\\";
+    let by_number = "\x1b_Ga=t,I=7,f=24,s=1,v=1;/wAA\x1b\\";
+    // A numbered image gets the lowest free id, which the scan does not know,
+    // so after one any put by id counts.
+    for (stored, put, needed) in [
+        (by_id, "i=1", true),
+        (by_id, "i=1,C=1", false),
+        (by_id, "i=2", false),
+        (by_id, "I=1", false),
+        (by_number, "I=7", true),
+        (by_number, "I=7,C=1", false),
+        (by_number, "I=4", false),
+        (by_number, "i=4", true),
+        (by_number, "i=4,C=1", false),
+    ] {
+        assert!(!needs_cell_metrics(stored.as_bytes()));
         let put = format!("\x1b_Ga=p,{put}\x1b\\");
         // Replay ignores a put of an image never transmitted: no metrics.
         assert!(!needs_cell_metrics(put.as_bytes()), "{put:?} alone");
-        assert_eq!(needs_cell_metrics(format!("{stored}{put}").as_bytes()), needed, "{put:?}");
+        assert_eq!(needs_cell_metrics(format!("{stored}{put}").as_bytes()), needed, "{stored:?}{put:?}");
         assert!(!needs_cell_metrics(format!("{put}{stored}").as_bytes()), "{put:?} first");
     }
     // A put with neither i nor I names no image, even after an anonymous one.
