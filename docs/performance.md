@@ -667,8 +667,9 @@ presents versioned, paired results with their measurement conditions instead.
 Each latency figure published outside this report, where it came from, and
 whether its evidence is in the repository. A figure is traceable only when its
 raw samples, revision, input, font, image size, machine, statistic and timing
-boundary are all recorded. The sections above meet that bar; the figures below
-mostly do not, so none of them should be quoted as a current result.
+boundary are all recorded. The measurement rounds above, with their JSON files,
+meet that bar. The historical “~20 ms” notes above and the figures below do
+not, so none of them should be quoted as a current result.
 
 ### “~20 ms for 2200×1440” (the repository's About description)
 

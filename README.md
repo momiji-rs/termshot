@@ -47,10 +47,11 @@ dropped ([#14](https://github.com/momiji-rs/termshot/issues/14)).
 ## Speed
 
 How long a run takes depends on the log, the image size, the fonts, the disk
-cache and the machine, so termshot has no single latency figure. Every number
-below comes from the **[versioned benchmark report](docs/performance.md)**,
-which keeps the raw samples of each round in JSON next to it, with the binary
-hashes, toolchains, fonts and inputs.
+cache and the machine, so termshot has no single latency figure. The current
+figures below come from the **[versioned benchmark report](docs/performance.md)**,
+whose JSON files keep every raw sample of the round with the binary hashes,
+toolchains, fonts and inputs. The historical figure at the end of this section
+has no retained samples and is quoted only to say where it came from.
 
 Current baseline: measured 2026-10-03 with `scripts/bench.py`, on termshot
 built from `22b77e8` (main `d83c8fd` plus profiling timers that change no
@@ -136,8 +137,8 @@ tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 --cursor 
 To check what a screen shows rather than how it looks (in a test, or as an agent), write it as
 text. It is laid out as `tmux capture-pane -p` prints it: a line per row, trailing spaces
 trimmed. For logs without graphics, omitting the PNG skips font loading, drawing and PNG
-encoding, which is most of a PNG run's work (the benchmark report does not time text-only
-runs). Kitty graphics still need font metrics to replay cursor movement,
+encoding; how much time that saves depends on the log, and the benchmark report does not
+time text-only runs. Kitty graphics still need font metrics to replay cursor movement,
 even for text/JSON-only output; images themselves are not included in these formats:
 
 ```sh
