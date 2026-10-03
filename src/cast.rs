@@ -370,15 +370,52 @@ fn json_error(n: usize, line: &str, error: JsonError) -> String {
 /// Whether the input is read as a cast: its first line, from its first
 /// byte, is a JSON object with a "version" member. A raw PTY log starts
 /// with terminal output, which is rarely such a line; --raw is for when it is.
+///
+/// This only finds the member: it scans the object's top level without
+/// checking the rest, so a header that is otherwise malformed (too deep,
+/// a duplicate key, cut short) is still taken for one, and decode says
+/// what is wrong with it instead of it being drawn as text.
 pub fn detect(data: &[u8]) -> bool {
     let first = data.split(|&b| b == b'\n').next().unwrap_or_default();
     if first.first() != Some(&b'{') {
         return false;
     }
-    match std::str::from_utf8(first).ok().map(parse) {
-        Some(Ok(header)) => header.get("version").is_some(),
-        _ => false,
+    // Iterative, so no nesting can overflow the stack.
+    let (mut depth, mut i, mut key_next) = (0usize, 0, false);
+    while i < first.len() {
+        match first[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < first.len() && first[i] != b'"' {
+                    i += if first[i] == b'\\' { 2 } else { 1 };
+                }
+                let Some(string) = first.get(start..=i) else { return false };
+                // A key may spell itself with escapes; decode it to compare.
+                let is_version = string == b"\"version\""
+                    || std::str::from_utf8(string).ok().map(parse) == Some(Ok(Value::String("version".into())));
+                if key_next && is_version {
+                    return true;
+                }
+                key_next = false;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                key_next = depth == 1;
+            }
+            b'}' | b']' => {
+                depth -= 1;
+                // The header object closed without the member.
+                if depth == 0 {
+                    return false;
+                }
+            }
+            b',' => key_next = depth == 1,
+            _ => {}
+        }
+        i += 1;
     }
+    false
 }
 
 /// A whole number that fits in 64 bits, from a JSON value.

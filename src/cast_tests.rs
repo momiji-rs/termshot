@@ -161,16 +161,35 @@ fn crlf_lines_and_a_missing_final_newline_are_fine() {
 
 #[test]
 fn detection_needs_a_version_in_a_first_line_object() {
-    for cast in ["{\"version\":2}", "{\"width\":1,\"version\":3}\n", "{\"version\":7}\nanything"] {
+    for cast in [
+        "{\"version\":2}", "{\"width\":1,\"version\":3}\n", "{\"version\":7}\nanything", "{ \"version\" : 2 }",
+        "{\"a\":\"}\",\"version\":2}", "{\"a\":\"\\\"\",\"version\":2}", "{\"a\":[{\"b\":1},2],\"version\":2}",
+        "{\"\\u0076ersion\":2}",
+        // Taken for a header, so decode can say what is wrong with it.
+        "{\"version\":2", "{\"version\":2} trailing", "{\"version\":2,\"version\":2}",
+    ] {
         assert!(detect(cast.as_bytes()), "{cast}");
     }
     for raw in [
         "", "\x1b[1mhi", "hello\n{\"version\":2}", " {\"version\":2}", "{\"Version\":2}", "{\"a\":{\"version\":2}}",
-        "{\"version\":2", "{\"version\":2} trailing", "[\"version\",2]", "{}",
+        "[\"version\",2]", "{}", "{\"a\":\"version\"}", "{\"a\":[\"version\"]}", "{\"a\":1}{\"version\":2}",
+        "{\"versio", "{\"a\":\"\\", "{\"a\":[[[[[[",
     ] {
         assert!(!detect(raw.as_bytes()), "{raw}");
     }
-    assert!(!detect(b"{\"version\":2,\"x\":\"\xff\"}"));
+    assert!(detect(b"{\"version\":2,\"x\":\"\xff\"}"));
+    // No depth of nesting overflows the scan.
+    assert!(!detect(("{\"a\":".to_string() + &"[".repeat(1_000_000)).as_bytes()));
+}
+
+#[test]
+fn a_detected_header_that_breaks_a_limit_is_refused_not_drawn() {
+    let deep = format!("{{\"version\":2,\"width\":1,\"height\":1,\"x\":{}1{}}}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+    assert!(detect(deep.as_bytes()));
+    assert!(error(&deep).contains("nest more than"), "{}", error(&deep));
+    let dup = "{\"version\":2,\"width\":1,\"height\":1,\"width\":2}";
+    assert!(detect(dup.as_bytes()));
+    assert!(error(dup).contains("\"width\" appears twice"), "{}", error(dup));
 }
 
 #[test]

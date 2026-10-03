@@ -137,7 +137,8 @@ asciinema rec demo.cast
 ```
 
 A log is read as a cast when its first line, from the first byte, is a JSON object with a
-`"version"` member. Terminal output rarely starts that way; when it does, `--raw` reads the
+`"version"` member at its top level; the rest of the line need not be valid, so a damaged
+header is refused rather than drawn as text. Terminal output rarely starts that way; when it does, `--raw` reads the
 log as raw output, and a log taken for a cast that fails to read says so. `--cast` reads the
 log as a cast whatever it starts with, which matters only for the error you get. termshot replays the data of the
 output (`"o"`) events, in the order the file has them, and ignores input (`"i"`), markers
