@@ -36,6 +36,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its decoded size, as in kitty, checked as each chunk arrives, and its
   dimensions are checked before anything is inflated.
 
+- Kitty placements crop and layer as kitty does (#44): `x`, `y`, `w`, `h`
+  pick the part of the image shown, `X`, `Y` start it inside its first cell,
+  and a negative z-index draws it under the text, or with `z` below
+  -1,073,741,824 under every background that is not the default one.
+  Reverse video and the block cursor count as non-default there. A crop keeps
+  its own aspect ratio when fitted to `c` and `r`. Commands with these keys
+  were ignored before.
+
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so
@@ -67,14 +75,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pending wrap.
 - `--text FILE` writes the screen as text, as `tmux capture-pane -p` prints
   it: a line per row, trailing spaces trimmed, a wide character once (#32).
-  `<out.png>` is optional with it; without a PNG no font is read, so a
-  text-only run takes about 1 ms where a PNG takes 10. `tests/grids/` holds
+  `<out.png>` is optional with it; without a PNG nothing is drawn or
+  encoded, and no font is read unless the log has kitty graphics, whose
+  placements need the font's cell size to move the cursor. `tests/grids/` holds
   the text of every golden fixture, and the tmux references in `tests/vt/`
   check it too.
 - `--json FILE` writes the screen with its colours and the cursor (#32):
   per row, runs of cells alike in colour (`#rrggbb`, as drawn) and
   attributes, each with the column it starts at, and the cursor as
-  `{"col","row"}` or null. Like `--text`, it needs no PNG and no font.
+  `{"col","row"}` or null. Like `--text`, it needs no PNG, and a font only
+  for a log with kitty graphics.
   `tests/grids/` holds it for every golden fixture, and
   `tests/grids/check.py` checks that it parses and agrees with `--text`.
 - A face of a font collection (`.ttc`) can be picked for `--font` and
@@ -117,6 +127,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `face_ms`, and counts glyph cache evictions, missing glyphs and fallback
   lookups and rasterizations (#19). The built-in font's `font_check_ms` no
   longer includes copying and padding it.
+- The README's Speed section quotes the 2026-10-03 baseline (Apple M2 Max
+  and Ryzen 7 8745HS, `22b77e8`) with its workloads, fonts, image sizes and
+  statistic, links the versioned report, and keeps the 2026-10-01 Apple M3
+  rounds and the "~20 ms" figure apart as history (#23).
 
 ### Fixed
 

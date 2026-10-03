@@ -46,6 +46,8 @@ pub struct Placement {
     pub pixels: Rc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
+    /// The source rectangle shown, x, y, w and h: the crop, within the image.
+    src: [u32; 4],
     pub x: i64,
     pub w: i64,
     pub h: i64,
@@ -56,7 +58,7 @@ pub struct Placement {
     id: u32,
     key: u64,
     placement_id: u32,
-    z: u32,
+    z: i32,
     /// The cells it covers, for the delete selectors; rows follow scrolling.
     col: i64,
     cols: i64,
@@ -76,6 +78,15 @@ pub struct ImageView {
     h: i64,
     clip_top: i64,
     clip_bottom: i64,
+    /// The source rectangle sampled, inside width x height; never empty.
+    src_x: u32,
+    src_y: u32,
+    src_w: u32,
+    src_h: u32,
+    /// Below INT32_MIN / 2 the image is drawn under non-default cell
+    /// backgrounds, below 0 over every background but under the text, and
+    /// from 0 over both.
+    z: i32,
 }
 
 /// A visible vertical part of a placement. `y` is the translated origin of
@@ -100,15 +111,35 @@ impl Placement {
             h: self.h,
             clip_top: slice.top,
             clip_bottom: slice.bottom,
+            src_x: self.src[0],
+            src_y: self.src[1],
+            src_w: self.src[2],
+            src_h: self.src[3],
+            z: self.z,
         })
     }
 }
 
 impl ImageView {
-    /// A rectangle of one colour: the opaque pixel, stretched over it.
-    /// The pixel is borrowed; it must outlive the view.
+    /// A rectangle of one colour: the opaque pixel, stretched over it, above
+    /// everything else. The pixel is borrowed; it must outlive the view.
     pub fn solid(pixel: &[u8; 4], x: i64, y: i64, w: i64, h: i64) -> ImageView {
-        ImageView { pixels: pixel.as_ptr(), width: 1, height: 1, x, y, w, h, clip_top: y, clip_bottom: y + h }
+        ImageView {
+            pixels: pixel.as_ptr(),
+            width: 1,
+            height: 1,
+            x,
+            y,
+            w,
+            h,
+            clip_top: y,
+            clip_bottom: y + h,
+            src_x: 0,
+            src_y: 0,
+            src_w: 1,
+            src_h: 1,
+            z: i32::MAX,
+        }
     }
 }
 
@@ -131,9 +162,15 @@ struct Command {
     id: u32,
     number: u32,
     placement_id: u32,
+    /// x and y pick a cell for a delete; elsewhere x, y, w and h crop.
     x: u32,
     y: u32,
-    z: u32,
+    w: u32,
+    h: u32,
+    /// X and Y: where in its first cell the image starts, in pixels.
+    offset_x: u32,
+    offset_y: u32,
+    z: i32,
     /// o=z: the payload is a zlib stream.
     compressed: bool,
     /// S: the size of the PNG data inside a compressed payload.
@@ -144,6 +181,14 @@ struct Command {
     continuation: bool,
     /// The key of the image this transmission replaces, kept for its order.
     reuse: Option<u64>,
+}
+
+/// A 32-bit signed integer, as kitty reads the z-index.
+fn signed(s: &[u8]) -> Option<i32> {
+    match s.strip_prefix(b"-") {
+        Some(digits) => i32::try_from(-i64::from(number(digits)?)).ok(),
+        None => i32::try_from(number(s)?).ok(),
+    }
 }
 
 fn number(s: &[u8]) -> Option<u32> {
@@ -202,7 +247,11 @@ impl Command {
                 b'p' => cmd.placement_id = number(val)?,
                 b'x' => cmd.x = number(val)?,
                 b'y' => cmd.y = number(val)?,
-                b'z' if number(val)? <= i32::MAX as u32 => cmd.z = number(val)?,
+                b'w' => cmd.w = number(val)?,
+                b'h' => cmd.h = number(val)?,
+                b'X' => cmd.offset_x = number(val)?,
+                b'Y' => cmd.offset_y = number(val)?,
+                b'z' => cmd.z = signed(val)?,
                 b'o' if val == b"z" => cmd.compressed = true,
                 b'S' => cmd.size = number(val)?,
                 b'C' if val == b"0" || val == b"1" => cmd.no_move = val == b"1",
@@ -210,13 +259,11 @@ impl Command {
                 b'q' if number(val)? <= 2 => {}
                 b'd' if val.len() == 1 => cmd.delete = val[0],
                 // These defaults are harmless. Reject features we cannot replay.
-                b'U' | b'w' | b'h' | b'X' | b'Y' if val == b"0" => {}
+                b'U' if val == b"0" => {}
                 _ => return None,
             }
         }
-        // x and y select cells only for a delete; elsewhere they crop.
-        let crops = cmd.action != b'd' && (cmd.x != 0 || cmd.y != 0);
-        (!crops && (cmd.id == 0 || cmd.number == 0)).then_some(cmd)
+        (cmd.id == 0 || cmd.number == 0).then_some(cmd)
     }
 }
 
@@ -400,6 +447,73 @@ fn decode(cmd: &Command, mut data: Vec<u8>) -> Option<(u32, u32, Vec<u8>)> {
     Some((w, h, rgba))
 }
 
+/// Where a put draws its image, relative to the top left of the cursor's
+/// cell, and the cells it covers.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+struct Layout {
+    /// The source rectangle, x, y, w and h: the crop within the image.
+    src: [u32; 4],
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    cols: i64,
+    rows: i64,
+}
+
+/// kitty's placement geometry, in integers. The crop is the intersection of
+/// x, y, w, h (0 meaning the rest of the image) with the image. The image
+/// starts X, Y pixels into the cell, at most a pixel short of its edge, as
+/// kitty clamps them. c and r count whole cells from the cell's edge, so an
+/// offset shrinks the space they give. The crop keeps its aspect ratio: with
+/// one of c and r the other side follows it, and with both it is fitted
+/// inside and centered. The cells covered, which the cursor moves past, run
+/// from the cell to the far edge of that space.
+fn layout(cmd: &Command, width: u32, height: u32, cell: (i32, i32)) -> Option<Layout> {
+    let (cw, ch) = (i64::from(cell.0), i64::from(cell.1));
+    let src_x = cmd.x.min(width);
+    let src_y = cmd.y.min(height);
+    let src_w = if cmd.w == 0 { width } else { cmd.w }.min(width - src_x);
+    let src_h = if cmd.h == 0 { height } else { cmd.h }.min(height - src_y);
+    let (sw, sh) = (i64::from(src_w), i64::from(src_h));
+    let ox = i64::from(cmd.offset_x).min(cw - 1).max(0);
+    let oy = i64::from(cmd.offset_y).min(ch - 1).max(0);
+    // Bound target extents before multiplying by source dimensions. A
+    // custom font can have much larger cell metrics than the built-in one.
+    let (target_w, target_h) = (i64::from(cmd.cols) * cw - ox, i64::from(cmd.rows) * ch - oy);
+    if target_w > MAX_EXTENT || target_h > MAX_EXTENT {
+        return None;
+    }
+    let empty = sw == 0 || sh == 0;
+    let (bw, bh) = match (cmd.cols, cmd.rows) {
+        _ if empty => (target_w.max(0), target_h.max(0)),
+        (0, 0) => (sw, sh),
+        (_, 0) => (target_w, (target_w * sh / sw).max(1)),
+        (0, _) => ((target_h * sw / sh).max(1), target_h),
+        (_, _) => (target_w, target_h),
+    };
+    if bw > MAX_EXTENT || bh > MAX_EXTENT {
+        return None;
+    }
+    // Preserve aspect ratio inside the requested rectangle, centered.
+    let (w, h) = if empty {
+        (0, 0)
+    } else if bw * sh <= bh * sw {
+        (bw, (bw * sh / sw).max(1))
+    } else {
+        ((bh * sw / sh).max(1), bh)
+    };
+    Some(Layout {
+        src: [src_x, src_y, src_w, src_h],
+        x: ox + (bw - w) / 2,
+        y: oy + (bh - h) / 2,
+        w,
+        h,
+        cols: (ox + bw + cw - 1) / cw,
+        rows: (oy + bh + ch - 1) / ch,
+    })
+}
+
 impl Graphics {
     pub fn abort(&mut self) {
         self.pending = None;
@@ -553,29 +667,7 @@ impl Graphics {
         let image = &self.images[index];
         let (image_key, id, width, height) = (image.key, image.id, image.width, image.height);
         let pixels = Rc::clone(&image.pixels);
-        let (cw, ch) = (i64::from(cell.0), i64::from(cell.1));
-        let (sw, sh) = (i64::from(width), i64::from(height));
-        // Bound target extents before multiplying by source dimensions. A
-        // custom font can have much larger cell metrics than the built-in one.
-        let (target_w, target_h) = (i64::from(cmd.cols) * cw, i64::from(cmd.rows) * ch);
-        if target_w > MAX_EXTENT || target_h > MAX_EXTENT {
-            return None;
-        }
-        let (bw, bh) = match (cmd.cols, cmd.rows) {
-            (0, 0) => (sw, sh),
-            (_, 0) => (target_w, (target_w * sh / sw).max(1)),
-            (0, _) => ((target_h * sw / sh).max(1), target_h),
-            (_, _) => (target_w, target_h),
-        };
-        if bw > MAX_EXTENT || bh > MAX_EXTENT {
-            return None;
-        }
-        // Preserve aspect ratio inside the requested rectangle, centered.
-        let (w, h) = if bw * sh <= bh * sw {
-            (bw, (bw * sh / sw).max(1))
-        } else {
-            ((bh * sw / sh).max(1), bh)
-        };
+        let Layout { src, x, y, w, h, cols, rows } = layout(cmd, width, height, cell)?;
         // kitty ignores a placement id on an image without an id.
         let placement_id = if id == 0 { 0 } else { cmd.placement_id };
         let existing = match placement_id {
@@ -585,7 +677,10 @@ impl Graphics {
                 .iter()
                 .position(|p| p.image == image_key && p.placement_id == placement_id),
         };
-        if existing.is_none() && self.placements.len() >= MAX_PLACEMENTS {
+        // An empty crop shows nothing: its put still moves the cursor, and
+        // replaces the placement it names, but leaves nothing to draw.
+        let visible = w > 0 && h > 0;
+        if visible && existing.is_none() && self.placements.len() >= MAX_PLACEMENTS {
             return None;
         }
         let key = match existing {
@@ -593,32 +688,32 @@ impl Graphics {
             None => self.tick(),
         };
         self.images[index].atime = self.tick();
-        let (cols, rows) = ((bw + cw - 1) / cw, (bh + ch - 1) / ch);
-        let y = row as i64 * ch + (bh - h) / 2;
-        self.placements.push(Placement {
-            pixels,
-            width,
-            height,
-            x: col as i64 * cw + (bw - w) / 2,
-            w,
-            h,
-            slices: {
-                let mut slices = Vec::new();
-                append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
-                slices
-            },
-            image: image_key,
-            id,
-            key,
-            placement_id,
-            z: cmd.z,
-            col: col as i64,
-            cols,
-            row: row as i64,
-            rows,
-        });
-        // kitty's draw order: z-index, then image and placement creation.
-        self.placements.sort_by_key(|p| (p.z, p.image, p.key));
+        if visible {
+            let (ch, y) = (i64::from(cell.1), row as i64 * i64::from(cell.1) + y);
+            let mut slices = Vec::new();
+            append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
+            self.placements.push(Placement {
+                pixels,
+                width,
+                height,
+                src,
+                x: col as i64 * i64::from(cell.0) + x,
+                w,
+                h,
+                slices,
+                image: image_key,
+                id,
+                key,
+                placement_id,
+                z: cmd.z,
+                col: col as i64,
+                cols,
+                row: row as i64,
+                rows,
+            });
+            // kitty's draw order: z-index, then image and placement creation.
+            self.placements.sort_by_key(|p| (p.z, p.image, p.key));
+        }
         if cmd.no_move {
             None
         } else {
@@ -778,3 +873,5 @@ impl Graphics {
 mod tests;
 #[cfg(test)]
 mod zlib_tests;
+#[cfg(test)]
+mod geometry_tests;

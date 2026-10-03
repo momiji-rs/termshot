@@ -38,7 +38,8 @@ struct Cell {
     br: u8,
     bg: u8,
     bb: u8,
-    /// BOLD, UNDERLINE, DOUBLE_UNDERLINE and STRIKE bits; draw.c draws them.
+    /// BOLD, UNDERLINE, DOUBLE_UNDERLINE, STRIKE, ITALIC, WIDE, TAIL and
+    /// OPAQUE bits, as ATTR_* in draw.c.
     attrs: u8,
 }
 
@@ -54,6 +55,12 @@ const WIDE: u8 = 16;
 const TAIL: u8 = 32;
 /// draw.c slants the glyph; box drawing and blocks stay upright.
 const ITALIC: u8 = 64;
+/// The background hides an image placed below the cell backgrounds
+/// (z < -2^30). Reverse video and the block cursor set it as kitty treats
+/// those cells, even in the default colour; before drawing,
+/// `opaque_backgrounds` sets it on every other colour, so draw.c needs no
+/// copy of DEFAULT_BG.
+const OPAQUE: u8 = 128;
 
 /// The colours and attributes SGR sets, applied to each printed character.
 /// Reverse, dim and conceal change the cell's colours as it is printed.
@@ -81,7 +88,8 @@ impl Pen {
         if self.conceal {
             fg = bg;
         }
-        Cell { ch: ' ' as u32, fr: fg.0, fg: fg.1, fb: fg.2, br: bg.0, bg: bg.1, bb: bg.2, attrs: self.attrs }
+        let attrs = self.attrs | if self.reverse { OPAQUE } else { 0 };
+        Cell { ch: ' ' as u32, fr: fg.0, fg: fg.1, fb: fg.2, br: bg.0, bg: bg.1, bb: bg.2, attrs }
     }
 }
 
@@ -1199,6 +1207,17 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
     Grid { cells: screen.into_cells(), cursor, cursor_shape, images }
 }
 
+/// Mark every background that is not the default colour OPAQUE, for draw.c.
+/// kitty compares the colour's value, so a background set to the default
+/// colour explicitly is a default one.
+fn opaque_backgrounds(cells: &mut [Cell]) {
+    for cell in cells {
+        if (cell.br, cell.bg, cell.bb) != DEFAULT_BG {
+            cell.attrs |= OPAQUE;
+        }
+    }
+}
+
 /// Draw the cursor as a block in reverse video over the cell at (row, col),
 /// or over both cells of the wide character it is on.
 fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
@@ -1215,6 +1234,7 @@ fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
         };
         (cell.fr, cell.fg, cell.fb) = fg;
         (cell.br, cell.bg, cell.bb) = bg;
+        cell.attrs |= OPAQUE;
     }
 }
 
@@ -2004,6 +2024,7 @@ fn main() -> ExitCode {
                     image_views.push(graphics::ImageView::solid(&mark_pixel, x, y, w, h));
                 }
             }
+            opaque_backgrounds(&mut cells);
             let out = if out == "-" { "/dev/stdout" } else { out };
             let Ok(out) = std::ffi::CString::new(out) else {
                 return cleanup(2, "output path contains a nul byte".into());
