@@ -27,6 +27,9 @@ const MAX_COMPOSITE_DEPTH: u32 = 16;
 /// The most faces a hint or an error lists.
 const MAX_LISTED: usize = 32;
 
+/// The most characters of a face name that are read and printed.
+const NAME_CHARS: usize = 100;
+
 /// The most faces a collection may hold. Real ones hold tens; the bound keeps
 /// a search by name, which reads each face's name table, short.
 const MAX_FACES: usize = 1024;
@@ -54,12 +57,19 @@ pub struct Spec {
 
 impl Spec {
     /// A file named `a#1` is that file; otherwise `a.ttc#1` is face 1 of
-    /// `a.ttc`. Decided once, before any output is created, so that
-    /// creating one can't change what a value means.
+    /// `a.ttc`. The path is the longest prefix before a `#` that is a file,
+    /// so a face name may hold `#` too, as in `a.ttc#Foo #1`; with none, it
+    /// ends at the first `#`. Decided once, before any output is created, so
+    /// that creating one can't change what a value means.
     pub fn parse(value: &str) -> Spec {
-        match value.rsplit_once('#') {
-            Some((path, face)) if !Path::new(value).exists() => Spec { path: path.into(), face: Some(face.into()) },
-            _ => Spec { path: value.into(), face: None },
+        if Path::new(value).exists() {
+            return Spec { path: value.into(), face: None };
+        }
+        let mut cuts = value.rmatch_indices('#').map(|(at, _)| at);
+        let first = value.find('#');
+        match cuts.find(|&at| Path::new(&value[..at]).is_file()).or(first) {
+            Some(at) => Spec { path: value[..at].into(), face: Some(value[at + 1..].into()) },
+            None => Spec { path: value.into(), face: None },
         }
     }
 }
@@ -212,6 +222,8 @@ fn names(d: &[u8], start: usize) -> Vec<String> {
 /// One name from the name table: Windows US English first, then any Windows
 /// or Unicode record, then an ASCII Macintosh one. A damaged table is no name;
 /// control characters are replaced, as the name is printed to a terminal.
+/// Only a record that beats the best so far is decoded, and only its first
+/// NAME_CHARS characters, so a hostile table costs a scan of its records.
 fn name(d: &[u8], start: usize, id: u16) -> Option<String> {
     let table = table(d, start, b"name").ok()??.data;
     let count = u16_at(table, 2).ok()? as usize;
@@ -224,22 +236,37 @@ fn name(d: &[u8], start: usize, id: u16) -> Option<String> {
         if field(6) != id {
             continue;
         }
-        let offset = strings + field(10) as usize;
-        let Some(bytes) = table.get(offset..offset + field(8) as usize) else { continue };
-        let (rank, text) = match (platform, encoding) {
-            (3, 1 | 10) | (0, _) => {
-                let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]])).collect();
-                let rank = if platform == 3 && language == 0x0409 { 0 } else if platform == 3 { 1 } else { 2 };
-                (rank, String::from_utf16_lossy(&units))
-            }
-            (1, 0) if bytes.is_ascii() => (3, bytes.iter().map(|&b| b as char).collect()),
+        let rank = match (platform, encoding) {
+            (3, 1 | 10) if language == 0x0409 => 0,
+            (3, 1 | 10) => 1,
+            (0, _) => 2,
+            (1, 0) => 3,
             _ => continue,
         };
-        if best.as_ref().map_or(true, |(best, _)| rank < *best) {
-            best = Some((rank, text));
+        if best.as_ref().map_or(false, |(best, _)| rank >= *best) {
+            continue;
+        }
+        let offset = strings + field(10) as usize;
+        let Some(bytes) = table.get(offset..offset + field(8) as usize) else { continue };
+        let text = if rank == 3 {
+            // Up to 4 bytes a character in UTF-16; 1 in ASCII.
+            let bytes = &bytes[..bytes.len().min(NAME_CHARS)];
+            if !bytes.is_ascii() {
+                continue;
+            }
+            bytes.iter().map(|&b| b as char).collect()
+        } else {
+            let bytes = &bytes[..bytes.len().min(4 * NAME_CHARS)];
+            let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]])).collect();
+            String::from_utf16_lossy(&units)
+        };
+        best = Some((rank, text));
+        if rank == 0 {
+            break;
         }
     }
-    let text: String = best?.1.chars().take(100).map(|c| if c.is_control() { '\u{fffd}' } else { c }).collect();
+    let text: String =
+        best?.1.chars().take(NAME_CHARS).map(|c| if c.is_control() { '\u{fffd}' } else { c }).collect();
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
 }
@@ -583,16 +610,21 @@ pub mod tests {
     /// A collection of the fonts, each with a name table naming it as given.
     /// Each face gets its own copy of every table.
     pub fn collection(faces: &[(&[u8], &str)]) -> Vec<u8> {
+        let faces: Vec<_> = faces.iter().map(|&(font, name)| (font, name_table(name))).collect();
+        collection_of(&faces)
+    }
+
+    /// The same, with each face's name table as given.
+    fn collection_of(faces: &[(&[u8], Vec<u8>)]) -> Vec<u8> {
         let mut out = [&b"ttcf"[..], &[0, 1, 0, 0], &(faces.len() as u32).to_be_bytes()].concat();
         out.resize(12 + 4 * faces.len(), 0);
-        for (i, (font, name)) in faces.iter().enumerate() {
+        for (i, (font, names)) in faces.iter().enumerate() {
             let base = out.len();
             out[12 + 4 * i..16 + 4 * i].copy_from_slice(&(base as u32).to_be_bytes());
             out.extend_from_slice(font);
             out.resize((out.len() + 3) & !3, 0);
-            let names = name_table(name);
             let names_at = out.len();
-            out.extend(&names);
+            out.extend_from_slice(names);
             for t in 0..u16_at(font, 4).unwrap() as usize {
                 let record = base + 12 + 16 * t;
                 let (offset, len) = if &out[record..record + 4] == b"name" {
@@ -712,6 +744,40 @@ pub mod tests {
         let ttc = collection(&[(&font, "Bad\x1b[2JName\n"), (&font, "")]);
         let hint = choose(ttc, None, "c.ttc").unwrap().hint.unwrap();
         assert!(hint.contains("#0  Bad\u{fffd}[2JName\u{fffd}\n  #1  (no name)"), "{hint}");
+    }
+
+    #[test]
+    fn a_huge_name_table_costs_one_pass_over_its_records() {
+        // The most records, each a 64 KiB name. The string offset is a u16,
+        // so the strings overlap the records, as a hostile file may.
+        let records = u16::MAX;
+        let mut table = [be16(0), be16(records), be16(0)].concat();
+        for _ in 0..records {
+            table.extend([3, 1, 0x0411, 4, u16::MAX - 1, 0].into_iter().flat_map(be16));
+        }
+        let font = fs::read(FONT).unwrap();
+        let faces: Vec<_> = (0..16).map(|_| (&font[..], table.clone())).collect();
+        let ttc = collection_of(&faces);
+        let started = Instant::now();
+        let error = choose(ttc, Some("none"), "c.ttc").err().unwrap();
+        let elapsed = started.elapsed();
+        let listed = error.lines().nth(1).unwrap().trim_start().strip_prefix("#0  ").unwrap();
+        assert!(listed.chars().count() <= NAME_CHARS, "{listed}");
+        // Decoding every record would be 4 GiB a face.
+        assert!(elapsed.as_secs() < 5, "took {elapsed:?}");
+    }
+
+    #[test]
+    fn a_face_name_may_hold_a_hash() {
+        let font = fs::read(FONT).unwrap();
+        let path = "target/test/hash-names.ttc";
+        fs::write(path, collection(&[(&font, "Foo"), (&font, "Foo #1")])).unwrap();
+        let spec = Spec::parse(&format!("{path}#Foo #1"));
+        assert_eq!(spec, Spec { path: path.into(), face: Some("Foo #1".into()) });
+        assert_eq!(load(&spec).unwrap().face, Some((1, "Foo #1".into())));
+        // With no such file, the path ends at the first #.
+        let spec = Spec::parse("target/test/absent.ttc#Foo #1");
+        assert_eq!(spec, Spec { path: "target/test/absent.ttc".into(), face: Some("Foo #1".into()) });
     }
 
     #[test]
