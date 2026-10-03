@@ -81,6 +81,10 @@ fn ascii_scroll_batches_match_individual_prints() {
                             s.pen.attrs = BOLD | UNDERLINE | STRIKE;
                             s.pen.dim = true;
                             s.pen.reverse = true;
+                            // Keep an image across both scroll margins so the
+                            // optimized text path must preserve its outside parts.
+                            s.graphics.command(format!("a=T,f=24,s=1,v=1,c={rows},r={rows},C=1;/wAA").as_bytes(),
+                                               0, 0, s.cell_size, rows);
                             s
                         };
                         let bytes: Vec<u8> = (0..len).map(|i| b'!' + (i % 94) as u8).collect();
@@ -89,6 +93,8 @@ fn ascii_scroll_batches_match_individual_prints() {
                         for byte in bytes { reference.print(u32::from(byte)); }
                         assert_eq!((fast.row, fast.col, fast.pending, fast.last, fast.last_at),
                                    (reference.row, reference.col, reference.pending, reference.last, reference.last_at));
+                        assert_eq!(fast.graphics.placements, reference.graphics.placements,
+                                   "cols={cols} rows={rows} wrap={wrap} alternate={alternate} len={len}");
                         fast.combine(0x0301);
                         reference.combine(0x0301);
                         for (a, b) in fast.into_cells().iter().zip(reference.into_cells()) {
@@ -97,6 +103,28 @@ fn ascii_scroll_batches_match_individual_prints() {
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn row_rotation_uses_logical_scroll_distance_for_images() {
+    for up in [false, true] {
+        for n in [0, 1, 2, 3, 6, 7, usize::MAX] {
+            let setup = || {
+                let mut s = Screen::new(5, 5, Lf::Index);
+                s.graphics.command(b"a=T,f=24,s=1,v=1,c=3,r=3,C=1;/wAA", 0, 1, s.cell_size, 5);
+                s
+            };
+            let (mut fast, mut reference) = (setup(), setup());
+            fast.rotate_rows(1, 3, n, up);
+            // Exhausting the region removes the contained placement.
+            // Rotating by a multiple of 3 must still clip.
+            for _ in 0..n.min(3) {
+                if up { reference.scroll_up(1, 3, 1); }
+                else { reference.scroll_down(1, 3, 1); }
+            }
+            assert_eq!(fast.graphics.placements, reference.graphics.placements, "n={n} up={up}");
         }
     }
 }
@@ -271,7 +299,7 @@ fn private_and_unknown_csi_are_skipped() {
 
 /// The grid with the cursor drawn where the log leaves it, if shown.
 fn with_cursor(s: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
-    let Grid { mut cells, cursor } = replay(s, cols, rows, Lf::Index);
+    let Grid { mut cells, cursor, .. } = replay(s, cols, rows, Lf::Index);
     if let Some((row, col)) = cursor {
         draw_cursor(&mut cells, cols, row, col);
     }

@@ -50,7 +50,7 @@ ar rcs "$out/libpng_read.a" "$out/png_read.o"
 # shellcheck disable=SC2086
 cc tests/glyphs.c src/deflate.c "$out/png_read.o" -o "$out/glyphs" -O2 -Wno-deprecated-declarations \
     -I src -I third_party/stb -lm ${CFLAGS:-}
-"$out/glyphs" "$font" "$out/glyphs.png"
+"$out/glyphs" "$font" "$out/glyphs.png" "$out/hollow-A.ttf" "$out/fb-reference.png"
 
 echo "== cli"
 fail=0
@@ -105,6 +105,17 @@ check "options match the original form" 'cmp -s "$out/options.png" "$out/legacy.
 # A fallback font only adds the characters the first lacks.
 ./termshot --fallback-font "$font" "$log" "$out/fallback.png"
 check "an unused fallback font changes nothing" 'cmp -s "$out/fallback.png" "$out/legacy.png"'
+# The glyph harness wrote a copy of the font with no outline for 'A', and the
+# PNG draw_png makes of A with it and the font as the fallback. Without a
+# fallback that A is a box; with one the CLI must make that same PNG. B is
+# the same either way. tests/glyphs.c checks where the fallback's glyphs land.
+printf 'B' | ./termshot --size 1x1 --cursor none - "$out/fb-plain.png"
+printf 'B' | ./termshot --size 1x1 --cursor none --font "$out/hollow-A.ttf" - "$out/fb-b.png"
+printf 'A' | ./termshot --size 1x1 --cursor none --font "$out/hollow-A.ttf" - "$out/fb-tofu.png"
+printf 'A' | ./termshot --size 1x1 --cursor none --font "$out/hollow-A.ttf" --fallback-font "$font" - "$out/fb-drawn.png"
+check "a font missing only A draws B as the font does" 'cmp -s "$out/fb-b.png" "$out/fb-plain.png"'
+check "--fallback-font draws a glyph the font lacks" '! cmp -s "$out/fb-drawn.png" "$out/fb-tofu.png"'
+check "--fallback-font draws it as draw_png does" 'cmp -s "$out/fb-drawn.png" "$out/fb-reference.png"'
 # A face in a collection: the unit tests write $ttc, JetBrains Mono as "Face A"
 # and a taller copy as "Face B".
 ttc=$out/collection.ttc
@@ -253,4 +264,16 @@ if [ "$mode" = update ]; then
 else
     "$out/golden" || fail=1
 fi
+echo "== kitty graphics pixels"
+rustc --edition 2021 tests/graphics.rs -o "$out/graphics" -L native="$out" -l static=png_read
+"$out/graphics"
+
+# Exercise the production PNG decoder, including allocation quota failures.
+cc tests/image.c -I third_party/stb -O2 -Wno-unused-function ${CFLAGS:-} -o "$out/image"
+"$out/image"
+
+echo "== output aliases"
+rustc --edition 2021 tests/output_aliases.rs -o "$out/output_aliases"
+"$out/output_aliases"
+
 exit "$fail"

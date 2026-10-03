@@ -123,7 +123,9 @@ tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 --cursor 
 
 To check what a screen shows rather than how it looks (in a test, or as an agent), write it as
 text. It is laid out as `tmux capture-pane -p` prints it: a line per row, trailing spaces
-trimmed. Without a PNG no font is read, so it takes about a tenth of the time:
+trimmed. For logs without graphics, omitting the PNG skips font loading and takes about
+a tenth of the time. Kitty graphics still need font metrics to replay cursor movement,
+even for text/JSON-only output; images themselves are not included in these formats:
 
 ```sh
 ./termshot --text - session.pty | grep -q 'Saved'        # text only, to stdout
@@ -178,6 +180,41 @@ uses the first without the hint. A face that doesn't exist, or a name that two f
 refused with the list (exit 1), and `-v` prints the face used. If the file's own name has a
 `#` in it, it is read as that file.
 
+## Images in PTY logs
+
+Kitty graphics sent inline with `a=T,t=d` render above the text: RGB (`f=24`),
+RGBA (`f=32`, the default), and PNG (`f=100`), including `m=1`/`m=0` chunks.
+Images start at the cursor, use their native pixel size or fit a `c`/`r` cell
+rectangle while preserving aspect ratio, and blend alpha over the existing
+screen. Scaling uses deterministic nearest-neighbor sampling. Cell dimensions
+come from the selected font and `--px`. `C=1` keeps the cursor in place;
+otherwise it advances by the placement's columns and rows, clamped to the
+screen/scroll area's bottom and right edges.
+
+`a=d` deletes all placements; `d=i`/`d=I,i=...` deletes by image ID, optionally
+restricted with `p`. Retransmitting an ID replaces its image. Nonnegative `z`
+orders overlays. Only images wholly inside a scrolling region move and clip
+at its edges; images crossing a margin stay stationary. Full-screen erase/reset
+clears images. Explicit image IDs must be nonzero; omitting `i` is valid. Main and alternate screens keep
+separate images. See [the regression evidence](docs/kitty-graphics.md).
+
+This is a subset, not full kitty emulation: Sixel, file/shared-memory transfer,
+separate transmit/put (`a=t`/`a=p`), compressed raw pixels (`o=z`), source cropping,
+pixel offsets, negative z-index, animation, relative placements and Unicode
+placeholders are not supported. Unsupported or malformed commands are ignored
+without printing their payload. PNG images may be compressed internally as usual.
+The log must contain the original escape sequences and image bytes; a plain
+`tmux capture-pane` text capture cannot recover them. This does not make every
+image-using TUI capture compatible automatically. Sixel remains tracked in
+[#41](https://github.com/momiji-rs/termshot/issues/41); advanced kitty work is
+tracked in [#44](https://github.com/momiji-rs/termshot/issues/44).
+
+Limits per screen are 1,024 placements and 16 MiB of retained RGBA pixels;
+each upload is limited to 16 MiB of decoded payload and 8,192 pixels per source
+axis (at most 4,194,304 source pixels). A display rectangle is limited to
+16,777,216 pixels per axis. The PNG decoder has a separate 64 MiB allocation
+budget, including inflation; over-limit commands are discarded.
+
 ## Samples
 
 `examples/reply-sent.pty` and `examples/draft-ready.pty` are captures from the [crisp-tui](https://github.com/solcreek/crisp-tui) demo inbox. The customers and messages are fake. At pixel height 48 the image is 2200×1440.
@@ -211,5 +248,5 @@ See [CHANGELOG.md](CHANGELOG.md) for notable changes.
 
 The program is MIT. Two things next to it keep their own terms:
 
-- `third_party/stb/` is [stb](https://github.com/nothings/stb) `stb_truetype.h` 1.26 and `stb_image_write.h` 1.16, public domain. `stb_image.h` 2.30 is used only by the tests, to decode PNGs. Local writer hooks and fixes are documented in [CHANGES.md](third_party/stb/CHANGES.md).
+- `third_party/stb/` is [stb](https://github.com/nothings/stb) `stb_truetype.h` 1.26 and `stb_image_write.h` 1.16, public domain. `stb_image.h` 2.30 decodes inline PNG images and test output; production enables only in-memory PNG decoding with bounded allocations. Local writer hooks and fixes are documented in [CHANGES.md](third_party/stb/CHANGES.md).
 - `third_party/jetbrains-mono/` is JetBrains Mono Regular, [SIL Open Font License 1.1](third_party/jetbrains-mono/OFL.txt).

@@ -7,6 +7,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Replay kitty inline graphics (`a=T,t=d`) in RGB, RGBA and PNG formats,
+  including chunked uploads, alpha blending, cell-sized placements, native
+  pixel sizing, image-ID replacement and deletion (#41). Images track scrolling
+  and alternate screens. Unsupported graphics features, including Sixel and
+  external-file transfers, remain ignored; see the README for the supported
+  subset and resource limits.
+
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so
@@ -56,6 +63,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (DECTCEM), as full-screen programs and progress bars often do.
 
 ### Fixed
+
+- Output collision checks follow dangling symlinks and compare existing file
+  identities, rejecting hard-link aliases of outputs, logs or fonts before
+  writing (#43 review).
+
+- ASCII autowrap and skipped-row batching now scroll images alongside text;
+  whole-region skips discard contained image pixels even when row-storage rotation is
+  zero modulo the region height (#43 review).
+
+- Kitty scrolling moves only placements wholly inside the affected region,
+  clipping them at its edges. Images crossing either margin remain stationary,
+  including insert/delete line and reverse index (#43 review).
+- Explicit kitty image ID `i=0` is rejected; omitting the ID remains valid.
 
 - U+2800 BRAILLE PATTERN BLANK, which TUIs such as btop use for empty graph
   dots, and the line and paragraph separators U+2028 and U+2029 drew as

@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 mod font;
+mod graphics;
 mod unicode;
 #[rustfmt::skip]
 mod unicode_tables;
@@ -118,6 +119,11 @@ impl Cell {
 }
 
 extern "C" {
+    fn draw_cell_size(font: *const u8, font_start: i32, px: f64, w: *mut i32, h: *mut i32) -> i32;
+    fn draw_png_images(cells: *const Cell, cols: i32, rows: i32, font: *const u8, font_start: i32,
+        fallback: *const u8, fallback_start: i32, font_size: f64, out_path: *const std::ffi::c_char,
+        verbose: i32, images: *const graphics::ImageView, count: usize) -> i32;
+    #[cfg(test)]
     fn draw_png(
         cells: *const Cell,
         cols: i32,
@@ -185,6 +191,9 @@ impl Saved {
 /// character wraps first, and most other controls cancel the wrap (xterm's
 /// model).
 struct Screen {
+    graphics: graphics::Graphics,
+    other_graphics: graphics::Graphics,
+    cell_size: (i32, i32),
     /// Rows of cells in storage order; `map` gives the storage row of each
     /// screen row, so scrolling rotates `map` instead of moving cells.
     cells: Vec<Cell>,
@@ -225,6 +234,9 @@ struct Screen {
 impl Screen {
     fn new(cols: usize, rows: usize, lf: Lf) -> Self {
         Self {
+            graphics: graphics::Graphics::default(),
+            other_graphics: graphics::Graphics::default(),
+            cell_size: (1, 1),
             cells: vec![Cell::blank(); cols * rows],
             map: (0..rows).collect(),
             other: vec![Cell::blank(); cols * rows],
@@ -350,17 +362,31 @@ impl Screen {
         self.mend_row(self.row);
     }
 
+    /// Rotate row storage and move graphics together. Pixel clipping uses the
+    /// logical distance, not the rotation modulo. After a whole region has
+    /// scrolled out, additional distance cannot change its surviving pixels.
+    fn rotate_rows(&mut self, top: usize, bottom: usize, n: usize, up: bool) {
+        let height = bottom + 1 - top;
+        let distance = n.min(height) as i64;
+        self.graphics.scroll(top, bottom, if up { -distance } else { distance }, self.cell_size.1);
+        if up {
+            self.map[top..=bottom].rotate_left(n % height);
+        } else {
+            self.map[top..=bottom].rotate_right(n % height);
+        }
+    }
+
     /// Move rows top..=bottom up by n, blanking the n rows that open at the bottom.
     fn scroll_up(&mut self, top: usize, bottom: usize, n: usize) {
         let n = n.min(bottom + 1 - top);
-        self.map[top..=bottom].rotate_left(n);
+        self.rotate_rows(top, bottom, n, true);
         self.erase_rows(bottom + 1 - n, bottom + 1);
     }
 
     /// Move rows top..=bottom down by n, blanking the n rows that open at the top.
     fn scroll_down(&mut self, top: usize, bottom: usize, n: usize) {
         let n = n.min(bottom + 1 - top);
-        self.map[top..=bottom].rotate_right(n);
+        self.rotate_rows(top, bottom, n, false);
         self.erase_rows(top, top + n);
     }
 
@@ -431,6 +457,7 @@ impl Screen {
                     self.save_cursor();
                     self.use_alternate(true, false);
                     self.erase_rows(0, self.rows);
+                    self.graphics = graphics::Graphics::default();
                 }
             }
             1049 => {
@@ -450,8 +477,12 @@ impl Screen {
             return;
         }
         if clear_first {
+            self.graphics = graphics::Graphics::default();
             self.erase_rows(0, self.rows);
         }
+        self.graphics.abort();
+        self.other_graphics.abort();
+        std::mem::swap(&mut self.graphics, &mut self.other_graphics);
         std::mem::swap(&mut self.cells, &mut self.other);
         std::mem::swap(&mut self.map, &mut self.other_map);
         self.on_alternate = on;
@@ -585,7 +616,7 @@ impl Screen {
                     let height = self.bottom + 1 - self.top;
                     let skip_rows = (text.len() / self.cols).saturating_sub(height);
                     if skip_rows > 0 {
-                        self.map[self.top..=self.bottom].rotate_left(skip_rows % height);
+                        self.rotate_rows(self.top, self.bottom, skip_rows, true);
                         text = &text[skip_rows * self.cols..];
                     }
                 }
@@ -594,7 +625,7 @@ impl Screen {
                     // The entire incoming row is overwritten below; avoid
                     // clearing it just before assigning every cell again.
                     self.pending = false;
-                    self.map[self.top..=self.bottom].rotate_left(1);
+                    self.rotate_rows(self.top, self.bottom, 1, true);
                 } else {
                     self.index();
                 }
@@ -743,7 +774,10 @@ impl Screen {
                         self.erase_rows(0, self.row);
                         self.erase(line.start, cursor + 1);
                     }
-                    2 => self.erase_rows(0, self.rows),
+                    2 => {
+                        self.erase_rows(0, self.rows);
+                        self.graphics.placements.clear();
+                    },
                     // 3 clears only the scrollback, which termshot does not keep.
                     _ => {}
                 }
@@ -989,16 +1023,23 @@ fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
 /// The screen a log leaves: its cells in screen order, and the cursor as
 /// (row, col) unless the log hid it.
 struct Grid {
+    images: Vec<graphics::Placement>,
     cells: Vec<Cell>,
     cursor: Option<(usize, usize)>,
 }
 
+#[cfg(test)]
 fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
+    replay_sized(data, cols, rows, lf, (1, 1))
+}
+
+fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, i32)) -> Grid {
     let data = match lf {
         Lf::Newline => strip_final_bare_lf(data),
         Lf::Index => data,
     };
     let mut screen = Screen::new(cols, rows, lf);
+    screen.cell_size = cell_size;
     // Reuse the fixed parameter buffer across sequences; only len needs resetting.
     let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
     let mut i = 0;
@@ -1019,6 +1060,22 @@ fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
             i += 2;
             match kind {
                 b'[' => i = csi(&mut screen, &mut params, data, i),
+                b'_' if data.get(i) == Some(&b'G') => {
+                    let end = skip_string(data, i);
+                    // Only ST commits a graphics command; BEL/CAN/SUB, another
+                    // escape, or EOF discard it and any incomplete upload.
+                    if end >= i + 3 && data.get(end - 2..end) == Some(b"\x1b\\") {
+                        if let Some((dc, dr)) = screen.graphics.command(
+                            &data[i + 1..end - 2], screen.col, screen.row, cell_size, rows,
+                        ) {
+                            screen.col = screen.col.saturating_add(dc).min(cols - 1);
+                            // The protocol leaves overflow positioning implementation-defined.
+                            screen.row = screen.row.saturating_add(dr).min(screen.bottom.max(screen.row));
+                            screen.pending = false;
+                        }
+                    } else { screen.graphics.abort(); }
+                    i = end;
+                }
                 b']' | b'P' | b'_' | b'^' | b'X' => i = skip_string(data, i),
                 // ESC ( B, ESC ) 0, ESC # 8: intermediates, then one final byte.
                 0x20..=0x2f => {
@@ -1051,7 +1108,10 @@ fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
                     screen.tabs[col] = true;
                 }
                 // RIS: full reset.
-                b'c' => screen = Screen::new(cols, rows, lf),
+                b'c' => {
+                    screen = Screen::new(cols, rows, lf);
+                    screen.cell_size = cell_size;
+                },
                 // CAN and SUB cancel the escape.
                 0x18 | 0x1a => {}
                 // Another ESC starts over; other C0 controls still execute.
@@ -1079,7 +1139,8 @@ fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
     // With a wrap pending the cursor stays on the last column, where
     // terminals draw it.
     let cursor = screen.cursor_shown.then_some((screen.row, screen.col));
-    Grid { cells: screen.into_cells(), cursor }
+    let images = std::mem::take(&mut screen.graphics.placements);
+    Grid { cells: screen.into_cells(), cursor, images }
 }
 
 /// Draw the cursor as a block in reverse video over the cell at (row, col),
@@ -1506,18 +1567,48 @@ fn load_fonts(
     Ok((font, fallback))
 }
 
-/// Write a text output to its file, or to stdout for -.
+/// Resolve symlinks component by component, including a dangling final link.
+/// canonicalize alone cannot name a target that an output has yet to create.
+fn output_target(path: &str) -> std::path::PathBuf {
+    use std::path::{Component, Path, PathBuf};
+    if let Ok(path) = fs::canonicalize(path) { return path; }
+    let original = env::current_dir().unwrap_or_default().join(path);
+    let mut parts: std::collections::VecDeque<_> = original.components()
+        .map(|part| part.as_os_str().to_os_string()).collect();
+    let mut resolved = PathBuf::new();
+    let mut links = 0;
+    while let Some(part) = parts.pop_front() {
+        match Path::new(&part).components().next() {
+            Some(Component::CurDir) => continue,
+            Some(Component::ParentDir) => { resolved.pop(); continue; }
+            _ => resolved.push(&part),
+        }
+        if let Ok(target) = fs::read_link(&resolved) {
+            links += 1;
+            // A cyclic or excessive chain cannot be opened either. Leave the
+            // usual preflight open to report the filesystem error, without a loop.
+            if links > 40 { return original; }
+            resolved.pop();
+            if target.is_absolute() { resolved.clear(); }
+            for part in target.components().rev() {
+                parts.push_front(part.as_os_str().to_os_string());
+            }
+        }
+    }
+    resolved
+}
+
 /// Why an output can't be written: it names the same file as another output,
 /// which would overwrite it, or as an input, which would destroy it. One file
 /// can be named many ways (`a`, `./a`, `d/../a`, a symlink), so paths are
-/// compared canonical: the file if it exists, else its directory.
+/// compared by resolved target and (for existing files) device/inode identity.
 fn output_clash(options: &Options) -> Option<String> {
-    let canonical = |path: &str| {
-        let path = std::path::Path::new(path);
-        let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-        fs::canonicalize(path)
-            .or_else(|_| fs::canonicalize(dir).map(|dir| dir.join(path.file_name().unwrap_or_default())))
-            .unwrap_or_else(|_| path.to_path_buf())
+    let same_file = |a: &str, b: &str| {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (fs::metadata(a), fs::metadata(b)) {
+            if (a.dev(), a.ino()) == (b.dev(), b.ino()) { return true; }
+        }
+        output_target(a) == output_target(b)
     };
     fn named<'a>(pairs: [(&'static str, Option<&'a String>); 3]) -> Vec<(&'static str, &'a String)> {
         pairs.into_iter().filter_map(|(name, path)| Some((name, path.filter(|p| *p != "-")?))).collect()
@@ -1527,12 +1618,11 @@ fn output_clash(options: &Options) -> Option<String> {
         spec.as_ref().map(|spec| &spec.path)
     }
     let inputs = named([("<log>", Some(&options.log)), ("--font", font_file(&options.font)), ("--fallback-font", font_file(&options.fallback_font))]);
-    let outputs: Vec<_> = outputs.into_iter().map(|(name, path)| (name, path, canonical(path))).collect();
-    for (i, (name, path, file)) in outputs.iter().enumerate() {
-        if let Some((other, ..)) = outputs[..i].iter().find(|(.., earlier)| earlier == file) {
+    for (i, (name, path)) in outputs.iter().enumerate() {
+        if let Some((other, ..)) = outputs[..i].iter().find(|(_, earlier)| same_file(path, earlier)) {
             return Some(format!("{name} and {other} name the same file, {path}; give each output its own"));
         }
-        if let Some((input, _)) = inputs.iter().find(|(_, input)| canonical(input) == *file) {
+        if let Some((input, _)) = inputs.iter().find(|(_, input)| same_file(path, input)) {
             return Some(format!("{name} {path} is the {input} file; writing it would destroy the input"));
         }
     }
@@ -1628,8 +1718,10 @@ fn main() -> ExitCode {
 
     let font_started = Instant::now();
     let mut font_timings = font::LoadTimings::default();
-    // Only the PNG needs fonts; text and JSON come from the cells alone.
-    let fonts = match options.out.is_some().then(|| load_fonts(&options, profile, &mut font_timings)).transpose() {
+    // Plain text/JSON logs need no fonts. Graphics also need cell metrics,
+    // even without a PNG, because placement can move the text cursor.
+    let needs_fonts = options.out.is_some() || graphics::needs_cell_metrics(&data);
+    let fonts = match needs_fonts.then(|| load_fonts(&options, profile, &mut font_timings)).transpose() {
         Ok(fonts) => fonts,
         Err(error) => return cleanup(1, error),
     };
@@ -1648,7 +1740,14 @@ fn main() -> ExitCode {
 
     let parse_started = Instant::now();
     let input_bytes = data.len();
-    let Grid { mut cells, cursor } = replay(&data, options.cols, options.rows, options.lf);
+    let (mut cell_w, mut cell_h) = (1, 1);
+    if let Some((font, _)) = &fonts {
+        if unsafe { draw_cell_size(font.data.as_ptr(), font.start as i32, options.px, &mut cell_w, &mut cell_h) } == 0 {
+            return cleanup(1, "font metrics unusable".into());
+        }
+    }
+    let Grid { mut cells, cursor, images } = replay_sized(&data, options.cols, options.rows, options.lf, (cell_w, cell_h));
+    let image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);
@@ -1677,7 +1776,7 @@ fn main() -> ExitCode {
                 return cleanup(2, "output path contains a nul byte".into());
             };
             unsafe {
-                draw_png(
+                draw_png_images(
                     cells.as_ptr(),
                     options.cols as i32,
                     options.rows as i32,
@@ -1688,6 +1787,8 @@ fn main() -> ExitCode {
                     options.px,
                     out.as_ptr(),
                     i32::from(options.verbose),
+                    image_views.as_ptr(),
+                    image_views.len(),
                 )
             }
         }

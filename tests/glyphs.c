@@ -6,6 +6,8 @@
      paragraph separators and the blank Braille pattern;
    - a glyph with no outline counts as missing: the fallback font draws it,
      or it is a box when no font has an outline for it;
+   - the fallback's glyph is scaled to the main font's height and centered in
+     its cell or cells, and shrunk to fit when it is too wide;
    - a wide character's glyph is centered over its two cells: the same glyph
      narrow and wide differs only by half a cell, also when both are in one render;
    - an italic glyph keeps its height and leans right by 12 degrees about the
@@ -15,7 +17,14 @@
      box drawing and the box for a missing character upright.
 
    Renders with draw_png, decodes with tests/png_read.c. Built and run by
-   test.sh with the vendored font: ./glyphs <font.ttf> <scratch.png>. */
+   test.sh with the vendored font:
+
+       ./glyphs <font.ttf> <scratch.png> [<hollow.ttf> <reference.png>]
+
+   It writes the font with no outline for 'A' to hollow.ttf, and 'A' drawn
+   from it with font.ttf as the fallback, in the CLI's default colours and
+   size, to reference.png. test.sh checks that the CLI's --fallback-font
+   renders that same PNG. */
 #include "../src/draw.c"
 
 unsigned char *png_read_rgba(const char *path, int *width, int *height);
@@ -147,7 +156,7 @@ static void expect_slant(double px, const char *what, Ink *u, Ink *it) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) return 2;
+    if (argc != 3 && argc != 5) return 2;
     FILE *fp = fopen(argv[1], "rb");
     if (!fp) return 1;
     fseek(fp, 0, SEEK_END);
@@ -175,6 +184,16 @@ int main(int argc, char **argv) {
         return 1;
     }
     unsigned char *hollow = with_empty_glyph(data, len, 'A');
+    if (argc == 5) {
+        FILE *out = fopen(argv[3], "wb");
+        if (!out || fwrite(hollow, 1, (size_t)len, out) != (size_t)len || fclose(out) != 0) {
+            fprintf(stderr, "cannot write %s\n", argv[3]);
+            return 1;
+        }
+        /* main.rs's DEFAULT_FG and DEFAULT_BG, at the default px 48. */
+        Cell a = {.ch = 'A', .fr = 219, .fg = 231, .fb = 247, .br = 17, .bg = 24, .bb = 35};
+        if (draw_png(&a, 1, 1, hollow, 0, data, 0, 48, argv[4], 0) != 0) return 1;
+    }
     unsigned char *hollow_l = with_empty_glyph(data, len, 'l');
     unsigned char *short_font = with_height(data, len, 2), *tall_font = with_height(data, len, 0.5);
 
@@ -221,6 +240,23 @@ int main(int argc, char **argv) {
         expect(f.x1 && abs(f.x0 - a.x0) <= 1 && abs(f.x1 - a.x1) <= 1 && abs(f.y0 - a.y0) <= 1 &&
                    abs(f.y1 - a.y1) <= 1,
                "the fallback draws a glyph the main font has no outline for", px);
+        Ink fw = ink(wide, 4, px);
+        expect(fw.x1 && abs(fw.x0 - b.x0) <= 1 && abs(fw.x1 - b.x1) <= 1 && abs(fw.y0 - b.y0) <= 1 &&
+                   abs(fw.y1 - b.y1) <= 1,
+               "the fallback's wide glyph is centered over both cells", px);
+        /* At twice the size the fallback's 'A' is two cells wide, so it is
+           shrunk back to one; at half the size it is centered, on the
+           baseline. */
+        fallback_font = tall_font;
+        Ink fs = ink(narrow, 3, px);
+        expect(fs.x1 && fs.x0 >= a.cell_w && fs.x1 <= 2 * a.cell_w && abs(fs.x0 - a.x0) <= 1 && abs(fs.x1 - a.x1) <= 1 &&
+                   abs(fs.y0 - a.y0) <= 1 && abs(fs.y1 - a.y1) <= 1,
+               "a fallback glyph too wide for its cell is shrunk to fit", px);
+        fallback_font = short_font;
+        Ink fh = ink(narrow, 3, px);
+        expect((px < 9 && fh.x1 == 0) || (fh.x1 && abs(fh.x0 + fh.x1 - a.x0 - a.x1) <= 2 && abs(fh.y1 - a.y1) <= 1 &&
+                              abs(2 * (fh.x1 - fh.x0) - (a.x1 - a.x0)) <= 2),
+               "a smaller fallback glyph is centered on the baseline", px);
         fallback_font = hollow;
         expect_tofu(ink(narrow, 3, px), 1, px, "an empty glyph in both fonts is a box");
         font = main_font;
@@ -248,7 +284,7 @@ int main(int argc, char **argv) {
         expect(gu.x0 == gi.x0 && gu.x1 == gi.x1 && gu.y0 == gi.y0 && gu.y1 == gi.y1 && gu.top_x0 == gi.top_x0 &&
                    gu.bottom_x0 == gi.bottom_x0,
                "box drawing stays upright in italic", px);
-        checks += 18;
+        checks += 21;
     }
     free(hollow);
     free(hollow_l);
