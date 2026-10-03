@@ -57,6 +57,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A hint on stderr when a collection of several faces is given without
   picking one: which face was used (the first, as before) and the list of
   the others. `FILE#0` uses the first without the hint.
+- Fonts with CFF outlines, such as `.otf` files and the Noto Sans CJK
+  collections, for `--font` and `--fallback-font` (#25). termshot reads the
+  CFF table and runs its charstrings in Rust (`src/cff.rs`), limiting the
+  work one glyph may take, and stb_truetype only rasterizes the outline;
+  stb's own CFF reader hangs, asserts or reads out of bounds on damaged
+  fonts. A damaged CFF table is refused with a reason (exit 1), and a
+  glyph that can't be drawn is drawn as the box for a missing glyph.
+  Variable fonts (CFF2) are refused.
 - Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
   is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
   outline is slanted 12 degrees before it is rasterized, so it is as smooth
@@ -65,6 +73,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A font that can't be used is reported as "not a usable font", no longer
+  "not a usable TrueType font".
 - Renders now show the cursor unless the log hides it with `ESC [ ? 25 l`
   (DECTCEM), as full-screen programs and progress bars often do.
 

@@ -3,6 +3,7 @@
    deflate included). No Core Text, FreeType, window, or distro package.
    Box-drawing is geometry so the joints meet at an integer cell size. */
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -70,6 +71,66 @@ typedef struct {
     unsigned char *bitmap;
 } Glyph;
 #define GLYPH_CACHE_SIZE 1024
+
+/* A checked font (see src/font.rs) and the face of it to draw with: start is
+   0 for a single font, its offset in a collection. stb_truetype runs CFF
+   charstrings without bounds, so a CFF face brings its own outlines: outline
+   fills out[0..capacity) as stbtt_GetGlyphShape would and box as
+   stbtt_GetGlyphBox would, and returns the vertex count, which may be over
+   capacity (call again with room for that many); 0 is no outline, or one that
+   can't be drawn. NULL for a TrueType face. */
+typedef struct {
+    const unsigned char *ttf;
+    int start;
+    int (*outline)(const void *cff, int glyph, stbtt_vertex *out, int capacity, int box[4]);
+    const void *cff;
+} Face;
+
+_Static_assert(sizeof(stbtt_vertex) == 14, "stbtt_vertex ABI must match cff::Vertex");
+
+/* The outline last fetched from a CFF face, so the check for an empty glyph
+   and the drawing share one run of its charstring. */
+typedef struct {
+    stbtt_vertex *v;
+    int n, capacity;
+    const Face *face; /* whose glyph v holds, or NULL */
+    int glyph;
+    int box[4];
+} Outline;
+
+/* Fetch glyph of a CFF face into o, unless o holds it already. Returns the
+   vertex count, or -1 when memory runs out. A glyph with more vertices than
+   o has room for runs its charstring twice, so o starts with room for most
+   glyphs and doubles. */
+static int cff_outline(Outline *o, const Face *face, int glyph) {
+    if (o->face == face && o->glyph == glyph) return o->n;
+    o->face = NULL;
+    int want = o->capacity ? 0 : 512;
+    for (;;) {
+        if (want > o->capacity) {
+            stbtt_vertex *v = (stbtt_vertex *)realloc(o->v, (size_t)want * sizeof *v);
+            if (!v) return -1;
+            o->v = v;
+            o->capacity = want;
+        }
+        int n = face->outline(face->cff, glyph, o->v, o->capacity, o->box);
+        if (n <= o->capacity) {
+            o->n = n < 0 ? 0 : n;
+            o->face = face;
+            o->glyph = glyph;
+            return o->n;
+        }
+        want = o->capacity > INT_MAX / 2 || n > 2 * o->capacity ? n : 2 * o->capacity;
+    }
+}
+
+/* stbtt_IsGlyphEmpty, asked of the face's own outlines for CFF. -1 when
+   memory runs out. */
+static int glyph_empty(const stbtt_fontinfo *info, const Face *face, int glyph, Outline *o) {
+    if (!face->outline) return stbtt_IsGlyphEmpty(info, glyph);
+    int n = cff_outline(o, face, glyph);
+    return n < 0 ? -1 : n == 0;
+}
 
 /* The image being painted. Passed explicitly so draw_png is reentrant. */
 typedef struct {
@@ -519,6 +580,11 @@ static int init_font(stbtt_fontinfo *font, const unsigned char *ttf, int start) 
     return start >= 0 && stbtt_InitFont(font, ttf, start);
 }
 
+/* A CFF face without outlines of its own would have stb run its charstrings. */
+static int init_face(stbtt_fontinfo *font, const Face *face) {
+    return init_font(font, face->ttf, face->start) && (font->glyf || face->outline);
+}
+
 /* Characters that draw nothing by design, so blank even when no font has
    them: Unicode's space separators (Zs), the line and paragraph separators,
    and the blank Braille pattern that TUIs use as an empty dot graph. */
@@ -626,25 +692,34 @@ static void paint_images(Canvas *cv, const ImageView *images, size_t count) {
     }
 }
 
-/* Paint cells with the font in ttf (a TrueType file the caller has already
-   checked; see src/font.rs) and write a PNG. ttf_start is where the face to
-   use starts: 0 for a single font, its offset in a collection. fallback_ttf
-   and fallback_start, checked the same way, or NULL, supply the characters
-   ttf lacks; characters neither has are drawn as an outlined box. The canvas and cache are local; timing hooks use
+/* Free what the glyph pass holds when memory runs out in it; returns 2. */
+static int glyphs_failed(Canvas *cv, Glyph *cache, Outline *scratch) {
+    for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
+    for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    free(scratch->v);
+    free(cv->filtered);
+    cv->px = NULL;
+    fprintf(stderr, "termshot: glyph allocation failed\n");
+    return 2;
+}
+
+/* Paint cells with the face font and write a PNG. fallback_face, or NULL,
+   supplies the characters font_face lacks; characters neither has are drawn
+   as an outlined box. The canvas and cache are local; timing hooks use
    thread-local state so concurrent renders remain independent.
    verbose prints the cell and image size to stderr. empty, if not NULL,
    is filled in as EmptyGlyphs says.
    Returns 0; 1 for an unusable font; 2 when the image is too large or memory
    runs out; 3 when the PNG cannot be written. */
-int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *ttf, int ttf_start,
-             const unsigned char *fallback_ttf, int fallback_start, double font_px, const char *out_path,
-             int verbose, const ImageView *images, size_t image_count, EmptyGlyphs *empty) {
+int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face, const Face *fallback_face,
+                    double font_px, const char *out_path, int verbose, const ImageView *images,
+                    size_t image_count, EmptyGlyphs *empty) {
     if (empty) *empty = (EmptyGlyphs){0};
     profiling = getenv("TERMSHOT_PROFILE") != NULL;
     termshot_deflate_profile.enabled = profiling;
     double started = now_ms();
     stbtt_fontinfo font, fallback;
-    if (!init_font(&font, ttf, ttf_start) || (fallback_ttf && !init_font(&fallback, fallback_ttf, fallback_start))) {
+    if (!init_face(&font, font_face) || (fallback_face && !init_face(&fallback, fallback_face))) {
         fprintf(stderr, "termshot: font init failed\n");
         return 1;
     }
@@ -659,7 +734,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
     float italic_pivot = metrics.italic_pivot;
     /* The fallback is sized to the same ascent-to-descent height and shares
        the baseline. */
-    float fallback_scale = fallback_ttf ? stbtt_ScaleForPixelHeight(&fallback, (float)body) : 0;
+    float fallback_scale = fallback_face ? stbtt_ScaleForPixelHeight(&fallback, (float)body) : 0;
     long long width = (long long)cols * cell_w;
     long long height = (long long)rows * cell_h;
     if (verbose) {
@@ -704,6 +779,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
     double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
     size_t glyphs = 0, cache_hits = 0;
     Glyph cache[GLYPH_CACHE_SIZE] = {0};
+    Outline scratch = {0};
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
             const Cell *cell = &cells[r * cols + c];
@@ -726,6 +802,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
                 free(entry->bitmap);
                 *entry = (Glyph){.cp = cp, .valid = 1, .wide = wide, .italic = italic};
                 const stbtt_fontinfo *face = &font;
+                const Face *source = font_face;
                 float s = scale;
                 /* A glyph with no outline counts as missing unless the
                    character is blank by design: color emoji fonts (sbix,
@@ -733,19 +810,24 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
                    bitmaps, which stb_truetype cannot. */
                 int blank = is_blank(cp);
                 int glyph = stbtt_FindGlyphIndex(&font, (int)cp), hollow = 0;
-                if (glyph != 0 && !blank && stbtt_IsGlyphEmpty(&font, glyph)) {
+                /* bare is 1 for an empty glyph, -1 when memory ran out. */
+                int bare = glyph != 0 && !blank ? glyph_empty(&font, font_face, glyph, &scratch) : 0;
+                if (bare > 0) {
                     glyph = 0;
                     hollow = EMPTY_IN_FONT;
                 }
-                if (glyph == 0 && fallback_ttf) {
+                if (glyph == 0 && fallback_face && bare >= 0) {
                     face = &fallback;
+                    source = fallback_face;
                     s = fallback_scale;
                     glyph = stbtt_FindGlyphIndex(&fallback, (int)cp);
-                    if (glyph != 0 && !blank && stbtt_IsGlyphEmpty(&fallback, glyph)) {
+                    bare = glyph != 0 && !blank ? glyph_empty(&fallback, fallback_face, glyph, &scratch) : 0;
+                    if (bare > 0) {
                         glyph = 0;
                         hollow |= EMPTY_IN_FALLBACK;
                     }
                 }
+                if (bare < 0) return glyphs_failed(cv, cache, &scratch);
                 entry->missing = glyph == 0;
                 entry->empty = hollow;
                 if (glyph != 0) {
@@ -761,11 +843,28 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
                     }
                     if (wide || face == &fallback) entry->shift = (int)floorf((span - advance) / 2 + 0.5f);
                     int ix1, iy1;
-                    stbtt_vertex *outline = NULL;
+                    /* stb's outline, to free; or the CFF face's, in scratch. */
+                    stbtt_vertex *shape = NULL, *outline = NULL;
                     int verts = 0;
+                    if (source->outline) {
+                        verts = cff_outline(&scratch, source, glyph);
+                        if (verts < 0) return glyphs_failed(cv, cache, &scratch);
+                        outline = scratch.v;
+                    } else if (italic) {
+                        verts = stbtt_GetGlyphShape(face, glyph, &shape);
+                        outline = shape;
+                    }
                     if (italic) {
-                        verts = stbtt_GetGlyphShape(face, glyph, &outline);
                         slant_outline(outline, verts, italic_pivot / s, s, &entry->ix0, &entry->iy0, &ix1, &iy1);
+                        scratch.face = NULL; /* now slanted */
+                    } else if (source->outline) {
+                        /* As stbtt_GetGlyphBitmapBox rounds the glyph's box. */
+                        const int *box = scratch.box;
+                        entry->ix0 = (int)floorf(box[0] * s);
+                        entry->iy0 = (int)floorf(-box[3] * s);
+                        ix1 = (int)ceilf(box[2] * s);
+                        iy1 = (int)ceilf(-box[1] * s);
+                        if (verts == 0) entry->ix0 = entry->iy0 = ix1 = iy1 = 0;
                     } else {
                         stbtt_GetGlyphBitmapBox(face, glyph, s, s, &entry->ix0, &entry->iy0, &ix1, &iy1);
                     }
@@ -774,15 +873,10 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
                     if (entry->w > 0 && entry->h > 0) {
                         entry->bitmap = (unsigned char *)malloc((size_t)entry->w * entry->h);
                         if (!entry->bitmap) {
-                            stbtt_FreeShape(face, outline);
-                            for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
-                            for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
-                            free(cv->filtered);
-                            cv->px = NULL;
-                            fprintf(stderr, "termshot: glyph allocation failed\n");
-                            return 2;
+                            stbtt_FreeShape(face, shape);
+                            return glyphs_failed(cv, cache, &scratch);
                         }
-                        if (italic) {
+                        if (outline) {
                             stbtt__bitmap out = {entry->w, entry->h, entry->w, entry->bitmap};
                             stbtt_Rasterize(&out, 0.35f, outline, verts, s, s, 0, 0, entry->ix0, entry->iy0, 1, face->userdata);
                         } else {
@@ -790,7 +884,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
                         }
                         glyphs++;
                     }
-                    stbtt_FreeShape(face, outline);
+                    stbtt_FreeShape(face, shape);
                 }
             }
             glyph_ms += now_ms() - tick;
@@ -842,6 +936,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
 
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
     for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    free(scratch.v);
     paint_images(cv, images, image_count);
     double foreground = now_ms();
     int png_len = 0;
@@ -876,10 +971,11 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
     return 0;
 }
 
-/* Keep the cell-only entry point for the C and Rust rasterizer tests. */
+/* The cell-only entry point for the C rasterizer tests, for TrueType faces. */
 int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, int ttf_start,
              const unsigned char *fallback_ttf, int fallback_start, double font_px, const char *out_path,
              int verbose) {
-    return draw_png_images(cells, cols, rows, ttf, ttf_start, fallback_ttf, fallback_start, font_px, out_path,
-                           verbose, NULL, 0, NULL);
+    Face font = {ttf, ttf_start, NULL, NULL}, fallback = {fallback_ttf, fallback_start, NULL, NULL};
+    return draw_png_images(cells, cols, rows, &font, fallback_ttf ? &fallback : NULL, font_px, out_path, verbose,
+                           NULL, 0, NULL);
 }

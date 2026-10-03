@@ -69,8 +69,9 @@ fn main() {
     for (tag, reason) in [
         (b"CBDT", "a color bitmap font (CBDT) with no outlines; use a monochrome outline font, such as Noto Emoji"),
         (b"sbix", "a color bitmap font (sbix) with no outlines; use a monochrome outline font, such as Noto Emoji"),
-        (b"CFF ", "no glyf table; CFF (PostScript) outlines are not supported"),
-        (b"xxxx", "no glyf table"),
+        (b"CFF ", "CFF table: "),
+        (b"CFF2", "CFF2 (variable) outlines are not supported"),
+        (b"xxxx", "no glyf table, and no CFF table either"),
     ] {
         let name = String::from_utf8_lossy(tag).trim_end().to_owned();
         let font = dir.join(format!("{name}.ttf"));
@@ -79,7 +80,7 @@ fn main() {
         for flag in ["--font", "--fallback-font"] {
             let _ = fs::remove_file(&png);
             let r = run(&bin, &[Path::new(flag), &font, stdin, &png], b"a");
-            let want = format!("{}: not a usable TrueType font: {reason}", font.display());
+            let want = format!("{}: not a usable font: {reason}", font.display());
             expect(&format!("{flag} {name}.ttf is refused: {want}"), r.code == Some(1) && r.stderr.contains(&want), &r);
             expect(&format!("{flag} {name}.ttf leaves no PNG"), !png.exists(), &r);
         }

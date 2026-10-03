@@ -3,8 +3,13 @@
 //! recursion. check() walks every structure stb will use and rejects the font
 //! unless stb's reads stay inside it. The few reads still bounded only by
 //! 16-bit values (cmap format 4 and 0 lookups, hmtx for a glyph id the cmap
-//! made up) are covered by zero padding after the data.
+//! made up) are covered by zero padding after the data. A CFF font's
+//! outlines never reach stb: src/cff.rs runs its charstrings, and draw.c gets
+//! the outlines through a Face.
 
+use crate::cff;
+use std::ffi::{c_int, c_void};
+use std::marker::PhantomData;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -123,10 +128,63 @@ fn pad(mut font: Font) -> Font {
     font
 }
 
+/// draw.c's Face: a checked font, and for a CFF font the outlines stb must
+/// not read itself.
+#[repr(C)]
+pub struct Face<'a> {
+    ttf: *const u8,
+    start: c_int,
+    outline: Option<unsafe extern "C" fn(*const c_void, c_int, *mut cff::Vertex, c_int, *mut c_int) -> c_int>,
+    cff: *const c_void,
+    font: PhantomData<&'a Font>,
+}
+
+impl Font {
+    /// Call `f` with the face to draw with. The CFF table, checked at load,
+    /// is parsed again here, as what it parses into borrows the data.
+    pub fn with_face<R>(&self, f: impl FnOnce(&Face) -> R) -> Result<R, String> {
+        let face = |outline, cff| Face {
+            ttf: self.data.as_ptr(),
+            start: self.start as c_int,
+            outline,
+            cff,
+            font: PhantomData,
+        };
+        Ok(match cff_outlines(&self.data, self.start)? {
+            None => f(&face(None, std::ptr::null())),
+            Some(cff) => f(&face(Some(outline), &cff as *const cff::Font as *const c_void)),
+        })
+    }
+}
+
+/// Face.outline: the outline of `glyph` into out[..capacity] as
+/// stbtt_GetGlyphShape gives it, and its box as stbtt_GetGlyphBox does.
+/// Returns the vertex count, which when over `capacity` means call again
+/// with room for that many; 0 for no outline or one that can't be drawn.
+unsafe extern "C" fn outline(cff: *const c_void, glyph: c_int, out: *mut cff::Vertex, capacity: c_int, bbox: *mut c_int) -> c_int {
+    // A panic must not unwind into C.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let font = &*(cff as *const cff::Font);
+        let bbox = &mut *(bbox as *mut [i32; 4]);
+        let mut vertices = Vec::new();
+        let Ok(glyph) = usize::try_from(glyph) else { return 0 };
+        if font.glyph(glyph, &mut vertices, bbox) != Ok(true) {
+            *bbox = [0; 4];
+            return 0;
+        }
+        let Ok(n) = c_int::try_from(vertices.len()) else { return 0 };
+        if n <= capacity {
+            std::ptr::copy_nonoverlapping(vertices.as_ptr(), out, vertices.len());
+        }
+        n
+    }))
+    .unwrap_or(0)
+}
+
 /// Pick the face `face` names (an index, or a name as list() shows it) and
 /// check it. `path` is for messages.
 fn choose(data: Vec<u8>, face: Option<&str>, path: &str) -> Result<Font, String> {
-    let unusable = |reason: String| format!("{path}: not a usable TrueType font: {reason}");
+    let unusable = |reason: String| format!("{path}: not a usable font: {reason}");
     let starts = faces(&data).map_err(unusable)?;
     let collection = data.get(0..4) == Some(b"ttcf");
     let all = || list(&data, &starts, None);
@@ -349,15 +407,10 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
             return Err(format!("table {} runs past the end of the file", String::from_utf8_lossy(&d[record..record + 4])));
         }
     }
-    if table(d, start, b"glyf")?.is_none() {
-        return Err(no_outlines(d, start)?);
-    }
     let cmap = required(d, start, b"cmap")?;
     let head = required(d, start, b"head")?;
     let hhea = required(d, start, b"hhea")?;
     let hmtx = required(d, start, b"hmtx")?;
-    let loca = required(d, start, b"loca")?;
-    let glyf = required(d, start, b"glyf")?;
     let maxp = required(d, start, b"maxp")?;
 
     let glyph_count = u16_at(maxp, 4)? as usize;
@@ -365,11 +418,6 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
         return Err("maxp says the font has no glyphs".into());
     }
     u16_at(head, 52)?;
-    let long_loca = match u16_at(head, 50)? {
-        0 => false,
-        1 => true,
-        other => return Err(format!("unknown loca format {other}")),
-    };
     let long_metrics = u16_at(hhea, 34)? as usize;
     if long_metrics == 0 {
         return Err("hhea has no horizontal metrics".into());
@@ -378,7 +426,35 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
     if hmtx.len() < hmtx_needed {
         return Err(format!("hmtx is {} bytes, needs {hmtx_needed}", hmtx.len()));
     }
+    // stb draws a face without glyf from its CFF table.
+    if cff_outlines(d, start)?.is_none() {
+        check_glyf(d, start, head, glyph_count)?;
+    }
+    check_cmap(cmap, glyph_count)
+}
 
+/// The CFF outlines of a face without glyf, parsed and checked; None for a
+/// TrueType face.
+pub fn cff_outlines(d: &[u8], start: usize) -> Result<Option<cff::Font<'_>>, String> {
+    if table(d, start, b"glyf")?.is_some() {
+        return Ok(None);
+    }
+    let Some(cff) = table(d, start, b"CFF ")? else {
+        return Err(no_outlines(d, start)?);
+    };
+    let glyphs = u16_at(required(d, start, b"maxp")?, 4)? as usize;
+    cff::Font::parse(cff.data, glyphs).map(Some).map_err(|reason| format!("CFF table: {reason}"))
+}
+
+/// Check the loca and glyf tables of a TrueType face.
+fn check_glyf(d: &[u8], start: usize, head: &[u8], glyph_count: usize) -> Result<(), String> {
+    let loca = required(d, start, b"loca")?;
+    let glyf = required(d, start, b"glyf")?;
+    let long_loca = match u16_at(head, 50)? {
+        0 => false,
+        1 => true,
+        other => return Err(format!("unknown loca format {other}")),
+    };
     let mut glyphs = Vec::with_capacity(glyph_count);
     let mut previous = 0usize;
     for g in 0..=glyph_count {
@@ -395,21 +471,19 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
     for (g, glyph) in glyphs.iter().enumerate() {
         components[g] = check_glyph(glyph, glyph_count).map_err(|reason| format!("glyph {g}: {reason}"))?;
     }
-    check_composite_depth(&components)?;
-    check_cmap(cmap, glyph_count)
+    check_composite_depth(&components)
 }
 
-/// Why a font without glyf can't be drawn, from the tables it has instead.
+/// Why a font with neither glyf nor CFF can't be drawn, from the tables it
+/// has instead.
 fn no_outlines(d: &[u8], start: usize) -> Result<String, String> {
-    for tag in [b"CFF ", b"CFF2"] {
-        if table(d, start, tag)?.is_some() {
-            return Ok("no glyf table; CFF (PostScript) outlines are not supported".into());
-        }
+    if table(d, start, b"CFF2")?.is_some() {
+        return Ok("CFF2 (variable) outlines are not supported".into());
     }
     if let Some(tag) = color_bitmap_at(d, start)? {
         return Ok(format!("a color bitmap font ({tag}) with no outlines; use a monochrome outline font, such as Noto Emoji"));
     }
-    Ok("no glyf table".into())
+    Ok("no glyf table, and no CFF table either".into())
 }
 
 fn color_bitmap_at(d: &[u8], start: usize) -> Result<Option<&'static str>, String> {
@@ -729,7 +803,7 @@ pub mod tests {
         let first = choose(ttc.clone(), None, "c.ttc").unwrap();
         assert!(first.hint.unwrap().contains("#1  (not a font)"));
         let error = choose(ttc.clone(), Some("1"), "c.ttc").err().unwrap();
-        assert!(error.contains("c.ttc: not a usable TrueType font: face #1 is not a font"), "{error}");
+        assert!(error.contains("c.ttc: not a usable font: face #1 is not a font"), "{error}");
         assert!(choose(ttc, Some("face a"), "c.ttc").is_ok());
     }
 
@@ -763,7 +837,7 @@ pub mod tests {
         let ttc = collection(&[(&font, "Good"), (&broken, "Broken")]);
         assert!(choose(ttc.clone(), Some("0"), "c.ttc").is_ok());
         let error = choose(ttc, Some("Broken"), "c.ttc").err().unwrap();
-        assert!(error.contains("c.ttc: not a usable TrueType font: unknown loca format"), "{error}");
+        assert!(error.contains("c.ttc: not a usable font: unknown loca format"), "{error}");
     }
 
     #[test]

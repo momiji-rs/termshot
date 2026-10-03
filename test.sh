@@ -134,6 +134,17 @@ check "the first face draws as the font it copies" 'cmp -s "$out/ttc-0.png" "$ou
 check "-v names the face" \
     './termshot -v --font="$ttc#face b" "$log" "$out/ttc-1.png" 2>&1 | grep -qx -- "--font face #1 Face B"'
 check "another face draws differently" '! cmp -s "$out/ttc-1.png" "$out/legacy.png"'
+# CFF outlines, as the font or the fallback. The unit tests write a CFF font
+# whose CharStrings run past its table.
+cjk=third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf
+printf '東京' | ./termshot --size 4x1 --cursor none - "$out/cli-cff-tofu.png"
+printf '東京' | ./termshot --size 4x1 --cursor none --fallback-font "$cjk" - "$out/cli-cff-fallback.png"
+printf '東京' | ./termshot --size 4x1 --cursor none --font "$cjk" - "$out/cli-cff-font.png"
+check "a CFF fallback font draws CJK" '! cmp -s "$out/cli-cff-fallback.png" "$out/cli-cff-tofu.png"'
+check "a CFF font draws CJK" '! cmp -s "$out/cli-cff-font.png" "$out/cli-cff-tofu.png"'
+expect 1 "$log" "$out/x.png" --font "$out/cff-past-table.otf"
+check "a damaged CFF table is refused with a reason" \
+    './termshot --font "$out/cff-past-table.otf" "$log" "$out/x.png" 2>&1 | grep -q "CFF table: INDEX at .* runs past the table"'
 # stdin and stdout.
 ./termshot - - < "$log" > "$out/piped.png"
 check "stdin to stdout matches" 'cmp -s "$out/piped.png" "$out/legacy.png"'
