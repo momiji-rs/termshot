@@ -60,6 +60,11 @@ fn main() {
             ("rgba", 128),
             ("png", 255),
             ("png-alpha", 128),
+            // The same images compressed (o=z) by Python's zlib.
+            ("rgb-z", 255),
+            ("rgba-z", 128),
+            ("png-z", 255),
+            ("png-alpha-z", 128),
         ] {
             let log = fs::read(format!("tests/fixtures/kitty-{kind}.pty")).unwrap();
             let (w, h, pixels) = render(&bin, &format!("{kind}-{px}"), &log, px, 6, 4);
@@ -115,7 +120,7 @@ fn main() {
     grid_outputs(&bin);
     cursor_shapes(&bin);
     stored_placements(&bin);
-    println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes; native clipping, text layering, transparency and deletion");
+    println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes, plain and zlib-compressed; native clipping, text layering, transparency and deletion");
 }
 
 // Images stored once (a=t) and put (a=p) in several cells: each placement is

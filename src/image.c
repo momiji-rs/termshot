@@ -1,4 +1,4 @@
-/* In-memory PNG only. No filesystem access. stb is private to this TU so
+/* In-memory PNG and zlib only. No filesystem access. stb is private to this TU so
    test decoders can coexist. Bound all decoder allocations, including inflate. */
 #include <stdint.h>
 #include <stdlib.h>
@@ -57,4 +57,35 @@ int image_png_decode(const unsigned char *data, int len, unsigned char *out, int
     if (ok) memcpy(out, p, (size_t)w * h * 4);
     stbi_image_free(p);
     return ok;
+}
+
+/* Inflate a zlib stream (kitty's o=z) into exactly olen bytes, checking what
+   zlib checks and stb does not: the window field and the Adler-32 trailer.
+   Bytes after the trailer are ignored, as zlib ignores them. The caller pads
+   the input with 8 zero bytes after len, so stb's read-ahead stays inside the
+   buffer and the stream's end can be found from the bits it has buffered. A
+   stream that reads into the padding ends past len - 4 and fails. */
+int image_inflate(const unsigned char *in, int len, unsigned char *out, int olen) {
+    if (len < 2 || in[0] >> 4 > 7) return 0;
+    stbi__zbuf a;
+    a.zbuffer = (stbi_uc *)in;
+    a.zbuffer_end = (stbi_uc *)in + len + 8;
+    if (!stbi__do_zlib(&a, (char *)out, olen, 0, 1)) return 0;
+    if (a.zout - a.zout_start != olen) return 0;
+    /* The trailer starts at the first whole byte stb has not consumed. */
+    const unsigned char *end = a.zbuffer - a.num_bits / 8;
+    if (end + 4 > in + len) return 0;
+    uint32_t s1 = 1, s2 = 0;
+    for (int i = 0; i < olen;) {
+        int n = olen - i < 5552 ? olen - i : 5552;
+        for (int j = 0; j < n; j++) {
+            s1 += out[i + j];
+            s2 += s1;
+        }
+        s1 %= 65521;
+        s2 %= 65521;
+        i += n;
+    }
+    uint32_t want = (uint32_t)end[0] << 24 | (uint32_t)end[1] << 16 | (uint32_t)end[2] << 8 | end[3];
+    return want == (s2 << 16 | s1);
 }
