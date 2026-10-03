@@ -103,6 +103,18 @@ struct ImageSlice {
     bottom: i64,
 }
 
+impl Image {
+    /// The bytes it counts for the storage quota: its pixels, or their size
+    /// once a Sixel image's placement holds them alone (`erase_sixel`). No
+    /// image has none of its own otherwise.
+    fn bytes(&self) -> usize {
+        match self.pixels.len() {
+            0 => self.width as usize * self.height as usize * 4,
+            n => n,
+        }
+    }
+}
+
 impl Placement {
     pub fn views(&self) -> impl Iterator<Item = ImageView> + '_ {
         self.slices.iter().map(|slice| ImageView {
@@ -808,8 +820,7 @@ impl Graphics {
     }
 
     fn over_quota(&self) -> bool {
-        self.images.len() > MAX_IMAGES
-            || self.images.iter().map(|img| img.pixels.len()).sum::<usize>() > MAX_BYTES
+        self.images.len() > MAX_IMAGES || self.images.iter().map(Image::bytes).sum::<usize>() > MAX_BYTES
     }
 
     /// kitty's storage quota: first free every image without a placement, then
@@ -820,13 +831,13 @@ impl Graphics {
             return;
         }
         self.free_unplaced(|img| img.key != added);
-        let mut bytes: usize = self.images.iter().map(|img| img.pixels.len()).sum();
+        let mut bytes: usize = self.images.iter().map(Image::bytes).sum();
         let mut count = self.images.len();
         let mut oldest: Vec<_> = self
             .images
             .iter()
             .filter(|img| img.key != added)
-            .map(|img| (img.atime, img.key, img.pixels.len()))
+            .map(|img| (img.atime, img.key, img.bytes()))
             .collect();
         oldest.sort_unstable();
         let mut evict = Vec::new();
@@ -870,11 +881,17 @@ impl Graphics {
             if left >= right || rows.iter().all(|&(top, bottom, _)| top >= bottom) {
                 continue;
             }
-            // The first erase copies the pixels away from the image store's,
-            // which no command can place again (a Sixel image has no id), and
-            // later ones write in place: no search of the store, whatever the
-            // number of images.
-            let x = p.x;
+            // On the first erase the image store holds the other reference.
+            // No command can place it again (a Sixel image has no id), so the
+            // store lets it go, and keeps counting the image by its size: the
+            // pixels are written in place, not copied, and later erases need
+            // no search of the store.
+            let (x, key) = (p.x, p.image);
+            if Rc::strong_count(&p.pixels) > 1 {
+                if let Some(img) = self.images.iter_mut().find(|img| img.key == key) {
+                    img.pixels = Rc::default();
+                }
+            }
             let pixels = Rc::make_mut(&mut self.placements[i].pixels);
             for (top, bottom, origin) in rows {
                 for y in top..bottom {

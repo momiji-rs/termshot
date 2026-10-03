@@ -1058,3 +1058,21 @@ fn a_long_run_moves_an_image_however_far_below_the_screen() {
     // would leave 21 of them.
     assert!(run((1 << 24) + 100).images.is_empty());
 }
+
+/// Erasing a Sixel image's pixels writes them in place: the image store lets
+/// its reference go instead of keeping a second copy, and still counts them.
+#[test]
+fn erasing_sixel_pixels_keeps_one_copy_and_the_quota() {
+    let mut g = Graphics::default();
+    let image = crate::sixel::Image { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 255, 0, 255] };
+    g.sixel(&crate::sixel::kitty_command(&image), 0, 0, (1, 1), 10);
+    let counted = |g: &Graphics| g.images.iter().map(Image::bytes).sum::<usize>();
+    assert_eq!((Rc::strong_count(&g.placements[0].pixels), counted(&g)), (2, 8));
+    g.erase_sixel(0, 0, 1, 1);
+    assert_eq!(*g.placements[0].pixels, [0, 0, 0, 0, 0, 255, 0, 255]);
+    assert_eq!((Rc::strong_count(&g.placements[0].pixels), counted(&g)), (1, 8));
+    assert!(g.images[0].pixels.is_empty());
+    g.erase_sixel(1, 0, 2, 1);
+    assert_eq!(*g.placements[0].pixels, [0; 8]);
+    assert_eq!(counted(&g), 8);
+}
