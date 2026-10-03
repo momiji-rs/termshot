@@ -28,6 +28,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its decoded size, as in kitty, checked as each chunk arrives, and its
   dimensions are checked before anything is inflated.
 
+- Kitty placements crop and layer as kitty does (#44): `x`, `y`, `w`, `h`
+  pick the part of the image shown, `X`, `Y` start it inside its first cell,
+  and a negative z-index draws it under the text, or with `z` below
+  -1,073,741,824 under every background that is not the default one.
+  Reverse video and the block cursor count as non-default there. A crop keeps
+  its own aspect ratio when fitted to `c` and `r`. Commands with these keys
+  were ignored before.
+
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so

@@ -68,8 +68,14 @@ fn malformed_and_unsupported_commands_are_ignored() {
         "t=s",
         "o=z",
         "U=1",
-        "x=1",
-        "z=-1",
+        "x=-1",
+        "w=1x",
+        "X=-1",
+        "Y=+1",
+        "z=2147483648",
+        "z=-2147483649",
+        "z=--1",
+        "z=-",
         "a=q",
         "a=f",
         "I=0",
@@ -622,6 +628,11 @@ fn font_metrics_are_needed_only_for_potential_cursor_movement() {
     assert!(needs_cell_metrics(&red("")));
     assert!(!needs_cell_metrics(&red(",C=1")));
     assert!(needs_cell_metrics(b"\x1b_Ga=T,f=24,s=2,v=1,m=1;/wAA\x1b\\"));
+    // Crops, offsets and a negative z-index are placed, so they move it too.
+    for keys in [",x=1", ",y=1,h=1", ",X=3,Y=4", ",z=-1", ",z=-2147483648"] {
+        assert!(needs_cell_metrics(&red(keys)), "{keys}");
+        assert!(!needs_cell_metrics(&red(&format!("{keys},C=1"))), "{keys}");
+    }
     let by_id = "\x1b_Ga=t,i=1,f=24,s=1,v=1;/wAA\x1b\\";
     let by_number = "\x1b_Ga=t,i=3,f=24,s=1,v=1;/wAA\x1b\\\x1b_Ga=t,I=7,f=24,s=1,v=1;/wAA\x1b\\";
     // A numbered image gets the lowest free id, which the scan does not know

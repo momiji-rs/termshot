@@ -212,6 +212,71 @@ chunks inside the DEFLATE data. Goldens for it and the four `-z` fixtures hash
 the same as the uncompressed renders; the existing goldens are unchanged.
 
 
+## Crops, offsets and layers
+
+The third stage of #44 follows the spec's "Controlling displayed image
+layout" section and kitty's `handle_put_command`, `update_dest_rect`,
+`grman_update_layers`, `shaders.c` and `background.slang` (master, read
+2026-10-03):
+
+- **Crop.** `x, y, w, h` (0 meaning the rest of the image) are intersected
+  with the image, as `handle_put_command` clamps them. A crop starting past
+  the image is empty: the put draws nothing, but still replaces the
+  placement it names and moves the cursor past the cells `c`, `r` and the
+  offset span. termshot does not keep an empty placement, which kitty does;
+  only the delete selectors and the storage quota could tell them apart.
+- **Offsets.** `X, Y` move the image inside its first cell. The spec says
+  they must be smaller than the cell; kitty clamps them to a pixel short of
+  its edge, and so does termshot. `c` and `r` still count cells from the
+  cell's edge, so an offset shrinks the space they give (the spec: "it is not
+  added to the number of rows/columns"; kitty's destination rectangle ends at
+  the `c`-th column's edge).
+- **Aspect ratio.** The crop's, not the image's. With one of `c` and `r`, the
+  other side follows it; with both, the crop is fitted inside and centered,
+  as the spec's "letterboxed/pillarboxed" says. (kitty's own code fills the
+  rectangle for an ordinary placement and letterboxes only Unicode-placeholder
+  ones; termshot keeps the spec's rule, as it did before this stage.)
+- **Cells covered** run from the cell to the far edge of that space. kitty
+  computes the width for an `r`-only placement from `r` rows *plus* the
+  vertical offset, which is not the width it draws; termshot uses the drawn
+  extent. This changes the cursor only when `r`, no `c` and `Y` are given.
+- **Layers.** kitty draws the default background, then images with `z` below
+  `INT32_MIN / 2` (-1,073,741,824), then the cell backgrounds that are not the
+  default, then other negative `z`, then the text and cursor shapes, then
+  `z >= 0`. A background is the default one when its colour *value* is the
+  default background (`cell_has_default_bg` compares colours), except for
+  reverse video, the block cursor and selections, which kitty makes opaque.
+  termshot marks reverse-video cells and the cells under the block cursor
+  with a new `Cell` bit, `ATTR_OPAQUE` (128, in both languages). Before
+  drawing, `opaque_backgrounds` in `main.rs` sets it on every other
+  background not in the default colour, so `draw.c` needs no copy of
+  `DEFAULT_BG`; it paints the lowest layer only over the cells left clear. The block cursor
+  is a background in kitty, so an image with a negative `z` above
+  -1,073,741,824 covers it, and only the cursor's text colour stays on top.
+- **Shades.** U+2591–2593 now blend their colour over what is painted, not
+  over the cell's background colour, so an image under the text shows
+  through them as through a glyph. Without such an image the pixels are the
+  same, and every existing golden hash is unchanged.
+- The bar and underline cursors stay above every image, as before. In kitty
+  they are drawn with the text, so a `z >= 0` image covers them; that is a
+  separate question from this stage.
+
+Tests: `src/graphics/geometry_tests.rs` covers crops in and past each edge,
+empty crops, offsets at and past the cell size, offsets with `c`, `r` and
+both, the crop's aspect ratio, the signed `z` parser at its limits, draw and
+delete order by negative `z`, moving a placement with new geometry, scrolling
+and clipping an offset image, and extreme cell metrics. `tests/draw.c`, also
+under ASan and UBSan, checks the layer boundaries, the clear-background mask
+and crop sampling in `paint_images`. `tests/graphics.rs` checks every pixel
+against rasters it builds from the rules above: a crop scene at px 9, 24 and
+47.5, plain and scrolled, and the six layer boundaries (`z` = -2^31,
+-2^30 - 1, -2^30, -1, 0, 7) over a row of text, a red, a default-valued and
+a reverse-video background and a shade, opaque and half transparent, with no
+cursor, a block and a bar, at px 9, 24 and 47.5 (292,896 pixel checks). The
+crop checks fail against `origin/main`. `kitty-crop` and `kitty-layers` add
+four goldens; the existing goldens are unchanged.
+
+
 ## ASCII autowrap regression
 
 [Copilot review](https://github.com/momiji-rs/termshot/pull/43#discussion_r4170788572)

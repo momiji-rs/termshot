@@ -204,9 +204,12 @@ RGBA (`f=32`, the default), and PNG (`f=100`), including `m=1`/`m=0` chunks
 and zlib-compressed payloads (`o=z`; a compressed PNG gives its size in `S`).
 `a=T` transmits and places an image; `a=t` only stores it, under an id `i` or
 a number `I`, and each `a=p` places a stored one again, sharing its pixels.
-Images start at the cursor, use their native pixel size or fit a `c`/`r` cell
+Images start at the cursor, or `X`/`Y` pixels into its cell (at most a pixel
+short of the cell's edge), use their native pixel size or fit a `c`/`r` cell
 rectangle while preserving aspect ratio, and blend alpha over the existing
-screen. Scaling uses deterministic nearest-neighbor sampling. Cell dimensions
+screen. `x`, `y`, `w`, `h` choose a source rectangle in pixels, and the part of
+it inside the image is shown; that crop's aspect ratio is the one kept, and an
+empty crop draws nothing. Scaling uses deterministic nearest-neighbor sampling. Cell dimensions
 come from the selected font and `--px`. `C=1` keeps the cursor in place;
 otherwise it advances by the placement's columns and rows, clamped to the
 screen/scroll area's bottom and right edges.
@@ -217,8 +220,11 @@ id (`i`, with `p`), by number (`n`), by id range (`r`), at the cursor (`c`), at
 a cell (`p`, `q` with a z-index), in a column (`x`), a row (`y`), or by z-index
 (`z`). Lowercase keeps the image data for another `a=p`; uppercase also frees
 the images it leaves without a placement. Retransmitting an id replaces its
-image and removes its placements. Nonnegative `z` orders overlays, then the
-order images and placements were made. Only images wholly inside a scrolling
+image and removes its placements. Images draw by `z`, then the order images
+and placements were made: from 0 over the text, below 0 under the text but over
+every cell background, and below -1,073,741,824 under the backgrounds that are
+not the default colour, so they show only through default ones. Reverse-video
+cells and the block cursor are opaque there, as in kitty. Only images wholly inside a scrolling
 region move and clip at its edges; images crossing a margin stay stationary.
 Full-screen erase and reset remove every placement and free every stored image,
 as kitty does. Explicit image ids and numbers must be nonzero; omitting `i` is
@@ -226,8 +232,7 @@ valid. Main and alternate screens keep separate images. See
 [the regression evidence](docs/kitty-graphics.md).
 
 This is a subset, not full kitty emulation: Sixel, file/shared-memory transfer,
-source cropping, pixel offsets, negative z-index, animation, relative placements and Unicode
-placeholders are not supported. Unsupported or malformed commands are ignored
+animation, relative placements and Unicode placeholders are not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain
 `tmux capture-pane` text capture cannot recover them. This does not make every
