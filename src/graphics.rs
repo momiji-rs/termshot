@@ -37,7 +37,7 @@ pub struct Graphics {
     /// order and its atime: both only need to increase.
     clock: u64,
     /// The cell size and screen rows of the last command, which relative
-    /// placements are laid out with.
+    /// placements are laid out with, and scrolling finds the screen's bottom by.
     cell: (i32, i32),
     screen_rows: usize,
 }
@@ -76,6 +76,8 @@ pub struct Placement {
     cols: i64,
     row: i64,
     rows: i64,
+    /// A Sixel image, whose pixels later text and erasure clear.
+    pub sixel: bool,
     /// kitty's start row: the row its children are placed from. It follows
     /// scrolling as `row` does, but goes above a full-screen region's top,
     /// as kitty's goes into the scrollback.
@@ -123,6 +125,18 @@ struct ImageSlice {
     bottom: i64,
 }
 
+impl Image {
+    /// The bytes it counts for the storage quota: its pixels, or their size
+    /// once a Sixel image's placement holds them alone (`erase_sixel`). No
+    /// image has none of its own otherwise.
+    fn bytes(&self) -> usize {
+        match self.pixels.len() {
+            0 => self.width as usize * self.height as usize * 4,
+            n => n,
+        }
+    }
+}
+
 impl Placement {
     pub fn views(&self) -> impl Iterator<Item = ImageView> + '_ {
         self.slices.iter().map(|slice| ImageView {
@@ -145,8 +159,9 @@ impl Placement {
 }
 
 impl ImageView {
-    /// A rectangle of one colour: the opaque pixel, stretched over it, above
-    /// everything else. The pixel is borrowed; it must outlive the view.
+    /// A rectangle of one colour: the opaque pixel, stretched over it, in the
+    /// layer over the text, where the views are drawn in their order. The
+    /// pixel is borrowed; it must outlive the view.
     pub fn solid(pixel: &[u8; 4], x: i64, y: i64, w: i64, h: i64) -> ImageView {
         ImageView {
             pixels: pixel.as_ptr(),
@@ -412,10 +427,9 @@ fn base64(data: &[u8], limit: usize) -> Option<Vec<u8>> {
 }
 
 /// Inflates a zlib payload to exactly `size` bytes, as kitty's `inflate_zlib`
-/// requires. `data` gets the 8 bytes of zero padding `image_inflate` needs.
-fn inflate(mut data: Vec<u8>, size: usize) -> Option<Vec<u8>> {
+/// requires.
+fn inflate(data: Vec<u8>, size: usize) -> Option<Vec<u8>> {
     let len = i32::try_from(data.len()).ok()?;
-    data.extend_from_slice(&[0; 8]);
     let mut out = vec![0; size];
     let ok = unsafe { image_inflate(data.as_ptr(), len, out.as_mut_ptr(), size as i32) };
     (ok != 0).then_some(out)
@@ -577,19 +591,12 @@ impl Graphics {
     ) -> Option<(usize, usize)> {
         self.cell = cell;
         self.screen_rows = screen_rows;
-        let advance = self.execute(bytes, col, row, cell, screen_rows);
+        let advance = self.execute(bytes, col, row, cell);
         self.relayout();
         advance
     }
 
-    fn execute(
-        &mut self,
-        bytes: &[u8],
-        col: usize,
-        row: usize,
-        cell: (i32, i32),
-        screen_rows: usize,
-    ) -> Option<(usize, usize)> {
+    fn execute(&mut self, bytes: &[u8], col: usize, row: usize, cell: (i32, i32)) -> Option<(usize, usize)> {
         let split = bytes.iter().position(|&b| b == b';').unwrap_or(bytes.len());
         let Some(mut cmd) = Command::parse(&bytes[..split]) else {
             self.abort();
@@ -605,7 +612,7 @@ impl Graphics {
             b'p' => {
                 self.abort();
                 let index = self.find(&cmd)?;
-                return self.put(index, &cmd, col, row, cell, screen_rows);
+                return self.put(index, &cmd, col, row, cell);
             }
             b't' | b'T' => {}
             _ => {
@@ -667,7 +674,7 @@ impl Graphics {
         self.images.push(Image { key, id, number: cmd.number, pixels, width, height, atime });
         let mut advance = None;
         if cmd.action == b'T' {
-            advance = self.put(self.images.len() - 1, &cmd, col, row, cell, screen_rows);
+            advance = self.put(self.images.len() - 1, &cmd, col, row, cell);
             if id == 0 && !self.placements.iter().any(|p| p.image == key) {
                 self.images.pop();
             }
@@ -713,7 +720,6 @@ impl Graphics {
         col: usize,
         row: usize,
         cell: (i32, i32),
-        screen_rows: usize,
     ) -> Option<(usize, usize)> {
         let image = &self.images[index];
         let (image_key, id, width, height) = (image.key, image.id, image.width, image.height);
@@ -756,11 +762,13 @@ impl Graphics {
         };
         self.images[index].atime = self.tick();
         if visible {
+            // Not clipped at the screen's bottom: the screen may scroll the
+            // rest into view, as kitty's does, and draw.c clips at the canvas.
             let (ch, y) = (i64::from(cell.1), row as i64 * i64::from(cell.1) + y);
             let mut slices = Vec::new();
             // A relative placement is laid out from its parent by relayout.
             if parent.is_none() {
-                append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
+                append_slice(&mut slices, y, y, y + h);
             }
             self.placements.push(Placement {
                 pixels,
@@ -780,6 +788,7 @@ impl Graphics {
                 cols,
                 row: row as i64,
                 rows,
+                sixel: false,
                 anchor: row as i64,
                 parent,
                 offset: (i64::from(cmd.parent_x), i64::from(cmd.parent_y)),
@@ -1028,8 +1037,7 @@ impl Graphics {
     }
 
     fn over_quota(&self) -> bool {
-        self.images.len() > MAX_IMAGES
-            || self.images.iter().map(|img| img.pixels.len()).sum::<usize>() > MAX_BYTES
+        self.images.len() > MAX_IMAGES || self.images.iter().map(Image::bytes).sum::<usize>() > MAX_BYTES
     }
 
     /// kitty's storage quota: first free every image without a placement, then
@@ -1040,13 +1048,13 @@ impl Graphics {
             return;
         }
         self.free_unplaced(|img| img.key != added);
-        let mut bytes: usize = self.images.iter().map(|img| img.pixels.len()).sum();
+        let mut bytes: usize = self.images.iter().map(Image::bytes).sum();
         let mut count = self.images.len();
         let mut oldest: Vec<_> = self
             .images
             .iter()
             .filter(|img| img.key != added)
-            .map(|img| (img.atime, img.key, img.pixels.len()))
+            .map(|img| (img.atime, img.key, img.bytes()))
             .collect();
         oldest.sort_unstable();
         let mut evict = Vec::new();
@@ -1063,34 +1071,89 @@ impl Graphics {
         self.images.retain(|img| evict.binary_search(&img.key).is_err());
     }
 
+    /// Place a Sixel image, given as the command `sixel::kitty_command` makes.
+    /// Its placement is marked as Sixel, for `erase_sixel`.
+    pub fn sixel(&mut self, bytes: &[u8], col: usize, row: usize, cell: (i32, i32), screen_rows: usize) {
+        let before = self.clock;
+        self.command(bytes, col, row, cell, screen_rows);
+        for p in self.placements.iter_mut().filter(|p| p.key > before) {
+            p.sixel = true;
+        }
+    }
+
+    /// Clear the Sixel pixels inside the screen rectangle from (x0, y0) to
+    /// (x1, y1), as xterm's erase_graphic does for the cells text is written
+    /// to and the rows ED erases: they become transparent. kitty images are a
+    /// layer of their own, which text and erasure leave alone.
+    pub fn erase_sixel(&mut self, x0: i64, y0: i64, x1: i64, y1: i64) {
+        for i in 0..self.placements.len() {
+            let p = &self.placements[i];
+            // Sixel images are drawn whole, a pixel per screen pixel.
+            let (w, h) = (i64::from(p.width), i64::from(p.height));
+            if !p.sixel || p.w != w || p.h != h || p.src != [0, 0, p.width, p.height] {
+                continue;
+            }
+            let (left, right) = (x0.max(p.x), x1.min(p.x + w));
+            let rows: Vec<_> = p.slices.iter().map(|s| (y0.max(s.y), y1.min(s.y + h), s.y)).collect();
+            if left >= right || rows.iter().all(|&(top, bottom, _)| top >= bottom) {
+                continue;
+            }
+            // On the first erase the image store holds the other reference.
+            // No command can place it again (a Sixel image has no id), so the
+            // store lets it go, and keeps counting the image by its size: the
+            // pixels are written in place, not copied, and later erases need
+            // no search of the store.
+            let (x, key) = (p.x, p.image);
+            if Rc::strong_count(&p.pixels) > 1 {
+                if let Some(img) = self.images.iter_mut().find(|img| img.key == key) {
+                    img.pixels = Rc::default();
+                }
+            }
+            let pixels = Rc::make_mut(&mut self.placements[i].pixels);
+            for (top, bottom, origin) in rows {
+                for y in top..bottom {
+                    let start = ((y - origin) * w + left - x) as usize * 4;
+                    pixels[start..start + (right - left) as usize * 4].fill(0);
+                }
+            }
+        }
+    }
+
     /// Scroll only placements wholly inside the region, as required by kitty.
     /// Use the surviving visible bounds: clipping is permanent, so clipped
     /// source pixels neither block later scrolling nor reappear on reversal.
+    /// Without margins, kitty moves every placement and clips none, so the
+    /// screen's bottom is no edge: what is below it stays, and can scroll up
+    /// into view. Its top still clips.
     pub fn scroll(&mut self, top: usize, bottom: usize, delta: i64, cell_h: i32) {
         if self.placements.is_empty() {
             return;
         }
         let ch = i64::from(cell_h);
-        let (first, last) = (top as i64, bottom as i64 + 1);
-        let (top, bottom, dy) = (first * ch, last * ch, delta * ch);
+        let open = top == 0 && bottom + 1 >= self.screen_rows;
+        let (first, last) = (top as i64, if open { i64::MAX / 2 / ch.max(1) } else { bottom as i64 + 1 });
+        // Saturating: a distance can be as long as the log, and an image as
+        // far below the screen as scrolling down has moved it.
+        let (top, bottom, dy) = (first * ch, last * ch, delta.saturating_mul(ch));
         // kitty's start row stops at a margin only in a partial region.
-        let partial = first != 0 || last != self.screen_rows as i64;
+        let partial = !open;
         for p in &mut self.placements {
             // Relative placements follow their roots, in relayout.
             if p.parent.is_some() || p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {
                 continue;
             }
             for part in &mut p.slices {
-                part.y += dy;
-                part.top = (part.top + dy).max(top);
-                part.bottom = (part.bottom + dy).min(bottom);
+                part.y = part.y.saturating_add(dy);
+                part.top = part.top.saturating_add(dy).max(top);
+                part.bottom = part.bottom.saturating_add(dy).min(bottom);
             }
             p.slices.retain(|s| s.top < s.bottom);
             // Its cells move too, clipped at the margins as kitty clips them.
-            let (start, end) = ((p.row + delta).max(first), (p.row + delta + p.rows).min(last));
+            let row = p.row.saturating_add(delta);
+            let (start, end) = (row.max(first), row.saturating_add(p.rows).min(last));
             p.row = start;
             p.rows = (end - start).max(0);
-            p.anchor += delta;
+            p.anchor = p.anchor.saturating_add(delta);
             if partial {
                 p.anchor = p.anchor.max(first);
             }

@@ -29,3 +29,12 @@ Run `SANITIZE=1 ./tests/run.sh`
 after changes. `./test.sh` additionally compares both compressors byte for byte
 on 3,000 seeded inputs. Renderer pixel hashes provide end-to-end checks on macOS
 and Linux CI.
+
+# Local changes to stb_image.h
+
+- `stbi__parse_uncompressed_block` compares the bytes left with a stored
+  block's length (`a->zbuffer_end - a->zbuffer < len`) instead of forming
+  `a->zbuffer + len`, a pointer that is undefined behaviour when it lands more
+  than one past the input. The result is the same for every input. `image_inflate`
+  passes its input unpadded, so a stored block longer than what is left can
+  reach it. `tests/image.c` checks one.
