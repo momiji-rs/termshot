@@ -66,7 +66,9 @@ fn malformed_and_unsupported_commands_are_ignored() {
         "t=f",
         "t=t",
         "t=s",
-        "o=z",
+        "o=x",
+        "o=Z",
+        "o=zz",
         "U=1",
         "x=1",
         "z=-1",
@@ -99,13 +101,13 @@ fn malformed_and_unsupported_commands_are_ignored() {
 
 #[test]
 fn base64_validation() {
-    assert_eq!(base64(b"/wAA"), Some(vec![255, 0, 0]));
-    assert_eq!(base64(b"/w=="), Some(vec![255]));
-    assert_eq!(base64(b"/wA="), Some(vec![255, 0]));
+    assert_eq!(base64(b"/wAA", MAX_BYTES), Some(vec![255, 0, 0]));
+    assert_eq!(base64(b"/w==", MAX_BYTES), Some(vec![255]));
+    assert_eq!(base64(b"/wA=", MAX_BYTES), Some(vec![255, 0]));
     for bad in [
         "/wA", "!!!!", "=AAA", "/x==", "/wB=", "/w==AAAA", "AA=A", "AA\nA",
     ] {
-        assert!(base64(bad.as_bytes()).is_none(), "{bad}");
+        assert!(base64(bad.as_bytes(), MAX_BYTES).is_none(), "{bad}");
     }
 }
 
@@ -343,9 +345,9 @@ fn base64_accepts_exact_payload_limit_and_rejects_one_byte_more() {
     let mut encoded = vec![b'A'; (MAX_BYTES + 2) / 3 * 4];
     let n = encoded.len();
     encoded[n - 2..].copy_from_slice(b"==");
-    assert_eq!(base64(&encoded).unwrap().len(), MAX_BYTES);
+    assert_eq!(base64(&encoded, MAX_BYTES).unwrap().len(), MAX_BYTES);
     encoded[n - 2] = b'A';
-    assert!(base64(&encoded).is_none());
+    assert!(base64(&encoded, MAX_BYTES).is_none());
 }
 
 #[test]
