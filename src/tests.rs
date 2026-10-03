@@ -354,10 +354,10 @@ fn json_has_runs_of_alike_cells_and_the_cursor() {
 
 #[test]
 fn json_escapes_controls_and_reports_a_hidden_cursor() {
-    let mut cells = parse(b"\x1b[9;21mab", 3, 1);
+    let mut cells = parse(b"\x1b[9;21;3mab", 3, 1);
     cells[1].ch = 0x1b;
     let want = "{\"cols\":3,\"rows\":1,\"cursor\":null,\"lines\":[\n\
-        [{\"col\":0,\"text\":\"a\\u001b\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"double_underline\":true,\"strike\":true}]\n]}\n";
+        [{\"col\":0,\"text\":\"a\\u001b\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"italic\":true,\"double_underline\":true,\"strike\":true}]\n]}\n";
     assert_eq!(grid_json(&cells, 3, 1, None), want);
 }
 
@@ -834,6 +834,13 @@ fn sgr_underline_and_strike() {
         attrs,
         [UNDERLINE, DOUBLE_UNDERLINE, UNDERLINE, 0, STRIKE, 0, BOLD | UNDERLINE | STRIKE, UNDERLINE | STRIKE]
     );
+}
+
+#[test]
+fn sgr_italic() {
+    let g = grid(b"\x1b[3ma\x1b[23mb\x1b[1;3mc\x1b[22md\x1b[me");
+    let attrs: Vec<u8> = (0..5).map(|c| at(&g, 0, c).attrs).collect();
+    assert_eq!(attrs, [ITALIC, 0, BOLD | ITALIC, ITALIC, 0]);
 }
 
 #[test]

@@ -44,6 +44,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A hint on stderr when a collection of several faces is given without
   picking one: which face was used (the first, as before) and the list of
   the others. `FILE#0` uses the first without the hint.
+- Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
+  is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
+  outline is slanted 12 degrees before it is rasterized, so it is as smooth
+  as upright text with any font. Box drawing, block elements and the box
+  for a missing glyph stay upright.
 
 ### Changed
 
