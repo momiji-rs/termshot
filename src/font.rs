@@ -57,20 +57,30 @@ pub struct Spec {
 
 impl Spec {
     /// A file named `a#1` is that file; otherwise `a.ttc#1` is face 1 of
-    /// `a.ttc`. The path is the longest prefix before a `#` that is a file,
-    /// so a face name may hold `#` too, as in `a.ttc#Foo #1`; with none, it
-    /// ends at the first `#`. Decided once, before any output is created, so
-    /// that creating one can't change what a value means.
-    pub fn parse(value: &str) -> Spec {
+    /// `a.ttc`. The path is the prefix before a `#` that is a file, so a face
+    /// name may hold `#` too, as in `a.ttc#Foo #1`; with none, it ends at the
+    /// first `#`. Two such prefixes, as when `a.ttc` and `a.ttc#Foo` both
+    /// exist, are refused rather than guessed between. Decided once, before
+    /// any output is created, so that creating one can't change what a value
+    /// means.
+    pub fn parse(value: &str) -> Result<Spec, String> {
         if Path::new(value).exists() {
-            return Spec { path: value.into(), face: None };
+            return Ok(Spec { path: value.into(), face: None });
         }
-        let mut cuts = value.rmatch_indices('#').map(|(at, _)| at);
-        let first = value.find('#');
-        match cuts.find(|&at| Path::new(&value[..at]).is_file()).or(first) {
+        let files: Vec<usize> =
+            value.match_indices('#').map(|(at, _)| at).filter(|&at| Path::new(&value[..at]).is_file()).collect();
+        let at = match files[..] {
+            [] => value.find('#'),
+            [at] => Some(at),
+            [first, second, ..] => {
+                let (first, second) = (&value[..first], &value[..second]);
+                return Err(format!("{value:?} could name a face of {first} or of {second}; rename one of them"));
+            }
+        };
+        Ok(match at {
             Some(at) => Spec { path: value[..at].into(), face: Some(value[at + 1..].into()) },
             None => Spec { path: value.into(), face: None },
-        }
+        })
     }
 }
 
@@ -772,12 +782,18 @@ pub mod tests {
         let font = fs::read(FONT).unwrap();
         let path = "target/test/hash-names.ttc";
         fs::write(path, collection(&[(&font, "Foo"), (&font, "Foo #1")])).unwrap();
-        let spec = Spec::parse(&format!("{path}#Foo #1"));
+        let spec = Spec::parse(&format!("{path}#Foo #1")).unwrap();
         assert_eq!(spec, Spec { path: path.into(), face: Some("Foo #1".into()) });
         assert_eq!(load(&spec).unwrap().face, Some((1, "Foo #1".into())));
         // With no such file, the path ends at the first #.
-        let spec = Spec::parse("target/test/absent.ttc#Foo #1");
+        let spec = Spec::parse("target/test/absent.ttc#Foo #1").unwrap();
         assert_eq!(spec, Spec { path: "target/test/absent.ttc".into(), face: Some("Foo #1".into()) });
+        // Two files that the value could start with: neither is guessed.
+        let other = format!("{path}#Foo");
+        fs::write(&other, collection(&[(&font, "Bar#1")])).unwrap();
+        let error = Spec::parse(&format!("{path}#Foo#Bar#1")).err().unwrap();
+        assert!(error.contains(&format!("could name a face of {path} or of {other}")), "{error}");
+        fs::remove_file(&other).unwrap();
     }
 
     #[test]

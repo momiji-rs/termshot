@@ -112,6 +112,9 @@ expect 1 "$log" "$out/x.png" --font "$ttc#2"
 expect 1 "$log" "$out/x.png" --font "$ttc#Face C"
 expect 1 "$log" "$out/x.png" --font "$font#1"
 expect 2 --font "$ttc#1" "$log" "$ttc"
+cp "$ttc" "$ttc#x"
+expect 2 "$log" "$out/x.png" --font "$ttc#x#1"
+rm "$ttc#x"
 check "a collection without a face says which it used, and lists the others" \
     './termshot --font "$ttc" "$log" "$out/ttc.png" 2>"$out/ttc.err" &&
      grep -q "the first, Face A, was used" "$out/ttc.err" && grep -qx "  #1  Face B" "$out/ttc.err"'

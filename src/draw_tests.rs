@@ -27,7 +27,7 @@ fn render_with(
 }
 
 fn load(value: &str) -> font::Font {
-    font::load(&font::Spec::parse(value)).unwrap()
+    font::load(&font::Spec::parse(value).unwrap()).unwrap()
 }
 
 /// The mutation tests/fontfuzz used to find stb_truetype crashes, ported
@@ -154,9 +154,9 @@ fn a_file_named_with_a_hash_is_that_file() {
     fs::copy(FONT, odd).unwrap();
     let font = load(odd);
     assert!(font.start == 0 && font.face.is_none());
-    assert_eq!(font::Spec::parse(odd), font::Spec { path: odd.into(), face: None });
+    assert_eq!(font::Spec::parse(odd), Ok(font::Spec { path: odd.into(), face: None }));
     assert_eq!(
         font::Spec::parse("target/test/absent.ttc#Noto Sans"),
-        font::Spec { path: "target/test/absent.ttc".into(), face: Some("Noto Sans".into()) }
+        Ok(font::Spec { path: "target/test/absent.ttc".into(), face: Some("Noto Sans".into()) })
     );
 }
