@@ -185,10 +185,10 @@ def source():
             'build_inputs_sha256': digest.hexdigest(), 'build_sh_sha256': sha256(ROOT / 'build.sh')}
 
 
-def run_profiled(command, env):
-    result = subprocess.run(command, env={**env, 'TERMSHOT_PROFILE': '1'}, capture_output=True, text=True, check=True)
+def profile_records(stderr):
+    """The termshot-profile records in a run's stderr, merged."""
     profile = {}
-    for line in result.stderr.splitlines():
+    for line in stderr.decode(errors='replace').splitlines():
         if line.startswith('termshot-profile '):
             profile.update(json.loads(line.split(' ', 1)[1]))
     return profile
@@ -266,6 +266,7 @@ def main():
         report['fonts'][str(path)] = {'bytes': path.stat().st_size, 'sha256': sha256(path)}
     env = dict(os.environ)
     env.pop('TERMSHOT_PROFILE', None)
+    profiled_env = {**env, 'TERMSHOT_PROFILE': '1'}
     rng = random.Random(args.seed)
     with tempfile.TemporaryDirectory(prefix='termshot-bench-') as tmp:
         directory = Path(tmp)
@@ -298,12 +299,13 @@ def main():
                     command = case.command(binaries[label], out[label])
                     before = resource.getrusage(resource.RUSAGE_CHILDREN)
                     start = time.perf_counter_ns()
-                    if profiled:
-                        profile = run_profiled(command, env)
-                    else:
-                        subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
+                    # Plain and profiled runs are spawned alike; parsing the
+                    # profile happens after the clock stops.
+                    result = subprocess.run(command, env=profiled_env if profiled else env,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                     elapsed = round((time.perf_counter_ns() - start) / 1e6, 4)
                     after = resource.getrusage(resource.RUSAGE_CHILDREN)
+                    profile = profile_records(result.stderr) if profiled else None
                     # Every run's PNG, outside the timed interval.
                     seen[label].add(sha256(out[label]))
                     if run < 0:
