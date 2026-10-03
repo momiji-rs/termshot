@@ -216,15 +216,55 @@ as kitty does. Explicit image ids and numbers must be nonzero; omitting `i` is
 valid. Main and alternate screens keep separate images. See
 [the regression evidence](docs/kitty-graphics.md).
 
-This is a subset, not full kitty emulation: Sixel, file/shared-memory transfer,
+This is a subset, not full kitty emulation: file/shared-memory transfer,
 source cropping, pixel offsets, negative z-index, animation, relative placements and Unicode
 placeholders are not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain
 `tmux capture-pane` text capture cannot recover them. This does not make every
-image-using TUI capture compatible automatically. Sixel remains tracked in
-[#41](https://github.com/momiji-rs/termshot/issues/41); advanced kitty work is
+image-using TUI capture compatible automatically. Advanced kitty work is
 tracked in [#44](https://github.com/momiji-rs/termshot/issues/44).
+
+Sixel images (`ESC P P1;P2;P3 q … ESC \`) are drawn too, following xterm's
+decoder (its `graphics_sixel.c`, patch 412) and the VT340 it emulates:
+
+- Colour introducers `#Pc` select a register and `#Pc;Pu;Px;Py;Pz` define it,
+  in HLS (`Pu` 1, DEC hues: 0 is blue, 120 red, 240 green) or RGB (`Pu` 2), in
+  percent, rounded half up to 8 bits. Each image has its own 1,024 registers,
+  starting from the VT340's 16 colours (the rest black), as xterm's default
+  private colour registers; register numbers wrap at 1,024. Drawing starts in
+  register 3, as in xterm. Pixels keep their register, so redefining one
+  recolours what it drew: the palette at the end of the image applies.
+  A definition out of range or with the wrong number of parameters is ignored.
+- Repeats (`!Pn`), graphics carriage return (`$`) and next line (`-`), and raster
+  attributes (`"Pan;Pad;Ph;Pv`). Pixels are square device pixels at their
+  native size, as in xterm, which also ignores `P1` and `Pan;Pad`; cell
+  dimensions come from the font and `--px`, as for kitty's native sizing.
+  The image is as large as `Ph`x`Pv` or its pixels reach, whichever is larger.
+- `P2` 1 leaves pixels no sixel set transparent. `P2` 0 or 2 paints the declared
+  area with register 0, as xterm does; pixels past it stay transparent.
+- With Sixel scrolling on (the default), the image starts at the cursor, and
+  the cursor ends on the last text row the image covers, in the same column,
+  so the program's next newline goes below it. An image that would pass the
+  bottom margin first scrolls the region up; its top is cut off if it is
+  taller than the region. DECSDM (`CSI ? 80 h`) instead draws at the top left
+  corner, clipped at the bottom, without scrolling or moving the cursor.
+- The image joins the kitty image store as an unnamed image drawn above the
+  text, so it shares the layering, scrolling, erase and storage limits above.
+  Only `ESC \` commits an image; BEL, CAN, SUB, another escape or the end of
+  the log discard it, and C1 controls (such as the 8-bit ST) are not
+  recognised. A DCS that is not Sixel (`DECRQSS`, `XTGETTCAP`, ...) is
+  skipped. An image wider or taller than 8,192 pixels or over 4,194,304
+  pixels is refused whole, before its pixels are allocated, and a repeat
+  costs nothing beyond those bounds. Since a few bytes can declare a large
+  image, a log decodes at most 16,777,216 Sixel pixels plus 256 for each byte
+  of Sixel data; images past that budget are refused.
+
+Text written later where an image is stays under it. Erasing below or above
+the cursor (ED 0 or 1) leaves images in place, where xterm erases their pixels.
+An image with no pixels moves nothing. Non-square pixels from `P1` or `Pan;Pad`
+(xterm ignores them too), DECSET 8452 (the cursor to the right of the image),
+shared colour registers (`CSI ? 1070 l`) and ReGIS are not supported.
 
 Limits per screen are 1,024 placements, and 4,096 stored images holding 16 MiB
 of RGBA pixels. Past the image limits, an upload first frees every image

@@ -10,9 +10,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Replay kitty inline graphics (`a=T,t=d`) in RGB, RGBA and PNG formats,
   including chunked uploads, alpha blending, cell-sized placements, native
   pixel sizing, image-ID replacement and deletion (#41). Images track scrolling
-  and alternate screens. Unsupported graphics features, including Sixel and
+  and alternate screens. Unsupported graphics features, including
   external-file transfers, remain ignored; see the README for the supported
   subset and resource limits.
+
+- Draw Sixel images (`ESC P … q … ESC \`, #41) as xterm decodes them: HLS and
+  RGB colour registers, private to each image and starting from the VT340's
+  16 colours, repeats, `$` and `-`, raster attributes, and `P2` for an opaque
+  or transparent background. Pixels are square and native size, measured in
+  the font's cells like kitty's native sizing. The image starts at the cursor,
+  scrolls the screen when it passes the bottom margin, and leaves the cursor on
+  the last row it covers; DECSDM (`CSI ? 80 h`) draws it at the top left
+  instead. Images share the kitty image store, its layering and its limits;
+  one over 8,192 pixels on a side or 4,194,304 in all is refused, as are
+  images past a per-log budget of 16,777,216 pixels plus 256 per byte of
+  Sixel data, so a short log cannot demand unbounded work. Text and
+  JSON output load the font for a log with Sixel, since the cell height moves
+  the cursor.
 
 - Kitty graphics store images apart from their placements (#44): `a=t`
   transmits without placing, `a=p` places a stored image again, `I` names
