@@ -1,0 +1,474 @@
+//! asciinema recordings (asciicast v2 and v3, `.cast`) as input. A cast is
+//! newline-delimited JSON: a header object, then one event per line. termshot
+//! concatenates the data of the output (`"o"`) events, in file order, and
+//! replays those bytes as it would a raw PTY log. The formats:
+//! <https://docs.asciinema.org/manual/asciicast/v2/> and
+//! <https://docs.asciinema.org/manual/asciicast/v3/>.
+//!
+//! - v2: the header has `width` and `height`; an event is
+//!   `[time, code, data]`, with time in seconds since the start.
+//! - v3: the header has `term.cols` and `term.rows`; an event is
+//!   `[interval, code, data]`, with the interval since the previous event,
+//!   and a line starting with `#` is a comment.
+//!
+//! A resize (`"r"`, data `"COLSxROWS"`) does not resize the grid mid-replay:
+//! the screen model has one size. The last resize gives the size the
+//! recording ends at, which is the size used when no `--size` is given, and
+//! every output event is replayed on that grid. Full-screen programs redraw
+//! on SIGWINCH, so their final frame is right; text written before a resize
+//! may wrap where the terminal of the time would not have. Input (`"i"`),
+//! marker (`"m"`), exit (`"x"`) and unknown events are ignored.
+//!
+//! The JSON reader is strict (RFC 8259): UTF-8 only, every escape including
+//! `\uXXXX` and surrogate pairs (a lone surrogate is refused, as it has no
+//! UTF-8 form), no duplicate keys, no trailing commas, and nesting at most
+//! MAX_DEPTH deep. Times must be finite and not negative, and sizes whole
+//! numbers that fit in 64 bits. Anything else is refused with its line and
+//! column, never guessed at.
+
+/// How deep arrays and objects may nest. A v3 header needs 3 (term.theme).
+pub const MAX_DEPTH: usize = 16;
+
+/// A JSON value. Numbers keep their text, checked against the grammar, so
+/// a size is read as an integer and never through a float.
+#[derive(Debug, PartialEq)]
+pub enum Value<'a> {
+    Null,
+    Bool(bool),
+    Number(&'a str),
+    String(String),
+    Array(Vec<Value<'a>>),
+    Object(Vec<(String, Value<'a>)>),
+}
+
+impl<'a> Value<'a> {
+    fn get(&self, key: &str) -> Option<&Value<'a>> {
+        match self {
+            Value::Object(members) => members.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Value::Null => "null",
+            Value::Bool(_) => "a boolean",
+            Value::Number(_) => "a number",
+            Value::String(_) => "a string",
+            Value::Array(_) => "an array",
+            Value::Object(_) => "an object",
+        }
+    }
+}
+
+/// Where a JSON text went wrong: a byte offset into it, and why.
+#[derive(Debug, PartialEq)]
+pub struct JsonError {
+    pub at: usize,
+    pub reason: String,
+}
+
+struct Parser<'a> {
+    text: &'a str,
+    i: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn bytes(&self) -> &'a [u8] {
+        self.text.as_bytes()
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes().get(self.i).copied()
+    }
+
+    fn error<T>(&self, reason: impl Into<String>) -> Result<T, JsonError> {
+        Err(JsonError { at: self.i, reason: reason.into() })
+    }
+
+    fn skip_space(&mut self) {
+        while let Some(b' ' | b'\t' | b'\n' | b'\r') = self.peek() {
+            self.i += 1;
+        }
+    }
+
+    fn expect(&mut self, byte: u8, what: &str) -> Result<(), JsonError> {
+        if self.peek() == Some(byte) {
+            self.i += 1;
+            Ok(())
+        } else {
+            self.unexpected(what)
+        }
+    }
+
+    fn unexpected<T>(&self, wanted: &str) -> Result<T, JsonError> {
+        match self.text[self.i..].chars().next() {
+            None => self.error(format!("the line ends where {wanted} was expected")),
+            Some(c) => self.error(format!("expected {wanted}, found {:?}", c)),
+        }
+    }
+
+    fn value(&mut self, depth: usize) -> Result<Value<'a>, JsonError> {
+        self.skip_space();
+        match self.peek() {
+            Some(b'{') => self.object(depth + 1),
+            Some(b'[') => self.array(depth + 1),
+            Some(b'"') => self.string().map(Value::String),
+            Some(b'-' | b'0'..=b'9') => self.number().map(Value::Number),
+            Some(b't') => self.literal("true", Value::Bool(true)),
+            Some(b'f') => self.literal("false", Value::Bool(false)),
+            Some(b'n') => self.literal("null", Value::Null),
+            _ => self.unexpected("a JSON value"),
+        }
+    }
+
+    fn literal(&mut self, word: &str, value: Value<'a>) -> Result<Value<'a>, JsonError> {
+        if self.bytes()[self.i..].starts_with(word.as_bytes()) {
+            self.i += word.len();
+            Ok(value)
+        } else {
+            self.unexpected("a JSON value")
+        }
+    }
+
+    fn nest(&self, depth: usize) -> Result<(), JsonError> {
+        if depth > MAX_DEPTH {
+            return self.error(format!("arrays and objects nest more than {MAX_DEPTH} deep"));
+        }
+        Ok(())
+    }
+
+    fn array(&mut self, depth: usize) -> Result<Value<'a>, JsonError> {
+        self.nest(depth)?;
+        self.i += 1;
+        let mut items = Vec::new();
+        self.skip_space();
+        if self.peek() == Some(b']') {
+            self.i += 1;
+            return Ok(Value::Array(items));
+        }
+        loop {
+            items.push(self.value(depth)?);
+            self.skip_space();
+            match self.peek() {
+                Some(b',') => self.i += 1,
+                Some(b']') => {
+                    self.i += 1;
+                    return Ok(Value::Array(items));
+                }
+                _ => return self.unexpected("',' or ']'"),
+            }
+        }
+    }
+
+    fn object(&mut self, depth: usize) -> Result<Value<'a>, JsonError> {
+        self.nest(depth)?;
+        self.i += 1;
+        let mut members: Vec<(String, Value<'a>)> = Vec::new();
+        self.skip_space();
+        if self.peek() == Some(b'}') {
+            self.i += 1;
+            return Ok(Value::Object(members));
+        }
+        loop {
+            self.skip_space();
+            if self.peek() != Some(b'"') {
+                return self.unexpected("a string key");
+            }
+            let at = self.i;
+            let key = self.string()?;
+            if members.iter().any(|(k, _)| *k == key) {
+                return Err(JsonError { at, reason: format!("the key {key:?} appears twice") });
+            }
+            self.skip_space();
+            self.expect(b':', "':'")?;
+            let value = self.value(depth)?;
+            members.push((key, value));
+            self.skip_space();
+            match self.peek() {
+                Some(b',') => self.i += 1,
+                Some(b'}') => {
+                    self.i += 1;
+                    return Ok(Value::Object(members));
+                }
+                _ => return self.unexpected("',' or '}'"),
+            }
+        }
+    }
+
+    /// Four hex digits after `\u`.
+    fn hex4(&mut self) -> Result<u32, JsonError> {
+        let digits = self.bytes().get(self.i..self.i + 4).filter(|d| d.iter().all(u8::is_ascii_hexdigit));
+        let Some(digits) = digits else {
+            return self.error("\\u needs four hex digits");
+        };
+        let value = digits.iter().fold(0, |n, &d| n * 16 + (d as char).to_digit(16).unwrap_or(0));
+        self.i += 4;
+        Ok(value)
+    }
+
+    fn string(&mut self) -> Result<String, JsonError> {
+        self.i += 1;
+        let mut out = String::new();
+        loop {
+            // Copy the run up to the next quote, backslash or control.
+            let start = self.i;
+            while let Some(b) = self.peek() {
+                if b == b'"' || b == b'\\' || b < 0x20 {
+                    break;
+                }
+                self.i += 1;
+            }
+            // Those three are ASCII, so the run ends on a char boundary.
+            out.push_str(&self.text[start..self.i]);
+            match self.peek() {
+                None => return self.error("the line ends inside a string"),
+                Some(b'"') => {
+                    self.i += 1;
+                    return Ok(out);
+                }
+                Some(b'\\') => {
+                    self.i += 1;
+                    let escape = self.peek();
+                    self.i += 1;
+                    let c = match escape {
+                        Some(b'"') => '"',
+                        Some(b'\\') => '\\',
+                        Some(b'/') => '/',
+                        Some(b'b') => '\u{8}',
+                        Some(b'f') => '\u{c}',
+                        Some(b'n') => '\n',
+                        Some(b'r') => '\r',
+                        Some(b't') => '\t',
+                        Some(b'u') => self.unicode_escape()?,
+                        _ => {
+                            self.i -= 1;
+                            return self.unexpected("an escape (\\\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX)");
+                        }
+                    };
+                    out.push(c);
+                }
+                Some(_) => return self.error("a control character must be escaped in a string"),
+            }
+        }
+    }
+
+    /// The character of a `\uXXXX`, or of a surrogate pair of them.
+    fn unicode_escape(&mut self) -> Result<char, JsonError> {
+        let at = self.i - 2;
+        let lone = |at| Err(JsonError { at, reason: "a lone UTF-16 surrogate has no UTF-8 form".into() });
+        let first = self.hex4()?;
+        let code = match first {
+            0xD800..=0xDBFF => {
+                if !self.bytes()[self.i..].starts_with(b"\\u") {
+                    return lone(at);
+                }
+                self.i += 2;
+                let second = self.hex4()?;
+                if !(0xDC00..=0xDFFF).contains(&second) {
+                    return lone(at);
+                }
+                0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00)
+            }
+            0xDC00..=0xDFFF => return lone(at),
+            _ => first,
+        };
+        char::from_u32(code).map_or_else(|| lone(at), Ok)
+    }
+
+    /// A number, checked against JSON's grammar: -?(0|[1-9]d*)(.d+)?([eE][+-]?d+)?
+    fn number(&mut self) -> Result<&'a str, JsonError> {
+        let start = self.i;
+        let digits = |p: &mut Self| {
+            let from = p.i;
+            while let Some(b'0'..=b'9') = p.peek() {
+                p.i += 1;
+            }
+            p.i - from
+        };
+        if self.peek() == Some(b'-') {
+            self.i += 1;
+        }
+        match self.peek() {
+            Some(b'0') => {
+                self.i += 1;
+                if let Some(b'0'..=b'9') = self.peek() {
+                    return self.error("a number can't have a leading zero");
+                }
+            }
+            Some(b'1'..=b'9') => {
+                digits(self);
+            }
+            _ => return self.unexpected("a digit"),
+        }
+        if self.peek() == Some(b'.') {
+            self.i += 1;
+            if digits(self) == 0 {
+                return self.unexpected("a digit after '.'");
+            }
+        }
+        if let Some(b'e' | b'E') = self.peek() {
+            self.i += 1;
+            if let Some(b'+' | b'-') = self.peek() {
+                self.i += 1;
+            }
+            if digits(self) == 0 {
+                return self.unexpected("a digit in the exponent");
+            }
+        }
+        Ok(&self.text[start..self.i])
+    }
+}
+
+/// One JSON text, with nothing after it but whitespace.
+pub fn parse(text: &str) -> Result<Value<'_>, JsonError> {
+    let mut parser = Parser { text, i: 0 };
+    let value = parser.value(0)?;
+    parser.skip_space();
+    if parser.i < text.len() {
+        return parser.unexpected("the end of the line");
+    }
+    Ok(value)
+}
+
+/// What a cast holds for termshot.
+#[derive(Debug, PartialEq)]
+pub struct Cast {
+    pub version: u8,
+    /// The header's terminal size, as (cols, rows).
+    pub size: (u64, u64),
+    /// The size the recording ends at: the last resize event's, or the header's.
+    pub final_size: (u64, u64),
+    /// Whether final_size comes from a resize event.
+    pub resized: bool,
+    /// The output events' data, concatenated in file order.
+    pub output: Vec<u8>,
+}
+
+/// The lines of a cast, numbered from 1, without their LF.
+fn lines(data: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+    data.split(|&b| b == b'\n').enumerate().map(|(i, line)| (i + 1, line))
+}
+
+/// A line as UTF-8, or why not.
+fn line_text(n: usize, line: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(line).map_err(|e| format!("line {n}, column {}: not UTF-8", e.valid_up_to() + 1))
+}
+
+fn json_error(n: usize, line: &str, error: JsonError) -> String {
+    // Columns count characters, as an editor shows them.
+    let column = line[..error.at.min(line.len())].chars().count() + 1;
+    format!("line {n}, column {column}: {}", error.reason)
+}
+
+/// Whether the input is read as a cast: its first line, from its first
+/// byte, is a JSON object with a "version" member. A raw PTY log starts
+/// with terminal output, which is never such a line.
+pub fn detect(data: &[u8]) -> bool {
+    let first = data.split(|&b| b == b'\n').next().unwrap_or_default();
+    if first.first() != Some(&b'{') {
+        return false;
+    }
+    match std::str::from_utf8(first).ok().map(parse) {
+        Some(Ok(header)) => header.get("version").is_some(),
+        _ => false,
+    }
+}
+
+/// A whole number that fits in 64 bits, from a JSON value.
+fn whole(value: Option<&Value>, what: &str) -> Result<u64, String> {
+    match value {
+        None => Err(format!("the header has no {what}")),
+        Some(Value::Number(n)) if n.bytes().all(|b| b.is_ascii_digit()) => {
+            n.parse().map_err(|_| format!("{what} {n} is too large"))
+        }
+        Some(Value::Number(n)) => Err(format!("{what} must be a whole number, not {n}")),
+        Some(other) => Err(format!("{what} must be a whole number, not {}", other.kind())),
+    }
+}
+
+/// "COLSxROWS", as a resize event gives it.
+fn resize(data: &Value) -> Result<(u64, u64), String> {
+    let bad = || format!("a resize event's data must look like \"80x24\", not {data:?}");
+    let Value::String(text) = data else { return Err(bad()) };
+    let (cols, rows) = text.split_once('x').ok_or_else(bad)?;
+    let number = |n: &str| {
+        if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad());
+        }
+        n.parse::<u64>().map_err(|_| format!("the resize {text:?} is too large"))
+    };
+    Ok((number(cols)?, number(rows)?))
+}
+
+fn header(n: usize, text: &str) -> Result<(u8, (u64, u64)), String> {
+    let at = |reason: String| format!("line {n}: {reason}");
+    let header = parse(text).map_err(|e| format!("{} (the first line must be the asciicast header)", json_error(n, text, e)))?;
+    if !matches!(header, Value::Object(_)) {
+        return Err(at(format!("the asciicast header must be a JSON object, not {}", header.kind())));
+    }
+    let version = match header.get("version") {
+        None => return Err(at("the asciicast header has no version".into())),
+        Some(Value::Number("2")) => 2,
+        Some(Value::Number("3")) => 3,
+        Some(Value::Number(v)) => {
+            return Err(at(format!("asciicast version {v} is not supported; termshot reads versions 2 and 3")))
+        }
+        Some(other) => return Err(at(format!("the version must be a number, not {}", other.kind()))),
+    };
+    let size = if version == 2 {
+        (whole(header.get("width"), "width").map_err(at)?, whole(header.get("height"), "height").map_err(at)?)
+    } else {
+        let term = match header.get("term") {
+            Some(term @ Value::Object(_)) => term,
+            None => return Err(at("the header has no term".into())),
+            Some(other) => return Err(at(format!("term must be an object, not {}", other.kind()))),
+        };
+        (whole(term.get("cols"), "term.cols").map_err(at)?, whole(term.get("rows"), "term.rows").map_err(at)?)
+    };
+    Ok((version, size))
+}
+
+/// Read a cast: check every line, and collect the output.
+pub fn decode(data: &[u8]) -> Result<Cast, String> {
+    let mut lines = lines(data);
+    let (n, first) = lines.next().unwrap_or((1, b""));
+    let (version, size) = header(n, line_text(n, first)?)?;
+    let mut cast = Cast { version, size, final_size: size, resized: false, output: Vec::new() };
+    for (n, line) in lines {
+        let text = line_text(n, line)?;
+        if text.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\r')) || (version == 3 && text.starts_with('#')) {
+            continue;
+        }
+        let at = |reason: String| format!("line {n}: {reason}");
+        let event = parse(text).map_err(|e| json_error(n, text, e))?;
+        let Value::Array(mut fields) = event else {
+            return Err(at(format!("an event must be an array [time, code, data], not {}", event.kind())));
+        };
+        if fields.len() != 3 {
+            return Err(at(format!("an event must be [time, code, data], not {} items", fields.len())));
+        }
+        let data = fields.pop().unwrap_or(Value::Null);
+        let time = match &fields[0] {
+            Value::Number(t) => t.parse::<f64>().ok().filter(|t| t.is_finite() && *t >= 0.0),
+            _ => None,
+        };
+        let what = if version == 2 { "time" } else { "interval" };
+        if time.is_none() {
+            return Err(at(format!("an event's {what} must be a finite number of seconds, not below 0")));
+        }
+        match &fields[1] {
+            Value::String(code) if code == "o" => match data {
+                Value::String(output) => cast.output.extend_from_slice(output.as_bytes()),
+                other => return Err(at(format!("an output event's data must be a string, not {}", other.kind()))),
+            },
+            Value::String(code) if code == "r" => {
+                cast.final_size = resize(&data).map_err(at)?;
+                cast.resized = true;
+            }
+            Value::String(_) => {}
+            other => return Err(at(format!("an event's code must be a string, not {}", other.kind()))),
+        }
+    }
+    Ok(cast)
+}

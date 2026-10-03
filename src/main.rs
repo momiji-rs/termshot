@@ -7,12 +7,15 @@ use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
+mod cast;
 mod cff;
 mod font;
 mod graphics;
 mod unicode;
 #[rustfmt::skip]
 mod unicode_tables;
+#[cfg(test)]
+mod cast_tests;
 #[cfg(test)]
 mod cff_tests;
 #[cfg(test)]
@@ -1426,8 +1429,9 @@ usage: termshot [options] <log> <out.png>
        termshot [options] --text FILE --json FILE <log> [<out.png>]
        termshot <log> <out.png> <font.ttf> [px] [cols] [rows]
 
-Render the final screen of a terminal log (raw PTY output) as a PNG.
-Use - as <log> to read stdin, and - as an output to write stdout.
+Render the final screen of a terminal log (raw PTY output, or an
+asciinema v2 or v3 .cast recording) as a PNG. Use - as <log> to read
+stdin, and - as an output to write stdout.
 
 options:
   -f, --font FILE   TrueType or OpenType (CFF, CFF2) font (default:
@@ -1436,7 +1440,11 @@ options:
                     a font for the characters the first lacks, such
                     as CJK or emoji; others are drawn as an empty box
   -p, --px N        font pixel height, above 0 and below 256 (default 48)
-  -s, --size CxR    grid size in columns x rows, up to 500x200 (default 100x30)
+  -s, --size CxR    grid size in columns x rows, up to 500x200 (default: a
+                    cast's size, else 100x30)
+      --cast        read <log> as an asciinema .cast; without it, a log
+                    whose first line is a JSON object with a \"version\"
+                    member is read as one
       --lf-newline  treat each bare LF as CR LF, for logs not captured
                     through a PTY: text files, cmd > out.log, and
                     tmux capture-pane -e -p; a final bare LF ends the
@@ -1464,8 +1472,12 @@ For a font collection (.ttc), FILE#N picks face N, from 0, and FILE#NAME the
 face with that full or family name; without either, the first is used.
 An SGR reset uses foreground #dbe7f7 on background #111823.
 
-exit status: 0 done; 1 a file could not be read or written, or the font is
-unusable; 2 bad arguments, including an image over 134217728 pixels.
+A cast replays its output events in order, on the grid of the size it ends
+at (its last resize event, or its header); input and markers are ignored.
+
+exit status: 0 done; 1 a file could not be read or written, a cast is
+malformed, or the font is unusable; 2 bad arguments, including an image over
+134217728 pixels, or a cast's size beyond 500x200 without --size.
 ";
 
 /// A rendering request from the command line.
@@ -1478,11 +1490,15 @@ struct Options {
     font: Option<font::Spec>,
     fallback_font: Option<font::Spec>,
     px: f64,
-    cols: usize,
-    rows: usize,
+    /// The grid size given, by --size or the original form's cols and rows;
+    /// what is missing comes from a cast's header, or the defaults.
+    cols: Option<usize>,
+    rows: Option<usize>,
     lf: Lf,
-    /// --cursor: Some(None) hides the cursor; None leaves it to the log.
-    cursor: Option<Option<(usize, usize)>>,
+    /// --cast: read the log as an asciinema recording, however it starts.
+    cast: bool,
+    /// --cursor, checked once the grid size is known.
+    cursor: Option<String>,
     /// --cursor-shape: None leaves it to the log.
     cursor_shape: Option<CursorShape>,
     verbose: bool,
@@ -1551,7 +1567,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut args = args.into_iter();
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
-    let mut lf = Lf::Index;
+    let (mut lf, mut cast) = (Lf::Index, false);
     let (mut cursor, mut cursor_shape, mut text, mut json) = (None, None, None, None);
     let mut options_done = false;
     while let Some(arg) = args.next() {
@@ -1575,13 +1591,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             (arg.clone(), None)
         };
         match name.as_str() {
-            "-h" | "--help" | "-V" | "--version" | "-v" | "--verbose" | "--lf-newline" if attached.is_some() => {
+            "-h" | "--help" | "-V" | "--version" | "-v" | "--verbose" | "--lf-newline" | "--cast" if attached.is_some() => {
                 return Err(format!("{name} takes no value"));
             }
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
             "-v" | "--verbose" => verbose = true,
             "--lf-newline" => lf = Lf::Newline,
+            "--cast" => cast = true,
             "-f" | "--font" => font = Some(option_value(&name, attached, &mut args)?),
             "--fallback-font" => fallback_font = Some(option_value(&name, attached, &mut args)?),
             "-p" | "--px" => px = Some(parse_px(&option_value(&name, attached, &mut args)?)?),
@@ -1625,11 +1642,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     if size.is_some() && legacy_cols.is_some() {
         return Err("the grid size is given twice".into());
     }
-    let (cols, rows) = size.unwrap_or((
-        legacy_cols.unwrap_or(DEFAULT_COLS),
-        legacy_rows.unwrap_or(DEFAULT_ROWS),
-    ));
-    let cursor = cursor.map(|value| parse_cursor(&value, cols, rows)).transpose()?;
+    let (cols, rows) = match size {
+        Some((cols, rows)) => (Some(cols), Some(rows)),
+        None => (legacy_cols, legacy_rows),
+    };
     Ok(Command::Render(Options {
         log,
         out,
@@ -1641,6 +1657,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         cols,
         rows,
         lf,
+        cast,
         cursor,
         cursor_shape,
         verbose,
@@ -1853,13 +1870,51 @@ fn main() -> ExitCode {
         Err(error) => return cleanup(1, format!("{}: {error}", options.log)),
     };
     let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
+    let input_bytes = data.len();
+    let name = if options.log == "-" { "stdin" } else { &options.log };
+    // An asciinema recording replays its output events; its header gives
+    // the grid size that --size and the original form's cols and rows don't.
+    let (data, cast_size) = if options.cast || cast::detect(&data) {
+        // The output is all that is replayed; the recording can go.
+        let decoded = cast::decode(&data);
+        drop(data);
+        match decoded {
+            Ok(cast) => (cast.output, Some((cast.final_size, cast.resized))),
+            Err(reason) => return cleanup(1, format!("{name}: not a readable asciicast: {reason}")),
+        }
+    } else {
+        (data, None)
+    };
+    let source = match cast_size {
+        Some((_, true)) => "its last resize event",
+        _ => "its header",
+    };
+    let dimension = |given: Option<usize>, what: &str, max: usize, default: usize, from_cast: Option<u64>| {
+        match (given, from_cast) {
+            (Some(n), _) => Ok(n),
+            (None, None) => Ok(default),
+            (None, Some(n)) if (1..=max as u64).contains(&n) => Ok(n as usize),
+            (None, Some(n)) => Err(format!(
+                "{name}: the recording's terminal has {n} {what} ({source}), and termshot draws 1 to {max}; pass --size"
+            )),
+        }
+    };
+    let cols = dimension(options.cols, "columns", 500, DEFAULT_COLS, cast_size.map(|((c, _), _)| c));
+    let rows = dimension(options.rows, "rows", 200, DEFAULT_ROWS, cast_size.map(|((_, r), _)| r));
+    let (cols, rows) = match (cols, rows) {
+        (Ok(cols), Ok(rows)) => (cols, rows),
+        (Err(message), _) | (_, Err(message)) => return cleanup(2, message),
+    };
+    let cursor_option = match options.cursor.as_deref().map(|value| parse_cursor(value, cols, rows)).transpose() {
+        Ok(cursor) => cursor,
+        Err(message) => return cleanup(2, format!("{message}\nRun termshot --help for usage.")),
+    };
     // The image would still be made, with each line starting where the
     // last one ended; say why, and what fixes it.
     if options.lf == Lf::Index && lacks_cr(&data) {
         eprintln!(
-            "termshot: hint: {} has line feeds but no CR, so each line starts where the last ended; \
-             if it was not captured through a PTY (a text file, cmd > out.log, tmux capture-pane), pass --lf-newline",
-            if options.log == "-" { "stdin" } else { &options.log }
+            "termshot: hint: {name} has line feeds but no CR, so each line starts where the last ended; \
+             if it was not captured through a PTY (a text file, cmd > out.log, tmux capture-pane), pass --lf-newline"
         );
     }
 
@@ -1886,7 +1941,6 @@ fn main() -> ExitCode {
     }
 
     let parse_started = Instant::now();
-    let input_bytes = data.len();
     let (mut cell_w, mut cell_h) = (1, 1);
     if let Some((font, _)) = &fonts {
         if unsafe { draw_cell_size(font.data.as_ptr(), font.start as i32, options.px, &mut cell_w, &mut cell_h) } == 0 {
@@ -1894,23 +1948,23 @@ fn main() -> ExitCode {
         }
     }
     let Grid { mut cells, cursor, cursor_shape, images } =
-        replay_sized(&data, options.cols, options.rows, options.lf, (cell_w, cell_h));
+        replay_sized(&data, cols, rows, options.lf, (cell_w, cell_h));
     let mut image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
-    let cursor = options.cursor.unwrap_or(cursor);
+    let cursor = cursor_option.unwrap_or(cursor);
     let cursor_shape = options.cursor_shape.unwrap_or(cursor_shape);
     let write = |path: &String, output: String| {
         write_output(path, output.as_bytes())
             .map_err(|error| format!("{}: {error}", if path == "-" { "stdout" } else { path }))
     };
     let written = (options.text.as_ref())
-        .map_or(Ok(()), |path| write(path, grid_text(&cells, options.cols)))
+        .map_or(Ok(()), |path| write(path, grid_text(&cells, cols)))
         .and_then(|()| {
             (options.json.as_ref())
-                .map_or(Ok(()), |path| write(path, grid_json(&cells, options.cols, options.rows, cursor, cursor_shape)))
+                .map_or(Ok(()), |path| write(path, grid_json(&cells, cols, rows, cursor, cursor_shape)))
         });
     if let Err(message) = written {
         return cleanup(1, message);
@@ -1923,10 +1977,10 @@ fn main() -> ExitCode {
         (Some(out), Some((font, fallback))) => {
             match (cursor, cursor_shape) {
                 (None, _) => {}
-                (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, options.cols, row, col),
+                (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, cols, row, col),
                 // Over everything, images too, as a terminal draws it.
                 (Some(at), shape) => {
-                    let ((x, y, w, h), pixel) = cursor_mark(&cells, options.cols, at, shape, (cell_w, cell_h));
+                    let ((x, y, w, h), pixel) = cursor_mark(&cells, cols, at, shape, (cell_w, cell_h));
                     mark_pixel = pixel;
                     image_views.push(graphics::ImageView::solid(&mark_pixel, x, y, w, h));
                 }
@@ -1941,8 +1995,8 @@ fn main() -> ExitCode {
                 face_ms = face_started.elapsed().as_secs_f64() * 1000.0;
                 draw_png_images(
                     cells.as_ptr(),
-                    options.cols as i32,
-                    options.rows as i32,
+                    cols as i32,
+                    rows as i32,
                     font,
                     fallback.map_or(std::ptr::null(), |f| f as *const font::Face),
                     options.px,
