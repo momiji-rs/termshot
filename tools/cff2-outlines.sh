@@ -14,15 +14,25 @@ cd "$(dirname "$0")/.."
 font=third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf
 out=tests/fixtures/cff2-outlines.txt
 tab=$(printf '\t')
+# Each tool's output is captured on its own, so set -e sees it fail; a
+# pipeline would report only its last command. The file is replaced only
+# once every outline is in.
+version=$(hb-vector --version)
+unicodes=$(hb-info --list-unicodes "$font")
+map=$(printf '%s\n' "$unicodes" | sed -n "s/^U+\([0-9A-F]*\)${tab}gid\([0-9]*\)\$/\1 \2/p")
+[ -n "$map" ] || { echo "hb-info listed no characters" >&2; exit 1; }
 {
-    echo "# $(hb-vector --version | head -n 1), from tools/cff2-outlines.sh"
-    hb-info --list-unicodes "$font" | sed -n "s/^U+\([0-9A-F]*\)${tab}gid\([0-9]*\)\$/\1 \2/p" |
-        while read -r cp gid; do
-            path=$(hb-vector --font-size=1000 -u "$cp" "$font" | sed -n 's/.*<path d="\([^"]*\)".*/\1/p')
-            [ -n "$path" ] || continue # a space: no outline
-            # shellcheck disable=SC2046
-            set -- $(printf %s "$path" | cksum)
-            echo "$gid $1 $2"
-        done
-} > "$out"
+    printf '# %s, from tools/cff2-outlines.sh\n' "$(printf '%s\n' "$version" | head -n 1)"
+    while read -r cp gid; do
+        svg=$(hb-vector --font-size=1000 -u "$cp" "$font")
+        path=$(printf '%s\n' "$svg" | sed -n 's/.*<path d="\([^"]*\)".*/\1/p')
+        [ -n "$path" ] || continue # a space: no outline
+        # shellcheck disable=SC2046
+        set -- $(printf %s "$path" | cksum)
+        echo "$gid $1 $2"
+    done <<EOF
+$map
+EOF
+} > "$out.tmp"
+mv "$out.tmp" "$out"
 echo "wrote $out"
