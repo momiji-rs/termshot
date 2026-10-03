@@ -132,6 +132,15 @@ def paired_ratio(numerator, denominator):
             'bootstrap_95pct': [estimates[49], estimates[1949]]}
 
 
+def relative(path):
+    """The path from the repository root, or just the name of a generated file.
+    (Path.is_relative_to needs Python 3.9.)"""
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return path.name
+
+
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -186,11 +195,15 @@ def run_profiled(command, env):
 
 
 def check(case, profile):
-    """The counters that show a case exercised the path it is named for."""
+    """The counters that show a case exercised the path it is named for. A
+    missing counter fails: only --unchecked exempts a binary."""
+    if not profile:
+        return ['no termshot-profile records']
     failed = []
     for key, op, value in case.checks:
         if key not in profile:
-            continue  # an older binary without the counter
+            failed.append(f'no {key} in the profile')
+            continue
         have = profile[key]
         if not {'>': have > value, '==': have == value}[op]:
             failed.append(f'{key} {op} {value} (got {have})')
@@ -219,6 +232,8 @@ def main():
     p.add_argument('--cold-case', action='append', help='cases for --cold-runs (default: all selected)')
     p.add_argument('--verify-identical', action='store_true', help='require byte-identical PNGs across binaries')
     p.add_argument('--reference', help='binary label for paired speedup estimates')
+    p.add_argument('--unchecked', action='append', default=[],
+                   help='binary label exempt from the path checks, for one that predates the counters (repeatable)')
     p.add_argument('--seed', type=int, default=0, help='seed for interleaved execution order')
     args = p.parse_args()
     if args.runs < 1 or args.warmups < 0 or args.memory_runs < 0 or args.cold_runs < 0:
@@ -226,6 +241,10 @@ def main():
     binaries = {label: str(Path(path).resolve()) for label, path in (item.split('=', 1) for item in args.binary)}
     if args.reference and args.reference not in binaries:
         p.error('reference must name one of the binary labels')
+    if set(args.unchecked) - set(binaries):
+        p.error('--unchecked must name binary labels')
+    if args.cold_case and not args.cold_runs:
+        p.error('--cold-case needs --cold-runs')
     if args.cold_runs and platform.system() != 'Linux':
         p.error('--cold-runs drops the Linux page cache; it is not supported here')
     if args.cjk_font and not args.cjk_font.exists():
@@ -240,7 +259,7 @@ def main():
                               'rust': '--edition 2021 -C opt-level=2'},
               'runs': args.runs, 'warmups': args.warmups, 'memory_runs': args.memory_runs,
               'cold_runs': args.cold_runs, 'verify_identical': args.verify_identical,
-              'seed': args.seed, 'reference': args.reference,
+              'seed': args.seed, 'reference': args.reference, 'unchecked': args.unchecked,
               'cache_condition': 'warm: page cache populated by warmups; output files rewritten, no fsync',
               'fonts': {}, 'load_average_start': os.getloadavg(), 'cases': {}, 'cold': {}}
     for path in [FONT, CJK_SUBSET] + ([args.cjk_font] if args.cjk_font else []):
@@ -260,6 +279,10 @@ def main():
             if unknown:
                 p.error('unknown case: ' + ', '.join(sorted(unknown)))
             cases = [case for case in cases if case.name in args.case]
+        if args.cold_case:
+            unknown = set(args.cold_case) - {case.name for case in cases}
+            if unknown:
+                p.error('--cold-case names a case not selected: ' + ', '.join(sorted(unknown)))
         for case in cases:
             out = {label: directory / f'{label}.png' for label in binaries}
             plain = {label: [] for label in binaries}
@@ -267,6 +290,7 @@ def main():
             profiled_wall = {label: [] for label in binaries}
             profiles = {label: [] for label in binaries}
             failures = []
+            seen = {label: set() for label in binaries}
             for run in range(-args.warmups, args.runs):
                 order = [(label, profiled) for label in binaries for profiled in (False, True)]
                 rng.shuffle(order)
@@ -280,12 +304,15 @@ def main():
                         subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                     elapsed = round((time.perf_counter_ns() - start) / 1e6, 4)
                     after = resource.getrusage(resource.RUSAGE_CHILDREN)
+                    # Every run's PNG, outside the timed interval.
+                    seen[label].add(sha256(out[label]))
                     if run < 0:
                         continue
                     if profiled:
                         profiled_wall[label].append(elapsed)
                         profiles[label].append(profile)
-                        failures += [f'{label}: {failure}' for failure in check(case, profile)]
+                        if label not in args.unchecked:
+                            failures += [f'{label}: {failure}' for failure in check(case, profile)]
                     else:
                         plain[label].append(elapsed)
                         cpu[label].append(round(1000 * (after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime), 4))
@@ -304,13 +331,17 @@ def main():
                     if not match:
                         raise RuntimeError('Unable to read peak RSS: ' + result.stderr)
                     rss[label].append(int(match[1]) * (1 if darwin else 1024))
-            hashes = {label: sha256(out[label]) for label in binaries}
+                    seen[label].add(sha256(out[label]))
+            varied = {label: sorted(hashes) for label, hashes in seen.items() if len(hashes) != 1}
+            if varied:
+                raise RuntimeError(f'PNG bytes vary between runs in {case.name}: {varied}')
+            hashes = {label: next(iter(seen[label])) for label in binaries}
             if args.verify_identical and len(set(hashes.values())) != 1:
                 raise RuntimeError(f'PNG bytes differ in {case.name}: {hashes}')
             entry = report['cases'][case.name] = {
                 'workload': {'group': case.group, 'px': case.px, 'cols': case.cols, 'rows': case.rows,
                              'cli': 'positional' if case.legacy else 'options', 'fonts': case.font_files(),
-                             'input': str(case.src.relative_to(ROOT)) if case.src.is_relative_to(ROOT) else case.src.name,
+                             'input': relative(case.src),
                              'input_bytes': case.src.stat().st_size, 'input_sha256': sha256(case.src),
                              'checks': [' '.join(map(str, c)) for c in case.checks]},
             }
@@ -344,10 +375,13 @@ def main():
                 rng.shuffle(labels)
                 for label in labels:
                     drop_caches()
-                    command = case.command(binaries[label], directory / f'{label}-cold.png')
+                    png = directory / f'{label}-cold.png'
+                    command = case.command(binaries[label], png)
                     start = time.perf_counter_ns()
                     subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                     cold[label].append(round((time.perf_counter_ns() - start) / 1e6, 4))
+                    if sha256(png) != report['cases'][case.name][label]['png_sha256']:
+                        raise RuntimeError(f'{case.name}: a cold run of {label} wrote a different PNG')
             report['cold'][case.name] = {label: {'wall_ms': summary(cold[label]), 'wall_samples_ms': cold[label]}
                                          for label in binaries}
             for label in binaries:
