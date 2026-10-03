@@ -1,0 +1,8 @@
+{"cols":24,"rows":6,"cursor":{"col":8,"row":4,"shape":"block"},"lines":[
+[{"col":0,"text":"┌────────────┐","fg":"#0000ee","bg":"#111823","bold":true}],
+[{"col":0,"text":"│","fg":"#0000ee","bg":"#111823","bold":true},{"col":1,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":2,"text":"café","fg":"#00cd00","bg":"#111823"},{"col":6,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":7,"text":"ok","fg":"#111823","bg":"#dbe7f7"},{"col":9,"text":"    ","fg":"#dbe7f7","bg":"#111823"},{"col":13,"text":"│","fg":"#0000ee","bg":"#111823","bold":true}],
+[{"col":0,"text":"└────────────┘","fg":"#0000ee","bg":"#111823","bold":true}],
+[{"col":0,"text":"$","fg":"#ff8700","bg":"#111823"},{"col":1,"text":" echo \"\\t\" ½ ▌▐","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"done","fg":"#dbe7f7","bg":"#111823","italic":true},{"col":4,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":5,"text":"now","fg":"#dbe7f7","bg":"#111823","underline":true}],
+[]
+]}
