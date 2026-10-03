@@ -1,5 +1,6 @@
 //! Replay the self-contained subset of kitty graphics: directly transmitted
-//! images, stored (a=t) and placed (a=p, a=T), and deleted as kitty does.
+//! images, stored (a=t) and placed (a=p, a=T), at the cursor or relative to
+//! another placement, and deleted as kitty does.
 //! All coordinates are pixels computed from the same font metrics as draw.c.
 
 use std::rc::Rc;
@@ -11,6 +12,12 @@ const COMPRESSION_SLACK: usize = 1024;
 const MAX_IMAGES: usize = 4096;
 const MAX_PLACEMENTS: usize = 1024;
 const MAX_EXTENT: i64 = 1 << 24;
+/// The most parent links a relative placement may have to its root, kitty's
+/// PARENT_DEPTH_LIMIT. The spec asks for at least 8.
+const MAX_DEPTH: usize = 8;
+/// Where a relative placement's cell may be, in cells either way: far past
+/// any screen, and small enough that pixel positions cannot overflow.
+const MAX_CELL: i64 = 1 << 24;
 
 extern "C" {
     fn image_png_size(data: *const u8, len: i32, w: *mut i32, h: *mut i32) -> i32;
@@ -29,6 +36,10 @@ pub struct Graphics {
     /// Hands out image and placement keys, which are also kitty's creation
     /// order and its atime: both only need to increase.
     clock: u64,
+    /// The cell size and screen rows of the last command, which relative
+    /// placements are laid out with.
+    cell: (i32, i32),
+    screen_rows: usize,
 }
 
 struct Image {
@@ -60,10 +71,23 @@ pub struct Placement {
     placement_id: u32,
     z: i32,
     /// The cells it covers, for the delete selectors; rows follow scrolling.
+    /// A relative placement's are where it is drawn.
     col: i64,
     cols: i64,
     row: i64,
     rows: i64,
+    /// kitty's start row: the row its children are placed from. It follows
+    /// scrolling as `row` does, but goes above a full-screen region's top,
+    /// as kitty's goes into the scrollback.
+    anchor: i64,
+    /// A relative placement's parent placement, by key, and its offset in
+    /// cells (H, V) from the parent's top left cell.
+    parent: Option<u64>,
+    offset: (i64, i64),
+    /// Where the parent was in `placements` when last laid out: a hint.
+    parent_at: usize,
+    /// Where the image starts in its first cell, in pixels.
+    inner: (i64, i64),
 }
 
 /// Borrowed only for the duration of draw_png_images; pixels remain Rust-owned.
@@ -171,6 +195,12 @@ struct Command {
     offset_x: u32,
     offset_y: u32,
     z: i32,
+    /// P and Q: the parent image and placement of a relative placement.
+    parent_id: u32,
+    parent_placement: u32,
+    /// H and V: its offset in cells from the parent's top left cell.
+    parent_x: i32,
+    parent_y: i32,
     /// o=z: the payload is a zlib stream.
     compressed: bool,
     /// S: the size of the PNG data inside a compressed payload.
@@ -252,6 +282,10 @@ impl Command {
                 b'X' => cmd.offset_x = number(val)?,
                 b'Y' => cmd.offset_y = number(val)?,
                 b'z' => cmd.z = signed(val)?,
+                b'P' => cmd.parent_id = number(val)?,
+                b'Q' => cmd.parent_placement = number(val)?,
+                b'H' => cmd.parent_x = signed(val)?,
+                b'V' => cmd.parent_y = signed(val)?,
                 b'o' if val == b"z" => cmd.compressed = true,
                 b'S' => cmd.size = number(val)?,
                 b'C' if val == b"0" || val == b"1" => cmd.no_move = val == b"1",
@@ -307,7 +341,8 @@ pub fn needs_cell_metrics(data: &[u8]) -> bool {
                         b'p' => sent.contains(&name) || (c.id != 0 && c.id <= free_ids),
                         _ => false,
                     };
-                    if moves && !c.no_move {
+                    // A relative placement never moves the cursor.
+                    if moves && !c.no_move && c.parent_id == 0 {
                         return true;
                     }
                 }
@@ -540,6 +575,21 @@ impl Graphics {
         cell: (i32, i32),
         screen_rows: usize,
     ) -> Option<(usize, usize)> {
+        self.cell = cell;
+        self.screen_rows = screen_rows;
+        let advance = self.execute(bytes, col, row, cell, screen_rows);
+        self.relayout();
+        advance
+    }
+
+    fn execute(
+        &mut self,
+        bytes: &[u8],
+        col: usize,
+        row: usize,
+        cell: (i32, i32),
+        screen_rows: usize,
+    ) -> Option<(usize, usize)> {
         let split = bytes.iter().position(|&b| b == b';').unwrap_or(bytes.len());
         let Some(mut cmd) = Command::parse(&bytes[..split]) else {
             self.abort();
@@ -653,8 +703,9 @@ impl Graphics {
         free
     }
 
-    /// Place a stored image at the cursor. The same nonzero placement id on
-    /// the same image moves that placement instead of adding one.
+    /// Place a stored image at the cursor, or relative to a parent placement.
+    /// The same nonzero placement id on the same image moves that placement
+    /// instead of adding one.
     fn put(
         &mut self,
         index: usize,
@@ -667,6 +718,11 @@ impl Graphics {
         let image = &self.images[index];
         let (image_key, id, width, height) = (image.key, image.id, image.width, image.height);
         let pixels = Rc::clone(&image.pixels);
+        // A parent that does not exist refuses the put (kitty's ENOPARENT).
+        let parent = match cmd.parent_id {
+            0 => None,
+            _ => Some(self.parent(cmd)?),
+        };
         let Layout { src, x, y, w, h, cols, rows } = layout(cmd, width, height, cell)?;
         // kitty ignores a placement id on an image without an id.
         let placement_id = if id == 0 { 0 } else { cmd.placement_id };
@@ -677,6 +733,17 @@ impl Graphics {
                 .iter()
                 .position(|p| p.image == image_key && p.placement_id == placement_id),
         };
+        if let Some(parent) = parent {
+            let me = existing.map(|i| self.placements[i].key);
+            if !self.ancestry_fits(parent, me) {
+                // kitty makes a new placement before it checks the chain,
+                // and so has already marked the image used.
+                if existing.is_none() {
+                    self.images[index].atime = self.tick();
+                }
+                return None;
+            }
+        }
         // An empty crop shows nothing: its put still moves the cursor, and
         // replaces the placement it names, but leaves nothing to draw.
         let visible = w > 0 && h > 0;
@@ -691,7 +758,10 @@ impl Graphics {
         if visible {
             let (ch, y) = (i64::from(cell.1), row as i64 * i64::from(cell.1) + y);
             let mut slices = Vec::new();
-            append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
+            // A relative placement is laid out from its parent by relayout.
+            if parent.is_none() {
+                append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
+            }
             self.placements.push(Placement {
                 pixels,
                 width,
@@ -710,14 +780,157 @@ impl Graphics {
                 cols,
                 row: row as i64,
                 rows,
+                anchor: row as i64,
+                parent,
+                offset: (i64::from(cmd.parent_x), i64::from(cmd.parent_y)),
+                parent_at: usize::MAX,
+                inner: (x, y - row as i64 * ch),
             });
             // kitty's draw order: z-index, then image and placement creation.
             self.placements.sort_by_key(|p| (p.z, p.image, p.key));
         }
-        if cmd.no_move {
+        // A relative placement never moves the cursor, whatever C says.
+        if cmd.no_move || parent.is_some() {
             None
         } else {
             Some((cols as usize, rows as usize))
+        }
+    }
+
+    /// The placement a relative put names: image P's placement Q, or with no
+    /// Q the image's oldest placement. (kitty takes the first in its hash
+    /// map, which is not an order a client can rely on.)
+    fn parent(&self, cmd: &Command) -> Option<u64> {
+        let image = self.images.iter().find(|img| img.id == cmd.parent_id)?.key;
+        let q = cmd.parent_placement;
+        self.placements
+            .iter()
+            .filter(|p| p.image == image && (q == 0 || p.placement_id == q))
+            .map(|p| p.key)
+            .min()
+    }
+
+    /// Whether a placement may be a child of `parent`: it must not be its own
+    /// ancestor (kitty's EINVAL and ECYCLE), and the chain up to its root may
+    /// have at most MAX_DEPTH links (ETOODEEP). `me` is the placement being
+    /// moved, if the put names an existing one.
+    fn ancestry_fits(&self, parent: u64, me: Option<u64>) -> bool {
+        let mut key = parent;
+        for _ in 0..MAX_DEPTH {
+            if Some(key) == me {
+                return false;
+            }
+            match self.placements.iter().find(|p| p.key == key) {
+                Some(p) => match p.parent {
+                    Some(next) => key = next,
+                    None => return true,
+                },
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// Lay relative placements out from their roots, and remove those whose
+    /// chain no longer resolves, as kitty's grman_update_layers does: a
+    /// parent that is gone, or a chain longer than MAX_DEPTH, which moving a
+    /// placement with children can make. The children of a removed placement
+    /// fail too, so one pass suffices. An image left without placements here
+    /// is freed whatever its id, as the spec says of a relative placement's
+    /// image. This runs after every command and scroll, so it is linear in
+    /// the placements while no placement is added or removed: each child
+    /// keeps the index of its parent, checked against the parent's key.
+    fn relayout(&mut self) {
+        if !self.placements.iter().any(|p| p.parent.is_some()) {
+            return;
+        }
+        const NONE: usize = usize::MAX;
+        let n = self.placements.len();
+        // Each child's parent index: its hint while that is right, else found
+        // by key in an index made once.
+        let mut by_key: Option<Vec<(u64, usize)>> = None;
+        let mut parents = vec![NONE; n];
+        for (i, slot) in parents.iter_mut().enumerate() {
+            let Some(key) = self.placements[i].parent else { continue };
+            let hint = self.placements[i].parent_at;
+            *slot = if self.placements.get(hint).map_or(false, |p| p.key == key) {
+                hint
+            } else {
+                let index = by_key.get_or_insert_with(|| {
+                    let mut v: Vec<_> = self.placements.iter().enumerate().map(|(i, p)| (p.key, i)).collect();
+                    v.sort_unstable();
+                    v
+                });
+                index.binary_search_by_key(&key, |&(k, _)| k).map_or(NONE, |j| index[j].1)
+            };
+        }
+        #[derive(Clone, Copy)]
+        enum Resolved {
+            Unknown,
+            Broken,
+            /// The cell it is placed at, and the links up to its root.
+            At(i64, i64, usize),
+        }
+        let mut cells = vec![Resolved::Unknown; n];
+        let mut path = Vec::new();
+        for i in 0..n {
+            // Walk up to a placement already resolved, or a root.
+            let mut at = i;
+            while let Resolved::Unknown = cells[at] {
+                let p = &self.placements[at];
+                if p.parent.is_none() {
+                    cells[at] = Resolved::At(p.col, p.anchor, 0);
+                } else if parents[at] == NONE || path.len() > MAX_DEPTH {
+                    // A parent that is gone, or a chain too long (or a cycle).
+                    cells[at] = Resolved::Broken;
+                } else {
+                    path.push(at);
+                    at = parents[at];
+                }
+            }
+            while let Some(j) = path.pop() {
+                let (dx, dy) = self.placements[j].offset;
+                cells[j] = match cells[parents[j]] {
+                    Resolved::At(col, row, links) if links < MAX_DEPTH => {
+                        Resolved::At(col + dx, row + dy, links + 1)
+                    }
+                    _ => Resolved::Broken,
+                };
+            }
+        }
+        let (cw, ch) = (i64::from(self.cell.0), i64::from(self.cell.1));
+        let bottom = self.screen_rows as i64 * ch;
+        let mut lost = Vec::new();
+        let mut i = 0;
+        self.placements.retain_mut(|p| {
+            let (cell, parent_at) = (cells[i], parents[i]);
+            i += 1;
+            match cell {
+                _ if p.parent.is_none() => true,
+                Resolved::At(col, row, _) => {
+                    let (col, row) = (col.clamp(-MAX_CELL, MAX_CELL), row.clamp(-MAX_CELL, MAX_CELL));
+                    p.parent_at = parent_at;
+                    p.col = col;
+                    p.row = row;
+                    p.x = col * cw + p.inner.0;
+                    let y = row * ch + p.inner.1;
+                    p.slices.clear();
+                    append_slice(&mut p.slices, y, y.max(0), (y + p.h).min(bottom));
+                    true
+                }
+                _ => {
+                    lost.push(p.image);
+                    false
+                }
+            }
+        });
+        if !lost.is_empty() {
+            lost.sort_unstable();
+            let mut placed: Vec<u64> = self.placements.iter().map(|p| p.image).collect();
+            placed.sort_unstable();
+            self.images.retain(|img| {
+                placed.binary_search(&img.key).is_ok() || lost.binary_search(&img.key).is_err()
+            });
         }
     }
 
@@ -846,8 +1059,11 @@ impl Graphics {
         let ch = i64::from(cell_h);
         let (first, last) = (top as i64, bottom as i64 + 1);
         let (top, bottom, dy) = (first * ch, last * ch, delta * ch);
+        // kitty's start row stops at a margin only in a partial region.
+        let partial = first != 0 || last != self.screen_rows as i64;
         for p in &mut self.placements {
-            if p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {
+            // Relative placements follow their roots, in relayout.
+            if p.parent.is_some() || p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {
                 continue;
             }
             for part in &mut p.slices {
@@ -860,12 +1076,17 @@ impl Graphics {
             let (start, end) = ((p.row + delta).max(first), (p.row + delta + p.rows).min(last));
             p.row = start;
             p.rows = (end - start).max(0);
+            p.anchor += delta;
+            if partial {
+                p.anchor = p.anchor.max(first);
+            }
         }
         let before = self.placements.len();
-        self.placements.retain(|p| !p.slices.is_empty());
+        self.placements.retain(|p| p.parent.is_some() || !p.slices.is_empty());
         if self.placements.len() < before {
             self.free_unplaced(|_| false);
         }
+        self.relayout();
     }
 }
 
@@ -875,3 +1096,5 @@ mod tests;
 mod zlib_tests;
 #[cfg(test)]
 mod geometry_tests;
+#[cfg(test)]
+mod relative_tests;
