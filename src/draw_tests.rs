@@ -67,6 +67,29 @@ fn truncated_and_foreign_files_are_rejected() {
     assert!(font::check(b"#!/bin/sh\necho not a font\n").is_err());
 }
 
+/// The vendored font with its glyf table renamed to tag.
+fn retagged(tag: &[u8; 4]) -> Vec<u8> {
+    let mut font = fs::read(FONT).unwrap();
+    let tables = u16::from_be_bytes([font[4], font[5]]) as usize;
+    let record = (0..tables).map(|i| 12 + 16 * i).find(|&r| &font[r..r + 4] == b"glyf").unwrap();
+    font[record..record + 4].copy_from_slice(tag);
+    font
+}
+
+#[test]
+fn a_font_without_glyf_is_refused_for_what_it_has_instead() {
+    let cff = "no glyf table; CFF (PostScript) outlines are not supported";
+    assert_eq!(font::check(&retagged(b"CFF ")).unwrap_err(), cff);
+    assert_eq!(font::check(&retagged(b"CFF2")).unwrap_err(), cff);
+    for (tag, name) in [(b"CBDT", "CBDT"), (b"CBLC", "CBLC"), (b"sbix", "sbix")] {
+        assert_eq!(
+            font::check(&retagged(tag)).unwrap_err(),
+            format!("a color bitmap font ({name}) with no outlines; use a monochrome outline font, such as Noto Emoji")
+        );
+    }
+    assert_eq!(font::check(&retagged(b"xxxx")).unwrap_err(), "no glyf table");
+}
+
 /// Seeds where stock stb_truetype read out of bounds, hit an assert, or
 /// overflowed (cmap offsets and groups, loca, glyph ids from the cmap).
 const CRASHING_SEEDS: [u64; 8] = [504, 1614, 2189, 2813, 3335, 3414, 3607, 4545];

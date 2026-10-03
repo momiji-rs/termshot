@@ -276,4 +276,8 @@ echo "== output aliases"
 rustc --edition 2021 tests/output_aliases.rs -o "$out/output_aliases"
 "$out/output_aliases"
 
+echo "== font messages"
+rustc --edition 2021 tests/font_cli.rs -o "$out/font_cli"
+"$out/font_cli" || fail=1
+
 exit "$fail"

@@ -64,6 +64,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A font with no `glyf` table is refused for what it has instead (#38). A
+  color bitmap font such as Noto Color Emoji (`CBDT` or `sbix`, no outlines)
+  is named as one, with a pointer to an outline font such as Noto Emoji,
+  instead of being called a CFF font.
 - Output collision checks follow dangling symlinks and compare existing file
   identities, rejecting hard-link aliases of outputs, logs or fonts before
   writing (#43 review).

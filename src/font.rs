@@ -350,7 +350,7 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
         }
     }
     if table(d, start, b"glyf")?.is_none() {
-        return Err("no glyf table; CFF (PostScript) outlines are not supported".into());
+        return Err(no_outlines(d, start)?);
     }
     let cmap = required(d, start, b"cmap")?;
     let head = required(d, start, b"head")?;
@@ -397,6 +397,24 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
     }
     check_composite_depth(&components)?;
     check_cmap(cmap, glyph_count)
+}
+
+/// Why a font without glyf can't be drawn, from the tables it has instead.
+fn no_outlines(d: &[u8], start: usize) -> Result<String, String> {
+    for tag in [b"CFF ", b"CFF2"] {
+        if table(d, start, tag)?.is_some() {
+            return Ok("no glyf table; CFF (PostScript) outlines are not supported".into());
+        }
+    }
+    for tag in [b"CBDT", b"CBLC", b"sbix"] {
+        if table(d, start, tag)?.is_some() {
+            return Ok(format!(
+                "a color bitmap font ({}) with no outlines; use a monochrome outline font, such as Noto Emoji",
+                String::from_utf8_lossy(tag).trim_end()
+            ));
+        }
+    }
+    Ok("no glyf table".into())
 }
 
 /// Check one glyph's outline the way stbtt__GetGlyphShapeTT reads it, and
