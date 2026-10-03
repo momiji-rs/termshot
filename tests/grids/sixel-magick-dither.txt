@@ -1,0 +1,5 @@
+$ magick sun.png -colors 64 sixel:-
+
+
+$
+
