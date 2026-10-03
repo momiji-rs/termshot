@@ -161,6 +161,53 @@ check "--cursor draws it there, even if the log hid it" 'cmp -s "$out/cursor-at.
 printf 'ab' | ./termshot --size 10x4 --cursor=10,3 - "$out/cursor-pending.png"
 printf 'ab\033[4;10H' | ./termshot --size 10x4 - "$out/cursor-last.png"
 check "--cursor at the column count is the last column" 'cmp -s "$out/cursor-pending.png" "$out/cursor-last.png"'
+# --text: the screen as text, with the PNG or without it.
+printf 'ab\r\ncd  \r\n\344\270\255x' | ./termshot --size 10x4 --text "$out/text.txt" -
+printf 'ab\ncd\n\344\270\255x\n\n' > "$out/text-want.txt"
+check "--text alone writes the rows, trimmed" 'cmp -s "$out/text.txt" "$out/text-want.txt"'
+printf 'ab\r\ncd  \r\n\344\270\255x' | ./termshot --size 10x4 --text - - > "$out/text-stdout.txt"
+check "--text - writes stdout" 'cmp -s "$out/text-stdout.txt" "$out/text-want.txt"'
+./termshot --text "$out/text-png.txt" "$log" "$out/text-png.png"
+check "--text leaves the PNG as it was" 'cmp -s "$out/text-png.png" "$out/builtin.png"'
+check "--text needs no font without a PNG" './termshot --font README.md --text "$out/q.txt" "$log"'
+expect 2 "$log" --text
+expect 2 --text - "$log" -
+expect 1 --text "$out/no-such-dir/x.txt" "$log"
+rm -f "$out/gone.txt"
+./termshot --text "$out/gone.txt" "$log" "$out/gone.png" "$font" 255 500 73 2>/dev/null || true
+check "failed run removes the text file it created" '[ ! -e "$out/gone.txt" ]'
+# --json: the cursor, and runs of cells alike in colour and attributes.
+printf '\033[1;31mab\033[m c\r\n\344\270\255x\033[?25l' | ./termshot --size 10x2 --json "$out/grid.json" -
+printf '%s\n' '{"cols":10,"rows":2,"cursor":null,"lines":[' \
+    '[{"col":0,"text":"ab","fg":"#cd0000","bg":"#111823","bold":true},{"col":2,"text":" c","fg":"#dbe7f7","bg":"#111823"}],' \
+    '[{"col":0,"text":"中x","fg":"#dbe7f7","bg":"#111823"}]' ']}' > "$out/grid-want.json"
+check "--json writes the runs and the cursor" 'cmp -s "$out/grid.json" "$out/grid-want.json"'
+printf 'ab' | ./termshot --size 10x2 --cursor 4,1 --json - - > "$out/grid-cursor.json"
+check "--json reports --cursor" 'grep -q "\"cursor\":{\"col\":4,\"row\":1}" "$out/grid-cursor.json"'
+./termshot --text "$out/both.txt" --json "$out/both.json" "$log"
+check "--text and --json together match each alone" 'cmp -s "$out/both.txt" "$out/text-png.txt"'
+expect 2 --json - --text - "$log"
+expect 2 --json - "$log" -
+expect 1 --json "$out/no-such-dir/x.json" "$log"
+# No output may be another output or an input, however the path is spelled.
+cp "$log" "$out/clash.pty"
+ln -sf clash.pty "$out/clash-link.pty"
+rm -f "$out/clash.txt"
+expect 2 --text "$out/clash.txt" --json "$out/clash.txt" "$log"
+expect 2 --text "$out/clash.txt" --json "$out/../test/clash.txt" "$log"
+expect 2 --json "$out/clash.txt" "$log" "$out/clash.txt"
+check "a refused clash creates no file" '[ ! -e "$out/clash.txt" ]'
+expect 2 --text "$out/clash.pty" "$out/clash.pty"
+expect 2 --json "$out/clash-link.pty" "$out/clash.pty"
+expect 2 "$out/clash.pty" "./$out/clash.pty"
+expect 2 --font "$out/clash.pty" "$log" "$out/clash.pty"
+check "a clash leaves the input as it was" 'cmp -s "$out/clash.pty" "$log"'
+# Every golden's JSON parses, and its runs spell the --text rows.
+if command -v python3 >/dev/null; then
+    check "the golden JSON parses and agrees with --text" 'python3 tests/grids/check.py tests/grids'
+else
+    echo "skip: golden JSON check (no python3)"
+fi
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
@@ -176,6 +223,7 @@ rm -f "$out/gone.png"
 check "failed run removes the file it created" '[ ! -e "$out/gone.png" ]'
 if [ -e /dev/full ]; then
     check "short writes are reported" '! ./termshot "$log" /dev/full 2>/dev/null'
+    check "short text writes are reported" '! ./termshot --text /dev/full "$log" 2>/dev/null'
 fi
 [ "$fail" -eq 0 ] && echo "ok"
 

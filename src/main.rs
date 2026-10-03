@@ -3,7 +3,7 @@
 
 use std::env;
 use std::fs;
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -1160,6 +1160,74 @@ fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
     }
 }
 
+/// The screen as text, the way tmux capture-pane -p prints it: a line per row
+/// with its trailing spaces trimmed, and a wide character once.
+fn grid_text(cells: &[Cell], cols: usize) -> String {
+    let mut text = String::with_capacity(cells.len() + cells.len() / cols);
+    for row in cells.chunks(cols) {
+        text.extend(row.iter().filter(|c| c.attrs & TAIL == 0).map(|c| char::from_u32(c.ch).unwrap_or('\u{fffd}')));
+        // The previous row's newline stops the trim.
+        text.truncate(text.trim_end_matches(' ').len());
+        text.push('\n');
+    }
+    text
+}
+
+/// The screen as JSON: the grid size; the cursor, or null when hidden; and a
+/// line per row of the runs of cells alike in colour and attributes, each with
+/// the column it starts at (a wide character takes two). Blank cells that end a
+/// row are left out, as in --text, unless their background or a line shows.
+fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, usize)>) -> String {
+    use std::fmt::Write as _;
+    const LINES: u8 = UNDERLINE | DOUBLE_UNDERLINE | STRIKE;
+    const STYLE: u8 = BOLD | LINES;
+    let style = |c: &Cell| ((c.fr, c.fg, c.fb), (c.br, c.bg, c.bb), c.attrs & STYLE);
+    let blank = |c: &Cell| c.ch == ' ' as u32 && (c.br, c.bg, c.bb) == DEFAULT_BG && c.attrs & LINES == 0;
+    // Writing to a String cannot fail.
+    let mut json = String::with_capacity(cells.len() * 2);
+    let _ = write!(json, "{{\"cols\":{cols},\"rows\":{rows},\"cursor\":");
+    let _ = match cursor {
+        Some((row, col)) => write!(json, "{{\"col\":{col},\"row\":{row}}}"),
+        None => write!(json, "null"),
+    };
+    json.push_str(",\"lines\":[");
+    for (r, row) in cells.chunks(cols).enumerate() {
+        json.push_str(if r == 0 { "\n[" } else { ",\n[" });
+        let end = row.iter().rposition(|c| !blank(c)).map_or(0, |i| i + 1);
+        let mut c = 0;
+        while c < end {
+            let start = c;
+            let key = style(&row[c]);
+            let _ = write!(json, "{}{{\"col\":{start},\"text\":\"", if start == 0 { "" } else { "," });
+            // A wide character's tail is part of the run its first half is in.
+            while c < end && (style(&row[c]) == key || row[c].attrs & TAIL != 0) {
+                if row[c].attrs & TAIL == 0 {
+                    match char::from_u32(row[c].ch).unwrap_or('\u{fffd}') {
+                        '"' => json.push_str("\\\""),
+                        '\\' => json.push_str("\\\\"),
+                        ch if ch < ' ' || ch == '\u{7f}' => {
+                            let _ = write!(json, "\\u{:04x}", ch as u32);
+                        }
+                        ch => json.push(ch),
+                    }
+                }
+                c += 1;
+            }
+            let ((fr, fg, fb), (br, bg, bb), attrs) = key;
+            let _ = write!(json, "\",\"fg\":\"#{fr:02x}{fg:02x}{fb:02x}\",\"bg\":\"#{br:02x}{bg:02x}{bb:02x}\"");
+            for (bit, name) in [(BOLD, "bold"), (UNDERLINE, "underline"), (DOUBLE_UNDERLINE, "double_underline"), (STRIKE, "strike")] {
+                if attrs & bit != 0 {
+                    let _ = write!(json, ",\"{name}\":true");
+                }
+            }
+            json.push('}');
+        }
+        json.push(']');
+    }
+    json.push_str("\n]}\n");
+    json
+}
+
 /// Parse one CSI sequence whose parameters start at i, apply it, and return
 /// where parsing resumes. C0 controls inside it execute in place; ESC aborts
 /// it and starts the next sequence; CAN and SUB abort it.
@@ -1255,10 +1323,11 @@ static EMBEDDED_FONT: &[u8] = include_bytes!("../third_party/jetbrains-mono/JetB
 
 const USAGE: &str = "\
 usage: termshot [options] <log> <out.png>
+       termshot [options] --text FILE --json FILE <log> [<out.png>]
        termshot <log> <out.png> <font.ttf> [px] [cols] [rows]
 
 Render the final screen of a terminal log (raw PTY output) as a PNG.
-Use - as <log> to read stdin, and - as <out.png> to write stdout.
+Use - as <log> to read stdin, and - as an output to write stdout.
 
 options:
   -f, --font FILE   TrueType font (default: built-in JetBrains Mono)
@@ -1275,6 +1344,12 @@ options:
                     draw the cursor there, counting from 0 as tmux's
                     #{cursor_x},#{cursor_y} do, or not at all (default:
                     where the log leaves it, unless it hides it)
+      --text FILE   write the screen as text, a line per row with trailing
+                    spaces trimmed, as tmux capture-pane -p prints it; the
+                    PNG is then optional, and fonts are only read for it
+      --json FILE   write the screen as JSON: the cursor, and for each row
+                    the runs of cells alike in colour (#rrggbb) and
+                    attributes, with the column each starts at
   -v, --verbose     print the cell and image size to stderr
   -h, --help        show this help
   -V, --version     show the version
@@ -1289,7 +1364,10 @@ unusable; 2 bad arguments, including an image over 134217728 pixels.
 /// A rendering request from the command line.
 struct Options {
     log: String,
-    out: String,
+    /// The PNG; None when only --text or --json is wanted.
+    out: Option<String>,
+    text: Option<String>,
+    json: Option<String>,
     font: Option<String>,
     fallback_font: Option<String>,
     px: f64,
@@ -1365,7 +1443,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
     let mut lf = Lf::Index;
-    let mut cursor = None;
+    let (mut cursor, mut text, mut json) = (None, None, None);
     let mut options_done = false;
     while let Some(arg) = args.next() {
         if options_done || arg == "-" || !arg.starts_with('-') {
@@ -1401,13 +1479,21 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "-s" | "--size" => size = Some(parse_size(&option_value(&name, attached, &mut args)?)?),
             // Checked once the grid size is known.
             "--cursor" => cursor = Some(option_value(&name, attached, &mut args)?),
+            "--text" => text = Some(option_value(&name, attached, &mut args)?),
+            "--json" => json = Some(option_value(&name, attached, &mut args)?),
             _ => return Err(format!("unknown option {arg}")),
         }
     }
     let mut positional = positional.into_iter();
-    let (Some(log), Some(out)) = (positional.next(), positional.next()) else {
+    let (Some(log), out) = (positional.next(), positional.next()) else {
         return Err("expected <log> and <out.png>".into());
     };
+    if out.is_none() && text.is_none() && json.is_none() {
+        return Err("expected <log> and <out.png>, or --text or --json FILE and <log>".into());
+    }
+    if [&out, &text, &json].iter().filter(|path| path.as_deref() == Some("-")).count() > 1 {
+        return Err("only one output can be - (stdout)".into());
+    }
     // The original form: <log> <out.png> <font.ttf> [px] [cols] [rows].
     if let Some(path) = positional.next() {
         if font.is_some() {
@@ -1434,7 +1520,81 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         legacy_rows.unwrap_or(DEFAULT_ROWS),
     ));
     let cursor = cursor.map(|value| parse_cursor(&value, cols, rows)).transpose()?;
-    Ok(Command::Render(Options { log, out, font, fallback_font, px: px.unwrap_or(48.0), cols, rows, lf, cursor, verbose }))
+    Ok(Command::Render(Options {
+        log,
+        out,
+        text,
+        json,
+        font,
+        fallback_font,
+        px: px.unwrap_or(48.0),
+        cols,
+        rows,
+        lf,
+        cursor,
+        verbose,
+    }))
+}
+
+/// The font and fallback font a render asks for, checked and padded.
+fn load_fonts(
+    options: &Options,
+    profile: bool,
+    timings: &mut font::LoadTimings,
+) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+    let font = match &options.font {
+        Some(path) if profile => font::load_profiled(path, timings)?,
+        Some(path) => font::load(path)?,
+        // Built in: nothing to read; the check (and padding) is all the work.
+        None => {
+            let checked = Instant::now();
+            let font = font::prepare(EMBEDDED_FONT.to_vec()).map_err(|reason| format!("built-in font: {reason}"));
+            timings.check_ms = checked.elapsed().as_secs_f64() * 1000.0;
+            font?
+        }
+    };
+    let fallback = options.fallback_font.as_deref().map(font::load).transpose()?;
+    Ok((font, fallback))
+}
+
+/// Write a text output to its file, or to stdout for -.
+/// Why an output can't be written: it names the same file as another output,
+/// which would overwrite it, or as an input, which would destroy it. One file
+/// can be named many ways (`a`, `./a`, `d/../a`, a symlink), so paths are
+/// compared canonical: the file if it exists, else its directory.
+fn output_clash(options: &Options) -> Option<String> {
+    let canonical = |path: &str| {
+        let path = std::path::Path::new(path);
+        let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        fs::canonicalize(path)
+            .or_else(|_| fs::canonicalize(dir).map(|dir| dir.join(path.file_name().unwrap_or_default())))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    fn named<'a>(pairs: [(&'static str, Option<&'a String>); 3]) -> Vec<(&'static str, &'a String)> {
+        pairs.into_iter().filter_map(|(name, path)| Some((name, path.filter(|p| *p != "-")?))).collect()
+    }
+    let outputs = named([("<out.png>", options.out.as_ref()), ("--text", options.text.as_ref()), ("--json", options.json.as_ref())]);
+    let inputs = named([("<log>", Some(&options.log)), ("--font", options.font.as_ref()), ("--fallback-font", options.fallback_font.as_ref())]);
+    let outputs: Vec<_> = outputs.into_iter().map(|(name, path)| (name, path, canonical(path))).collect();
+    for (i, (name, path, file)) in outputs.iter().enumerate() {
+        if let Some((other, ..)) = outputs[..i].iter().find(|(.., earlier)| earlier == file) {
+            return Some(format!("{name} and {other} name the same file, {path}; give each output its own"));
+        }
+        if let Some((input, _)) = inputs.iter().find(|(_, input)| canonical(input) == *file) {
+            return Some(format!("{name} {path} is the {input} file; writing it would destroy the input"));
+        }
+    }
+    None
+}
+
+fn write_output(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    if path == "-" {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(bytes)?;
+        stdout.flush()
+    } else {
+        fs::write(path, bytes)
+    }
 }
 
 /// Print an error the way every failure path reports it, and pick the status.
@@ -1464,27 +1624,31 @@ fn main() -> ExitCode {
     };
 
     // Refuse to pour a PNG into a terminal, and find an unwritable output
-    // before doing any work. A file this run created is removed on failure.
-    let mut created = None;
-    let out_path = if options.out == "-" {
-        if std::io::stdout().is_terminal() {
-            return fail(2, "refusing to write a PNG to a terminal; redirect stdout or name a file");
-        }
-        "/dev/stdout".to_string()
-    } else {
-        let existed = std::path::Path::new(&options.out).exists();
-        if let Err(error) = fs::OpenOptions::new().write(true).create(true).open(&options.out) {
-            return fail(1, format!("{}: {error}", options.out));
-        }
-        if !existed {
-            created = Some(options.out.clone());
-        }
-        options.out.clone()
-    };
-    let cleanup = |code: u8, message: String| {
-        if let Some(path) = &created {
+    // before doing any work. The files this run created are removed on failure.
+    if options.out.as_deref() == Some("-") && std::io::stdout().is_terminal() {
+        return fail(2, "refusing to write a PNG to a terminal; redirect stdout or name a file");
+    }
+    if let Some(message) = output_clash(&options) {
+        return fail(2, message);
+    }
+    let mut created = Vec::new();
+    let remove_created = |created: &[String]| {
+        for path in created {
             let _ = fs::remove_file(path);
         }
+    };
+    for path in [&options.out, &options.text, &options.json].into_iter().flatten().filter(|path| *path != "-") {
+        let existed = std::path::Path::new(path).exists();
+        if let Err(error) = fs::OpenOptions::new().write(true).create(true).open(path) {
+            remove_created(&created);
+            return fail(1, format!("{path}: {error}"));
+        }
+        if !existed {
+            created.push(path.clone());
+        }
+    }
+    let cleanup = |code: u8, message: String| {
+        remove_created(&created);
         fail(code, message)
     };
 
@@ -1512,58 +1676,68 @@ fn main() -> ExitCode {
 
     let font_started = Instant::now();
     let mut font_timings = font::LoadTimings::default();
-    let loaded = match &options.font {
-        Some(path) if profile => font::load_profiled(path, &mut font_timings),
-        Some(path) => font::load(path),
-        // Built in: nothing to read; the check (and padding) is all the work.
-        None => {
-            let checked = Instant::now();
-            let font = font::prepare(EMBEDDED_FONT.to_vec()).map_err(|reason| format!("built-in font: {reason}"));
-            font_timings.check_ms = checked.elapsed().as_secs_f64() * 1000.0;
-            font
-        }
-    };
-    let font = match loaded {
-        Ok(font) => font,
-        Err(error) => return cleanup(1, error),
-    };
-    let fallback = match options.fallback_font.as_deref().map(font::load).transpose() {
-        Ok(fallback) => fallback,
+    // Plain text/JSON logs need no fonts. Graphics also need cell metrics,
+    // even without a PNG, because placement can move the text cursor.
+    let needs_fonts = options.out.is_some() || graphics::needs_cell_metrics(&data);
+    let fonts = match needs_fonts.then(|| load_fonts(&options, profile, &mut font_timings)).transpose() {
+        Ok(fonts) => fonts,
         Err(error) => return cleanup(1, error),
     };
     let font_load_ms = font_started.elapsed().as_secs_f64() * 1000.0;
 
     let parse_started = Instant::now();
     let input_bytes = data.len();
-    let (mut cell_w, mut cell_h) = (0, 0);
-    if unsafe { draw_cell_size(font.as_ptr(), options.px, &mut cell_w, &mut cell_h) } == 0 {
-        return cleanup(1, "font metrics unusable".into());
+    let (mut cell_w, mut cell_h) = (1, 1);
+    if let Some((font, _)) = &fonts {
+        if unsafe { draw_cell_size(font.as_ptr(), options.px, &mut cell_w, &mut cell_h) } == 0 {
+            return cleanup(1, "font metrics unusable".into());
+        }
     }
     let Grid { mut cells, cursor, images } = replay_sized(&data, options.cols, options.rows, options.lf, (cell_w, cell_h));
     let image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
-    if let Some((row, col)) = options.cursor.unwrap_or(cursor) {
-        draw_cursor(&mut cells, options.cols, row, col);
-    }
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
-    let Ok(out) = std::ffi::CString::new(out_path) else {
-        return cleanup(2, "output path contains a nul byte".into());
+    let cursor = options.cursor.unwrap_or(cursor);
+    let write = |path: &String, output: String| {
+        write_output(path, output.as_bytes())
+            .map_err(|error| format!("{}: {error}", if path == "-" { "stdout" } else { path }))
     };
-    let code = unsafe {
-        draw_png_images(
-            cells.as_ptr(),
-            options.cols as i32,
-            options.rows as i32,
-            font.as_ptr(),
-            fallback.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
-            options.px,
-            out.as_ptr(),
-            i32::from(options.verbose),
-            image_views.as_ptr(),
-            image_views.len(),
-        )
+    let written = (options.text.as_ref())
+        .map_or(Ok(()), |path| write(path, grid_text(&cells, options.cols)))
+        .and_then(|()| {
+            (options.json.as_ref())
+                .map_or(Ok(()), |path| write(path, grid_json(&cells, options.cols, options.rows, cursor)))
+        });
+    if let Err(message) = written {
+        return cleanup(1, message);
+    }
+    let code = match (&options.out, fonts) {
+        (Some(out), Some((font, fallback))) => {
+            if let Some((row, col)) = cursor {
+                draw_cursor(&mut cells, options.cols, row, col);
+            }
+            let out = if out == "-" { "/dev/stdout" } else { out };
+            let Ok(out) = std::ffi::CString::new(out) else {
+                return cleanup(2, "output path contains a nul byte".into());
+            };
+            unsafe {
+                draw_png_images(
+                    cells.as_ptr(),
+                    options.cols as i32,
+                    options.rows as i32,
+                    font.as_ptr(),
+                    fallback.as_ref().map_or(std::ptr::null(), |f| f.as_ptr()),
+                    options.px,
+                    out.as_ptr(),
+                    i32::from(options.verbose),
+                    image_views.as_ptr(),
+                    image_views.len(),
+                )
+            }
+        }
+        _ => 0,
     };
     if profile {
         eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{input_bytes}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0);
@@ -1571,17 +1745,9 @@ fn main() -> ExitCode {
     // draw.c has already said what went wrong.
     match code {
         0 => ExitCode::SUCCESS,
-        2 => {
-            if let Some(path) = &created {
-                let _ = fs::remove_file(path);
-            }
-            ExitCode::from(2)
-        }
-        _ => {
-            if let Some(path) = &created {
-                let _ = fs::remove_file(path);
-            }
-            ExitCode::from(1)
+        code => {
+            remove_created(&created);
+            ExitCode::from(if code == 2 { 2 } else { 1 })
         }
     }
 }

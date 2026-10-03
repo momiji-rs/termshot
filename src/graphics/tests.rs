@@ -465,3 +465,20 @@ fn repeated_partial_scrolls_match_independent_pixel_row_model() {
         }
     }
 }
+
+#[test]
+fn font_metrics_are_needed_only_for_potential_cursor_movement() {
+    assert!(needs_cell_metrics(&red("")));
+    assert!(!needs_cell_metrics(&red(",C=1")));
+    assert!(needs_cell_metrics(b"\x1b_Ga=T,f=24,s=2,v=1,m=1;/wAA\x1b\\"));
+    for log in [
+        b"text".as_slice(),
+        b"\x1b_Ga=q,f=24,s=1,v=1;AAAA\x1b\\",
+        b"\x1b_Ga=d\x1b\\",
+        b"\x1b_Ga=T,t=f;AAAA\x1b\\",
+        b"\x1b_Ga=T;AAAA",
+        b"\x1b_Ga=T;AAAA\x18",
+    ] {
+        assert!(!needs_cell_metrics(log));
+    }
+}

@@ -28,7 +28,7 @@ cross-platform reproducibility; it does not promise GPU-filter-identical output.
 
 Local validation passed on Linux x86-64:
 
-- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 126 unit tests passed; one existing
+- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 129 unit tests passed; one existing
   benchmark helper is ignored. All CLI, pixel, codec and geometry checks passed.
 - `SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh`: passed, including
   the image decoder/compositor, codec round trips and concurrent render checks.

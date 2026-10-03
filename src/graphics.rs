@@ -159,6 +159,33 @@ impl Command {
     }
 }
 
+/// Text/JSON output only needs font metrics for commands that can move its
+/// cursor. Capability probes and other skipped strings must not require fonts.
+pub fn needs_cell_metrics(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 1 < data.len() {
+        if data[i] == 0x1b && matches!(data[i + 1], b']' | b'P' | b'_' | b'^' | b'X') {
+            let start = i + 2;
+            let end = crate::skip_string(data, start);
+            if data[i + 1] == b'_'
+                && data.get(start) == Some(&b'G')
+                && end >= start + 3
+                && data.get(end - 2..end) == Some(b"\x1b\\")
+            {
+                let bytes = &data[start + 1..end - 2];
+                let header = bytes.split(|&b| b == b';').next().unwrap_or_default();
+                if Command::parse(header).is_some_and(|c| c.action == b'T' && !c.no_move) {
+                    return true;
+                }
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 fn base64(data: &[u8]) -> Option<Vec<u8>> {
     if data.len() % 4 != 0 || data.len() > (MAX_BYTES + 2) / 3 * 4 {
         return None;

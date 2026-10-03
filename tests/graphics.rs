@@ -112,6 +112,7 @@ fn main() {
     assert_eq!(actual, plain);
     scroll_regions(&bin);
     ascii_scroll(&bin);
+    grid_outputs(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes; native clipping, text layering, transparency and deletion");
 }
 
@@ -191,4 +192,34 @@ fn ascii_scroll(bin: &str) {
         }
     }
     println!("ok, 3 ASCII autowrap pixel comparisons (single-row, skipped regions, partial tail)");
+}
+
+fn grid_outputs(bin: &str) {
+    let input = "target/test/graphics-grid.pty";
+    // Native pixels advance by cell metrics, even when no PNG is requested.
+    fs::write(input, b"\x1b_Ga=T,f=24,s=2,v=2;/wAAAP8AAAD///8A\x1b\\X").unwrap();
+    for combined in [false, true] {
+        let stem = if combined { "combined" } else { "grid-only" };
+        let text = format!("target/test/graphics-{stem}.txt");
+        let json = format!("target/test/graphics-{stem}.json");
+        let png = format!("target/test/graphics-{stem}.png");
+        let mut cmd = Command::new(bin);
+        cmd.args([
+            "--size", "6x4", "--px", "24", "--text", &text, "--json", &json, input,
+        ]);
+        if combined {
+            cmd.arg(png);
+        }
+        assert!(cmd.status().unwrap().success());
+        assert_eq!(fs::read_to_string(text).unwrap(), "\n X\n\n\n");
+        let data = fs::read_to_string(json).unwrap();
+        assert!(data.contains("\"cursor\":{\"col\":2,\"row\":1}"), "{data}");
+    }
+    for extension in ["txt", "json"] {
+        assert_eq!(
+            fs::read(format!("target/test/graphics-grid-only.{extension}")).unwrap(),
+            fs::read(format!("target/test/graphics-combined.{extension}")).unwrap()
+        );
+    }
+    println!("ok, graphics text/JSON outputs match with and without PNG, including cursor metrics");
 }

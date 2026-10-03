@@ -120,6 +120,32 @@ cursor=$(tmux display -p -t app '#{?cursor_flag,#{cursor_x}#,#{cursor_y},none}')
 tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 --cursor "$cursor" - top.png
 ```
 
+To check what a screen shows rather than how it looks (in a test, or as an agent), write it as
+text. It is laid out as `tmux capture-pane -p` prints it: a line per row, trailing spaces
+trimmed. For logs without graphics, omitting the PNG skips font loading and takes about
+a tenth of the time. Kitty graphics still need font metrics to replay cursor movement,
+even for text/JSON-only output; images themselves are not included in these formats:
+
+```sh
+./termshot --text - session.pty | grep -q 'Saved'        # text only, to stdout
+./termshot --text screen.txt session.pty screen.png     # both
+```
+
+`--json` adds the colours, the attributes and the cursor. Each row is a line of runs of cells
+that look alike, with the column each starts at (a wide character takes two):
+
+```json
+{"cols":100,"rows":30,"cursor":{"col":2,"row":5},"lines":[
+[{"col":0,"text":"ok","fg":"#00cd00","bg":"#111823","bold":true},{"col":2,"text":" done","fg":"#dbe7f7","bg":"#111823"}],
+...
+]}
+```
+
+`cursor` is null when the log hides it. `bold`, `underline`, `double_underline` and `strike`
+appear only when set. Blank cells that end a row are left out unless their background or a line
+shows. Colours are as drawn: reverse video and dim are already applied, and concealed text has
+`fg` equal to `bg`.
+
 | option | |
 |---|---|
 | `-f`, `--font FILE` | TrueType font (default: built-in JetBrains Mono) |
@@ -128,13 +154,16 @@ tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 --cursor 
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
 | `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
 | `--cursor COL,ROW` or `none` | draw the cursor there, counting from 0 as tmux's `#{cursor_x},#{cursor_y}` do, or not at all (default: where the log leaves it, unless it hides it) |
+| `--text FILE` | write the screen as text, a line per row with trailing spaces trimmed; the PNG is then optional |
+| `--json FILE` | write the screen as JSON: the cursor, and per row the runs of cells alike in colour and attributes; the PNG is then optional |
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 
 It prints nothing on success, except a hint on stderr when the log has line feeds but no CR,
 which means it was probably not captured through a PTY and needs `--lf-newline`. Exit status is 0 when done; 1 when a file can't be read or written,
 or the font is unusable; and 2 for bad arguments, including an image over 2^27 pixels. termshot
-won't write a PNG to a terminal. A failed run removes the output file it created.
+won't write a PNG to a terminal, and only one output can be `-`. A failed run removes the output
+files it created.
 
 The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, still works.
 
