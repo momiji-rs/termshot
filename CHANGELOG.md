@@ -59,14 +59,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pending wrap.
 - `--text FILE` writes the screen as text, as `tmux capture-pane -p` prints
   it: a line per row, trailing spaces trimmed, a wide character once (#32).
-  `<out.png>` is optional with it; without a PNG no font is read and
-  nothing is drawn or encoded. `tests/grids/` holds
+  `<out.png>` is optional with it; without a PNG nothing is drawn or
+  encoded, and no font is read unless the log has kitty graphics, whose
+  placements need the font's cell size to move the cursor. `tests/grids/` holds
   the text of every golden fixture, and the tmux references in `tests/vt/`
   check it too.
 - `--json FILE` writes the screen with its colours and the cursor (#32):
   per row, runs of cells alike in colour (`#rrggbb`, as drawn) and
   attributes, each with the column it starts at, and the cursor as
-  `{"col","row"}` or null. Like `--text`, it needs no PNG and no font.
+  `{"col","row"}` or null. Like `--text`, it needs no PNG, and a font only
+  for a log with kitty graphics.
   `tests/grids/` holds it for every golden fixture, and
   `tests/grids/check.py` checks that it parses and agrees with `--text`.
 - A face of a font collection (`.ttc`) can be picked for `--font` and
