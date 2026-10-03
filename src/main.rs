@@ -1313,8 +1313,8 @@ struct Options {
     out: Option<String>,
     text: Option<String>,
     json: Option<String>,
-    font: Option<String>,
-    fallback_font: Option<String>,
+    font: Option<font::Spec>,
+    fallback_font: Option<font::Spec>,
     px: f64,
     cols: usize,
     rows: usize,
@@ -1470,8 +1470,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         out,
         text,
         json,
-        font,
-        fallback_font,
+        font: font.as_deref().map(font::Spec::parse),
+        fallback_font: fallback_font.as_deref().map(font::Spec::parse),
         px: px.unwrap_or(48.0),
         cols,
         rows,
@@ -1498,7 +1498,7 @@ fn load_fonts(
             font?
         }
     };
-    let fallback = options.fallback_font.as_deref().map(font::load).transpose()?;
+    let fallback = options.fallback_font.as_ref().map(font::load).transpose()?;
     Ok((font, fallback))
 }
 
@@ -1519,10 +1519,10 @@ fn output_clash(options: &Options) -> Option<String> {
         pairs.into_iter().filter_map(|(name, path)| Some((name, path.filter(|p| *p != "-")?))).collect()
     }
     let outputs = named([("<out.png>", options.out.as_ref()), ("--text", options.text.as_ref()), ("--json", options.json.as_ref())]);
-    // A font is named with its face, as in a.ttc#3; the file is a.ttc.
-    let font_file = |spec: &Option<String>| spec.as_deref().map(|spec| font::split(spec).0.to_string());
-    let (font, fallback_font) = (font_file(&options.font), font_file(&options.fallback_font));
-    let inputs = named([("<log>", Some(&options.log)), ("--font", font.as_ref()), ("--fallback-font", fallback_font.as_ref())]);
+    fn font_file(spec: &Option<font::Spec>) -> Option<&String> {
+        spec.as_ref().map(|spec| &spec.path)
+    }
+    let inputs = named([("<log>", Some(&options.log)), ("--font", font_file(&options.font)), ("--fallback-font", font_file(&options.fallback_font))]);
     let outputs: Vec<_> = outputs.into_iter().map(|(name, path)| (name, path, canonical(path))).collect();
     for (i, (name, path, file)) in outputs.iter().enumerate() {
         if let Some((other, ..)) = outputs[..i].iter().find(|(.., earlier)| earlier == file) {

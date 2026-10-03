@@ -27,6 +27,10 @@ const MAX_COMPOSITE_DEPTH: u32 = 16;
 /// The most faces a hint or an error lists.
 const MAX_LISTED: usize = 32;
 
+/// The most faces a collection may hold. Real ones hold tens; the bound keeps
+/// a search by name, which reads each face's name table, short.
+const MAX_FACES: usize = 1024;
+
 /// A checked font, ready for draw_png.
 pub struct Font {
     /// The file, followed by PADDING zero bytes.
@@ -41,36 +45,43 @@ pub struct Font {
     pub hint: Option<String>,
 }
 
-/// Split a --font value into the path and the face after `#`, if any: a
-/// file named `a#1` is that file; otherwise `a.ttc#1` is face 1 of `a.ttc`.
-pub fn split(spec: &str) -> (&str, Option<&str>) {
-    if Path::new(spec).exists() {
-        return (spec, None);
-    }
-    match spec.rsplit_once('#') {
-        Some((path, face)) => (path, Some(face)),
-        None => (spec, None),
+/// A --font value: the file, and the face named after a `#`, if any.
+#[derive(Debug, PartialEq)]
+pub struct Spec {
+    pub path: String,
+    pub face: Option<String>,
+}
+
+impl Spec {
+    /// A file named `a#1` is that file; otherwise `a.ttc#1` is face 1 of
+    /// `a.ttc`. Decided once, before any output is created, so that
+    /// creating one can't change what a value means.
+    pub fn parse(value: &str) -> Spec {
+        match value.rsplit_once('#') {
+            Some((path, face)) if !Path::new(value).exists() => Spec { path: path.into(), face: Some(face.into()) },
+            _ => Spec { path: value.into(), face: None },
+        }
     }
 }
 
-/// Read a font file and check the face `spec` names (see split).
-pub fn load(spec: &str) -> Result<Font, String> {
+/// Read a font file and check the face `spec` names.
+pub fn load(spec: &Spec) -> Result<Font, String> {
     load_timed(spec, None)
 }
 
 /// The same as load(), with separate clocks.
-pub fn load_profiled(spec: &str, timings: &mut LoadTimings) -> Result<Font, String> {
+pub fn load_profiled(spec: &Spec, timings: &mut LoadTimings) -> Result<Font, String> {
     load_timed(spec, Some(timings))
 }
 
-fn load_timed(spec: &str, timings: Option<&mut LoadTimings>) -> Result<Font, String> {
+fn load_timed(spec: &Spec, timings: Option<&mut LoadTimings>) -> Result<Font, String> {
     let ms = |since: Instant| since.elapsed().as_secs_f64() * 1000.0;
-    let (path, face) = split(spec);
+    let path = &spec.path;
     let started = Instant::now();
     let data = fs::read(path).map_err(|error| format!("{path}: {error}"))?;
     let read_ms = ms(started);
     let started = Instant::now();
-    let font = choose(data, face, path)?;
+    let font = choose(data, spec.face.as_deref(), path)?;
     let check_ms = ms(started);
     let started = Instant::now();
     let font = pad(font);
@@ -82,7 +93,7 @@ fn load_timed(spec: &str, timings: Option<&mut LoadTimings>) -> Result<Font, Str
 
 /// Check font bytes (the first face of a collection) and append the padding.
 pub fn prepare(data: Vec<u8>) -> Result<Font, String> {
-    let start = faces(&data)?[0];
+    let start = faces(&data)?[0].ok_or("face #0 is not a font")?;
     check_at(&data, start)?;
     Ok(pad(Font { data, start, face: None, hint: None }))
 }
@@ -110,7 +121,7 @@ fn choose(data: Vec<u8>, face: Option<&str>, path: &str) -> Result<Font, String>
         Some(face) => {
             let wanted = face.to_lowercase();
             let named: Vec<usize> = (0..starts.len())
-                .filter(|&i| names(&data, starts[i]).iter().any(|name| name.to_lowercase() == wanted))
+                .filter(|&i| starts[i].map_or(false, |start| names(&data, start).iter().any(|name| name.to_lowercase() == wanted)))
                 .collect();
             match named[..] {
                 [index] => index,
@@ -122,7 +133,8 @@ fn choose(data: Vec<u8>, face: Option<&str>, path: &str) -> Result<Font, String>
             }
         }
     };
-    let start = starts[index];
+    // Only the chosen face has to be usable, as stb reads only its offset.
+    let start = starts[index].ok_or_else(|| unusable(format!("face #{index} is not a font")))?;
     check_at(&data, start).map_err(unusable)?;
     let hint = (collection && face.is_none() && starts.len() > 1).then(|| {
         format!(
@@ -138,11 +150,11 @@ fn choose(data: Vec<u8>, face: Option<&str>, path: &str) -> Result<Font, String>
 }
 
 /// Where each face starts: a single font is one face at 0. The same offsets
-/// stbtt_GetFontOffsetForIndex returns.
-fn faces(d: &[u8]) -> Result<Vec<usize>, String> {
+/// stbtt_GetFontOffsetForIndex returns; None for one that isn't a font.
+fn faces(d: &[u8]) -> Result<Vec<Option<usize>>, String> {
     let tag = d.get(0..4).ok_or("file is shorter than a font header")?;
     if is_sfnt(tag) {
-        return Ok(vec![0]);
+        return Ok(vec![Some(0)]);
     }
     if tag != b"ttcf" || !matches!(u32_at(d, 4)?, 0x0001_0000 | 0x0002_0000) {
         return Err("not a TrueType or OpenType file".into());
@@ -151,26 +163,28 @@ fn faces(d: &[u8]) -> Result<Vec<usize>, String> {
     if count < 1 {
         return Err("font collection is empty".into());
     }
-    if 12 + 4 * count as u64 > d.len() as u64 {
+    if count as usize > MAX_FACES {
+        return Err(format!("font collection holds {count} faces, more than {MAX_FACES}"));
+    }
+    if 12 + 4 * count as usize > d.len() {
         return Err("font collection header runs past the end of the file".into());
     }
-    (0..count as usize)
+    Ok((0..count as usize)
         .map(|i| {
-            let start = u32_at(d, 12 + 4 * i)? as usize;
+            let start = u32_at(d, 12 + 4 * i).ok()? as usize;
             // stbtt_InitFont takes the offset as an int.
-            match d.get(start..start.saturating_add(4)) {
-                Some(tag) if start <= i32::MAX as usize && is_sfnt(tag) => Ok(start),
-                _ => Err(format!("face #{i} is not a font")),
-            }
+            let tag = d.get(start..start.saturating_add(4))?;
+            (start <= i32::MAX as usize && is_sfnt(tag)).then_some(start)
         })
-        .collect()
+        .collect())
 }
 
 /// The faces as `#N name` lines, all of them or only those in `only`.
-fn list(d: &[u8], starts: &[usize], only: Option<&[usize]>) -> String {
+fn list(d: &[u8], starts: &[Option<usize>], only: Option<&[usize]>) -> String {
     let indices: Vec<usize> = only.map_or_else(|| (0..starts.len()).collect(), |only| only.to_vec());
     let mut lines: Vec<String> =
-        indices.iter().take(MAX_LISTED).map(|&i| format!("\n  #{i}  {}", display_name(d, starts[i]))).collect();
+        indices.iter().take(MAX_LISTED).map(|&i| format!("\n  #{i}  {}", starts[i].map_or("(not a font)".into(), |start| display_name(d, start))))
+        .collect();
     if indices.len() > MAX_LISTED {
         lines.push(format!("\n  and {} more", indices.len() - MAX_LISTED));
     }
@@ -281,7 +295,7 @@ fn required<'a>(d: &'a [u8], start: usize, tag: &[u8; 4]) -> Result<&'a [u8], St
 /// Check the font, or the first face of a collection.
 #[cfg(test)]
 pub fn check(d: &[u8]) -> Result<(), String> {
-    check_at(d, *faces(d)?.first().ok_or("font collection is empty")?)
+    check_at(d, faces(d)?[0].ok_or("face #0 is not a font")?)
 }
 
 /// Check the face whose table directory starts at `start`.
@@ -629,6 +643,46 @@ pub mod tests {
         let twins = collection(&[(&font, "Twin"), (&font, "Twin")]);
         let error = choose(twins, Some("twin"), "t.ttc").err().unwrap();
         assert!(error.contains("2 faces named \"twin\"; pick one by number:\n  #0  Twin\n  #1  Twin"), "{error}");
+    }
+
+    /// A face of a collection, checked and padded for draw_png.
+    pub fn choose_padded(ttc: Vec<u8>, face: &str) -> Font {
+        pad(choose(ttc, Some(face), "t.ttc").ok().unwrap())
+    }
+
+    #[test]
+    fn a_face_that_is_not_a_font_costs_only_itself() {
+        let mut ttc = two_faces();
+        let end = (ttc.len() as u32).to_be_bytes();
+        ttc[16..20].copy_from_slice(&end);
+        let first = choose(ttc.clone(), None, "c.ttc").unwrap();
+        assert!(first.hint.unwrap().contains("#1  (not a font)"));
+        let error = choose(ttc.clone(), Some("1"), "c.ttc").err().unwrap();
+        assert!(error.contains("c.ttc: not a usable TrueType font: face #1 is not a font"), "{error}");
+        assert!(choose(ttc, Some("face a"), "c.ttc").is_ok());
+    }
+
+    #[test]
+    fn a_collection_holds_at_most_max_faces() {
+        let font = fs::read(FONT).unwrap();
+        // Every offset points at the one face, as in a file made to be slow.
+        let ttc = |faces: usize| {
+            let mut ttc = collection(&[(&font, "Only")]);
+            let shift = 4 * (faces - 1);
+            for t in 0..u16_at(&ttc, 16 + 4).unwrap() as usize {
+                let field = 16 + 12 + 16 * t + 8;
+                let offset = u32_at(&ttc, field).unwrap() + shift as u32;
+                ttc[field..field + 4].copy_from_slice(&offset.to_be_bytes());
+            }
+            ttc[8..12].copy_from_slice(&(faces as u32).to_be_bytes());
+            ttc[12..16].copy_from_slice(&(16 + shift as u32).to_be_bytes());
+            let start = ttc[12..16].to_vec();
+            ttc.splice(16..16, start.repeat(faces - 1));
+            ttc
+        };
+        assert!(choose(ttc(MAX_FACES), Some("only"), "c.ttc").err().unwrap().contains("1024 faces named"));
+        let error = choose(ttc(MAX_FACES + 1), Some("only"), "c.ttc").err().unwrap();
+        assert!(error.contains("holds 1025 faces, more than 1024"), "{error}");
     }
 
     #[test]
