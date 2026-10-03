@@ -59,8 +59,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pending wrap.
 - `--text FILE` writes the screen as text, as `tmux capture-pane -p` prints
   it: a line per row, trailing spaces trimmed, a wide character once (#32).
-  `<out.png>` is optional with it; without a PNG no font is read, so a
-  text-only run takes about 1 ms where a PNG takes 10. `tests/grids/` holds
+  `<out.png>` is optional with it; without a PNG no font is read and
+  nothing is drawn or encoded. `tests/grids/` holds
   the text of every golden fixture, and the tmux references in `tests/vt/`
   check it too.
 - `--json FILE` writes the screen with its colours and the cursor (#32):
@@ -109,6 +109,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `face_ms`, and counts glyph cache evictions, missing glyphs and fallback
   lookups and rasterizations (#19). The built-in font's `font_check_ms` no
   longer includes copying and padding it.
+- The README's Speed section quotes the 2026-10-03 baseline (Apple M2 Max
+  and Ryzen 7 8745HS, `22b77e8`) with its workloads, fonts, image sizes and
+  statistic, links the versioned report, and keeps the 2026-10-01 Apple M3
+  rounds and the "~20 ms" figure apart as history (#23).
 
 ### Fixed
 
