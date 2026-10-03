@@ -90,6 +90,102 @@ fn a_font_without_glyf_is_refused_for_what_it_has_instead() {
     assert_eq!(font::check(&retagged(b"xxxx")).unwrap_err(), "no glyf table");
 }
 
+/// Render with the vendored font, as both fonts when fallback is set, and
+/// return what draw.c reports about empty glyphs.
+fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
+    let font = font::prepare(fs::read(FONT).unwrap()).unwrap().data;
+    let cells = parse(text.as_bytes(), cols, 2);
+    let out = CString::new("target/test/empty-glyphs.png").unwrap();
+    // Not zeroed: draw.c must clear it.
+    let mut empty = EmptyGlyphs { cp: 1, fonts: 9, col: 9, row: 9, cells: 9 };
+    let fallback = if fallback { font.as_ptr() } else { std::ptr::null() };
+    let code = unsafe {
+        draw_png_images(cells.as_ptr(), cols as i32, 2, font.as_ptr(), 0, fallback, 0, 16.0, out.as_ptr(), 0,
+            std::ptr::null(), 0, &mut empty)
+    };
+    assert_eq!(code, 0);
+    empty
+}
+
+#[test]
+fn draw_png_reports_cells_drawn_as_boxes_for_an_empty_glyph() {
+    // The vendored font maps U+16910 (Bamum) to an empty glyph.
+    let e = empty_glyphs("ab\r\nc\u{16910}d\u{16910}", 4, false);
+    assert_eq!((e.cp, e.fonts, e.col, e.row, e.cells), (0x16910, EMPTY_IN_FONT, 1, 1, 2));
+    let e = empty_glyphs("\u{16910}", 4, true);
+    assert_eq!((e.cp, e.fonts, e.cells), (0x16910, EMPTY_IN_FONT | EMPTY_IN_FALLBACK, 1));
+}
+
+#[test]
+fn draw_png_reports_nothing_for_glyphs_it_draws_or_lacks() {
+    // Drawn; blank by design; not in the font at all (plain tofu).
+    for text in ["Ag─█", "\u{3000}\u{2800}", "中\u{10FFFD}"] {
+        let e = empty_glyphs(text, 6, false);
+        assert_eq!((e.cp, e.fonts, e.col, e.row, e.cells), (0, 0, 0, 0, 0), "{text:?}");
+    }
+}
+
+fn warning(args: &[&str], empty: &EmptyGlyphs, font: &[u8], fallback: Option<&[u8]>) -> Option<String> {
+    let Ok(Command::Render(options)) = parse_args(args.iter().map(|a| a.to_string())) else { panic!("{args:?}") };
+    let font = font::prepare(font.to_vec()).unwrap();
+    let fallback = fallback.map(|f| font::prepare(f.to_vec()).unwrap());
+    empty_glyph_warning(empty, &options, &font, fallback.as_ref())
+}
+
+#[test]
+fn the_empty_glyph_warning_names_the_cell_the_fonts_and_the_fix() {
+    let plain = fs::read(FONT).unwrap();
+    // A font with a color bitmap table beside its outlines, as Apple Color Emoji has.
+    let mut color = plain.clone();
+    let tables = u16::from_be_bytes([color[4], color[5]]) as usize;
+    let record = (0..tables).map(|i| 12 + 16 * i).find(|&r| &color[r..r + 4] == b"name").unwrap();
+    color[record..record + 4].copy_from_slice(b"sbix");
+    assert_eq!(font::color_bitmap(&font::prepare(plain.clone()).unwrap()), None);
+    assert_eq!(font::color_bitmap(&font::prepare(color.clone()).unwrap()), Some("sbix"));
+
+    // In a collection, only the face drawn with counts. ("name" is the
+    // collection's own, so another table becomes sbix.)
+    let mut color_face = plain.clone();
+    let record = (0..tables).map(|i| 12 + 16 * i).find(|&r| &color_face[r..r + 4] == b"post").unwrap();
+    color_face[record..record + 4].copy_from_slice(b"sbix");
+    let ttc = font::tests::collection(&[(&plain, "Plain"), (&color_face, "Color")]);
+    assert_eq!(font::color_bitmap(&font::tests::choose_padded(ttc.clone(), "0")), None);
+    assert_eq!(font::color_bitmap(&font::tests::choose_padded(ttc, "1")), Some("sbix"));
+
+    let one = EmptyGlyphs { cp: 0x1F600, fonts: EMPTY_IN_FONT, col: 3, row: 1, cells: 1 };
+    assert_eq!(warning(&["log", "out.png"], &EmptyGlyphs::default(), &plain, None), None);
+    assert_eq!(
+        warning(&["log", "out.png"], &one, &plain, None).unwrap(),
+        "warning: U+1F600 at column 3, row 1 (from 0) is drawn as a box: the built-in font maps it to an \
+         empty glyph; pass --fallback-font with an outline font that has it"
+    );
+    let many = EmptyGlyphs { cells: 4, ..one };
+    assert_eq!(
+        warning(&["--font", "c.ttf", "log", "out.png"], &many, &color, None).unwrap(),
+        "warning: U+1F600 at column 3, row 1 (from 0) is drawn as a box (the first of 4 such cells): \
+         --font c.ttf (a color bitmap font, sbix, which termshot cannot draw) maps it to an empty glyph; \
+         pass --fallback-font with an outline font that has it, such as Noto Emoji"
+    );
+    // Only the fallback: the font lacks the character outright.
+    let fallback = EmptyGlyphs { fonts: EMPTY_IN_FALLBACK, ..one };
+    assert_eq!(
+        warning(&["--fallback-font", "c.ttf", "log", "out.png"], &fallback, &plain, Some(&color)).unwrap(),
+        "warning: U+1F600 at column 3, row 1 (from 0) is drawn as a box: --fallback-font c.ttf (a color \
+         bitmap font, sbix, which termshot cannot draw) maps it to an empty glyph; pass a --fallback-font \
+         with an outline for it, such as Noto Emoji"
+    );
+    // A face of a collection is named as it was given.
+    assert!(warning(&["--font", "a.ttc#Color", "log", "out.png"], &one, &plain, None)
+        .unwrap()
+        .contains(": --font a.ttc#Color maps it to an empty glyph;"));
+    let both = EmptyGlyphs { fonts: EMPTY_IN_FONT | EMPTY_IN_FALLBACK, ..one };
+    assert_eq!(
+        warning(&["--font", "a.ttf", "--fallback-font", "b.ttf", "log", "out.png"], &both, &plain, Some(&plain)).unwrap(),
+        "warning: U+1F600 at column 3, row 1 (from 0) is drawn as a box: --font a.ttf and --fallback-font \
+         b.ttf map it to empty glyphs; pass a --fallback-font with an outline for it"
+    );
+}
+
 /// Seeds where stock stb_truetype read out of bounds, hit an assert, or
 /// overflowed (cmap offsets and groups, loca, glyph ids from the cmap).
 const CRASHING_SEEDS: [u64; 8] = [504, 1614, 2189, 2813, 3335, 3414, 3607, 4545];

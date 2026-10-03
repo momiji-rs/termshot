@@ -118,11 +118,28 @@ impl Cell {
     }
 }
 
+/// The cells draw.c drew as a box because a font maps the character to an
+/// empty glyph, as color bitmap fonts do: how many, and the first one, its
+/// character and which fonts did. As EmptyGlyphs in src/draw.c.
+#[repr(C)]
+#[derive(Default)]
+struct EmptyGlyphs {
+    cp: u32,
+    fonts: u32,
+    col: i32,
+    row: i32,
+    cells: usize,
+}
+
+const EMPTY_IN_FONT: u32 = 1;
+const EMPTY_IN_FALLBACK: u32 = 2;
+
 extern "C" {
     fn draw_cell_size(font: *const u8, font_start: i32, px: f64, w: *mut i32, h: *mut i32) -> i32;
     fn draw_png_images(cells: *const Cell, cols: i32, rows: i32, font: *const u8, font_start: i32,
         fallback: *const u8, fallback_start: i32, font_size: f64, out_path: *const std::ffi::c_char,
-        verbose: i32, images: *const graphics::ImageView, count: usize) -> i32;
+        verbose: i32, images: *const graphics::ImageView, count: usize,
+        empty: *mut EmptyGlyphs) -> i32;
     #[cfg(test)]
     fn draw_png(
         cells: *const Cell,
@@ -1567,6 +1584,57 @@ fn load_fonts(
     Ok((font, fallback))
 }
 
+/// The warning for characters drawn as boxes because a font maps them to
+/// empty glyphs: which cell, which fonts, and what to pass instead.
+fn empty_glyph_warning(
+    empty: &EmptyGlyphs,
+    options: &Options,
+    font: &font::Font,
+    fallback: Option<&font::Font>,
+) -> Option<String> {
+    if empty.cells == 0 {
+        return None;
+    }
+    let mut color = false;
+    let mut name = |flag: &str, spec: Option<&font::Spec>, font: &font::Font| {
+        let mut name = spec.map_or("the built-in font".to_owned(), |spec| match &spec.face {
+            Some(face) => format!("{flag} {}#{face}", spec.path),
+            None => format!("{flag} {}", spec.path),
+        });
+        if let Some(tag) = font::color_bitmap(font) {
+            color = true;
+            name += &format!(" (a color bitmap font, {tag}, which termshot cannot draw)");
+        }
+        name
+    };
+    let mut blamed = Vec::new();
+    if empty.fonts & EMPTY_IN_FONT != 0 {
+        blamed.push(name("--font", options.font.as_ref(), font));
+    }
+    if let (true, Some(fallback)) = (empty.fonts & EMPTY_IN_FALLBACK != 0, fallback) {
+        blamed.push(name("--fallback-font", options.fallback_font.as_ref(), fallback));
+    }
+    let blamed = match blamed.len() {
+        1 => format!("{} maps it to an empty glyph", blamed[0]),
+        _ => format!("{} map it to empty glyphs", blamed.join(" and ")),
+    };
+    let cells = match empty.cells {
+        1 => String::new(),
+        n => format!(" (the first of {n} such cells)"),
+    };
+    let instead = match fallback {
+        None => "pass --fallback-font with an outline font that has it",
+        Some(_) => "pass a --fallback-font with an outline for it",
+    };
+    Some(format!(
+        "warning: U+{:04X} at column {}, row {} (from 0) is drawn as a box{cells}: {blamed}; {instead}{}",
+        empty.cp,
+        empty.col,
+        empty.row,
+        if color { ", such as Noto Emoji" } else { "" }
+    ))
+}
+
 /// Resolve symlinks component by component, including a dangling final link.
 /// canonicalize alone cannot name a target that an output has yet to create.
 fn output_target(path: &str) -> std::path::PathBuf {
@@ -1766,7 +1834,8 @@ fn main() -> ExitCode {
     if let Err(message) = written {
         return cleanup(1, message);
     }
-    let code = match (&options.out, fonts) {
+    let mut empty = EmptyGlyphs::default();
+    let code = match (&options.out, &fonts) {
         (Some(out), Some((font, fallback))) => {
             if let Some((row, col)) = cursor {
                 draw_cursor(&mut cells, options.cols, row, col);
@@ -1789,11 +1858,17 @@ fn main() -> ExitCode {
                     i32::from(options.verbose),
                     image_views.as_ptr(),
                     image_views.len(),
+                    &mut empty,
                 )
             }
         }
         _ => 0,
     };
+    if let (0, Some((font, fallback))) = (code, &fonts) {
+        if let Some(warning) = empty_glyph_warning(&empty, &options, font, fallback.as_ref()) {
+            eprintln!("termshot: {warning}");
+        }
+    }
     if profile {
         eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{input_bytes}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0);
     }
