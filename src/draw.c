@@ -777,7 +777,8 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
 
     double background = now_ms();
     double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
-    size_t glyphs = 0, cache_hits = 0;
+    size_t glyphs = 0, cache_hits = 0, evictions = 0, missing = 0;
+    size_t fallback_lookups = 0, fallback_glyphs = 0;
     Glyph cache[GLYPH_CACHE_SIZE] = {0};
     Outline scratch = {0};
     for (int r = 0; r < rows; r++) {
@@ -799,6 +800,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
             if (entry->valid && entry->cp == cp && entry->wide == wide && entry->italic == italic) {
                 cache_hits++;
             } else {
+                evictions += entry->valid;
                 free(entry->bitmap);
                 *entry = (Glyph){.cp = cp, .valid = 1, .wide = wide, .italic = italic};
                 const stbtt_fontinfo *face = &font;
@@ -817,6 +819,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
                     hollow = EMPTY_IN_FONT;
                 }
                 if (glyph == 0 && fallback_face && bare >= 0) {
+                    fallback_lookups++;
                     face = &fallback;
                     source = fallback_face;
                     s = fallback_scale;
@@ -829,6 +832,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
                 }
                 if (bare < 0) return glyphs_failed(cv, cache, &scratch);
                 entry->missing = glyph == 0;
+                missing += entry->missing;
                 entry->empty = hollow;
                 if (glyph != 0) {
                     /* The primary font's narrow glyphs sit where the font puts
@@ -883,6 +887,7 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
                             stbtt_MakeGlyphBitmap(face, entry->bitmap, entry->w, entry->h, entry->w, s, s, glyph);
                         }
                         glyphs++;
+                        fallback_glyphs += face == &fallback;
                     }
                     stbtt_FreeShape(face, shape);
                 }
@@ -956,13 +961,13 @@ int draw_png_images(const Cell *cells, int cols, int rows, const Face *font_face
     free(cv->filtered);
     cv->px = NULL;
     if (profiling) {
-        fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
+        fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"glyph_cache_evictions\":%zu,\"glyph_missing\":%zu,\"fallback_lookups\":%zu,\"fallback_rasterizations\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
             termshot_deflate_profile.allocate_ms, termshot_deflate_profile.match_emit_ms,
             termshot_deflate_profile.finalize_ms, termshot_deflate_profile.checksum_ms,
             font_setup - started, allocated - font_setup,
             background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
-            encoded - foreground, written - encoded, now_ms() - written, glyphs, cache_hits, png_len, (size_t)(width * height * BPP));
+            encoded - foreground, written - encoded, now_ms() - written, glyphs, cache_hits, evictions, missing, fallback_lookups, fallback_glyphs, png_len, (size_t)(width * height * BPP));
     }
     if (!ok) {
         fprintf(stderr, "termshot: png write failed: %s\n", out_path);

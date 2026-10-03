@@ -245,7 +245,8 @@ SANITIZE=1 ./tests/run.sh
 ```
 
 Profiling writes two `termshot-profile` JSON records to stderr, covering input,
-parsing, font reading/validation/padding, drawing, PNG filtering, compression
+parsing, font allocation/reading/validation/padding (for the built-in or given
+font and the fallback alike), glyph cache and fallback counters, drawing, PNG filtering, compression
 allocation/matching/emission/checksum, PNG packaging, and writing. The benchmark
 measures ordinary CLI runs separately from profiling and optional peak RSS runs;
 it records raw samples, means, medians, p95, child CPU time, paired comparisons,
