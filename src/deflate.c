@@ -36,6 +36,14 @@ static double profile_now(void) {
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 }
 
+/* GCC at -O2 keeps some per-token helpers out of line, which cost it up to
+   6% of matching time on x86-64; clang inlines them anyway. */
+#if defined(__GNUC__) || defined(__clang__)
+#define HOT static inline __attribute__((always_inline))
+#else
+#define HOT static inline
+#endif
+
 #define ZHASH 16384
 #define WINDOW 32768
 #define MAX_MATCH 258
@@ -63,7 +71,7 @@ static void put_byte(Out *o, unsigned char b) {
     o->p[o->n++] = b;
 }
 
-static void add_bits(Out *o, unsigned int code, int bits) {
+HOT void add_bits(Out *o, unsigned int code, int bits) {
     o->bitbuf |= (uint64_t)code << o->bitcount;
     o->bitcount += bits;
     /* At most 31 new bits plus seven trailing bits: reserve four bytes once,
@@ -103,7 +111,7 @@ static const unsigned char reversed_byte[256] = {R6(0), R6(2), R6(1), R6(3)};
 /* code (below 2^bits, bits <= 9) with its bits reversed, Huffman codes being
    sent most significant bit first. A bit-at-a-time loop here cost GCC 3-10%
    of matching time. */
-static unsigned int bitrev(unsigned int code, int bits) {
+HOT unsigned int bitrev(unsigned int code, int bits) {
     unsigned int r9 = ((unsigned int)reversed_byte[code & 0xff] << 1) | ((code >> 8) & 1);
     return r9 >> (9 - bits);
 }
@@ -120,14 +128,14 @@ static unsigned int log2_floor(unsigned int value) {
 }
 
 /* Fixed Huffman codes, as in stb. */
-static void huff(Out *o, int n) {
+HOT void huff(Out *o, int n) {
     if (n <= 143) add_bits(o, bitrev(0x30 + n, 8), 8);
     else if (n <= 255) add_bits(o, bitrev(0x190 + n - 144, 9), 9);
     else if (n <= 279) add_bits(o, bitrev(n - 256, 7), 7);
     else add_bits(o, bitrev(0xc0 + n - 280, 8), 8);
 }
 
-static unsigned int zhash(const unsigned char *d) {
+HOT unsigned int zhash(const unsigned char *d) {
     uint32_t h = d[0] + (d[1] << 8) + (d[2] << 16);
     h ^= h << 3;
     h += h >> 5;
@@ -139,7 +147,7 @@ static unsigned int zhash(const unsigned char *d) {
 }
 
 /* Length of the common prefix of a and b, at most limit (limit <= 258). */
-static int countm(const unsigned char *a, const unsigned char *b, int limit) {
+HOT int countm(const unsigned char *a, const unsigned char *b, int limit) {
     int i = 0;
 #if (defined(__GNUC__) || defined(__clang__)) && defined(__BYTE_ORDER__)
     while (i + 16 <= limit) {
@@ -278,8 +286,11 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
 
     double allocated = profile_now();
     int i = 0;
+    /* The hash of position i, carried over from the previous step: lazy
+       matching has already hashed i + 1, and after a match it is computed
+       before the token is emitted. */
+    unsigned int h = data_len > 3 ? zhash(data) : 0;
     while (i < data_len - 3) {
-        unsigned int h = zhash(data + i);
         int32_t *list = tab + (size_t)h * cap;
         int n = cnt[h];
         int limit = data_len - i < MAX_MATCH ? data_len - i : MAX_MATCH;
@@ -302,11 +313,14 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
         list[n] = i;
         cnt[h] = n + 1;
 
+        int next_hashed = 0;
         if (bestpos >= 0) {
             /* Lazy matching: if the match at i+1 is longer, emit i as a literal. */
             int limit1 = data_len - i - 1 < MAX_MATCH ? data_len - i - 1 : MAX_MATCH;
             if (best < limit1) {
                 unsigned int h1 = zhash(data + i + 1);
+                h = h1; /* i + 1 < data_len - 3, as limit1 > best >= 3 */
+                next_hashed = 1;
                 int32_t *list1 = tab + (size_t)h1 * cap;
                 for (int j = cnt[h1] - 1; j >= 0; j--) {
                     if (list1[j] <= i - (WINDOW - 1)) break;
@@ -343,11 +357,13 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
             bits += disteb[j];
             /* A complete length/distance token fits in 31 bits. The 64-bit
                accumulator also holds the previous token's trailing bits. */
-            add_bits(&o, code, (int)bits);
             i += best;
+            if (i < data_len - 3) h = zhash(data + i);
+            add_bits(&o, code, (int)bits);
         } else {
             huff(&o, data[i]);
             i++;
+            if (!next_hashed && i < data_len - 3) h = zhash(data + i);
         }
     }
     for (; i < data_len; i++) huff(&o, data[i]);
