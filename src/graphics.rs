@@ -377,10 +377,9 @@ fn base64(data: &[u8], limit: usize) -> Option<Vec<u8>> {
 }
 
 /// Inflates a zlib payload to exactly `size` bytes, as kitty's `inflate_zlib`
-/// requires. `data` gets the 8 bytes of zero padding `image_inflate` needs.
-fn inflate(mut data: Vec<u8>, size: usize) -> Option<Vec<u8>> {
+/// requires.
+fn inflate(data: Vec<u8>, size: usize) -> Option<Vec<u8>> {
     let len = i32::try_from(data.len()).ok()?;
-    data.extend_from_slice(&[0; 8]);
     let mut out = vec![0; size];
     let ok = unsafe { image_inflate(data.as_ptr(), len, out.as_mut_ptr(), size as i32) };
     (ok != 0).then_some(out)

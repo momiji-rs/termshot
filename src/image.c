@@ -61,15 +61,20 @@ int image_png_decode(const unsigned char *data, int len, unsigned char *out, int
 
 /* Inflate a zlib stream (kitty's o=z) into exactly olen bytes, checking what
    zlib checks and stb does not: the window field and the Adler-32 trailer.
-   Bytes after the trailer are ignored, as zlib ignores them. The caller pads
-   the input with 8 zero bytes after len, so stb's read-ahead stays inside the
-   buffer and the stream's end can be found from the bits it has buffered. A
-   stream that reads into the padding ends past len - 4 and fails. */
+   Bytes after the trailer are ignored, as zlib ignores them. stb reads nothing
+   at or past zbuffer_end: past it, it buffers zero bits without advancing
+   zbuffer. So the input needs no padding, and the trailer guard below is the
+   only end-of-input check. It refuses every stream that reached zbuffer_end:
+   stb buffers at most 32 bits, and the last code takes at least one, so at the
+   end at most 3 whole bytes are buffered and `end` is at least in + len - 3.
+   A stream that never reached it read only real bytes, so zero padding after
+   len could not change any result; tests/image.c inflates from buffers of
+   exactly len bytes, so ASan sees any read past them. */
 int image_inflate(const unsigned char *in, int len, unsigned char *out, int olen) {
     if (len < 2 || in[0] >> 4 > 7) return 0;
     stbi__zbuf a;
     a.zbuffer = (stbi_uc *)in;
-    a.zbuffer_end = (stbi_uc *)in + len + 8;
+    a.zbuffer_end = (stbi_uc *)in + len;
     if (!stbi__do_zlib(&a, (char *)out, olen, 0, 1)) return 0;
     if (a.zout - a.zout_start != olen) return 0;
     /* The trailer starts at the first whole byte stb has not consumed. */

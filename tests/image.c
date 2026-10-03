@@ -4,13 +4,14 @@
 #include "../src/image.c"
 #include "../src/deflate.c"
 static const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,2,0,0,0,2,8,6,0,0,0,114,182,13,36,0,0,0,23,73,68,65,84,120,156,99,248,207,192,208,192,240,31,136,25,24,254,55,252,7,50,0,56,232,6,252,229,30,226,71,0,0,0,0,73,69,78,68,174,66,96,130};
-// image_inflate reads up to 8 zero bytes past the stream.
+// Inflate from a heap copy of exactly len bytes, so ASan sees any read past
+// the input: image_inflate needs no padding after it.
 static int inflates(const unsigned char *z, int len, unsigned char *out, int olen) {
-    unsigned char *padded = calloc((size_t)len + 8, 1);
-    assert(padded);
-    memcpy(padded, z, (size_t)len);
-    int ok = image_inflate(padded, len, out, olen);
-    free(padded);
+    unsigned char *exact = malloc(len ? (size_t)len : 1);
+    assert(exact);
+    memcpy(exact, z, (size_t)len);
+    int ok = image_inflate(exact, len, out, olen);
+    free(exact);
     return ok;
 }
 
@@ -28,8 +29,9 @@ static void check_inflate(void) {
         assert(!inflates(bad, sizeof(bad), out, 5));
     }
     // Bytes summing to 65520 give an Adler-32 whose low half is 0: the zero
-    // padding then matches a trailer cut short, and a zeroed extra output byte
-    // leaves it unchanged, so only the bounds can refuse them.
+    // bits stb buffers past the end then match a trailer cut short, and a
+    // zeroed extra output byte leaves it unchanged, so only the bounds can
+    // refuse them.
     unsigned char sums[257];
     memset(sums, 255, 256);
     sums[256] = 240;
@@ -160,7 +162,7 @@ static void check_bounded_inflate(void) {
     assert(inflates_exact(z, len, full));
     free(z);
     // Inflation allocates nothing, so it works with the quota spent.
-    unsigned char hello[] = {0x78, 0x01, 1, 5, 0, 0xfa, 0xff, 'h', 'e', 'l', 'l', 'o', 0x06, 0x2c, 0x02, 0x15, 0, 0, 0, 0, 0, 0, 0, 0};
+    unsigned char hello[] = {0x78, 0x01, 1, 5, 0, 0xfa, 0xff, 'h', 'e', 'l', 'l', 'o', 0x06, 0x2c, 0x02, 0x15};
     unsigned char out[5];
     void *p = image_alloc(DECODE_BUDGET);
     assert(p);
