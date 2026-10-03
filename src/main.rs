@@ -418,11 +418,12 @@ impl Screen {
     }
 
     /// Rotate row storage and move graphics together. Pixel clipping uses the
-    /// logical distance, not the rotation modulo. After a whole region has
-    /// scrolled out, additional distance cannot change its surviving pixels.
+    /// logical distance, not the rotation modulo. Without margins, images
+    /// below the screen move the whole distance, as far as 2^24 rows, which
+    /// takes any image (at most 2^24 pixels tall) past the top.
     fn rotate_rows(&mut self, top: usize, bottom: usize, n: usize, up: bool) {
         let height = bottom + 1 - top;
-        let distance = n.min(height) as i64;
+        let distance = n.min(1 << 24) as i64;
         self.graphics.scroll(top, bottom, if up { -distance } else { distance }, self.cell_size.1);
         if up {
             self.map[top..=bottom].rotate_left(n % height);
@@ -555,6 +556,35 @@ impl Screen {
         }
         self.pending = false;
         self.graphics.command(&sixel::kitty_command(&image), col, row, self.cell_size, self.rows);
+    }
+
+    /// Move the cursor past a kitty placement of cols x rows cells, as kitty
+    /// does (handle_put_command, screen_handle_graphics_command): right by
+    /// cols and down by rows - 1, to the start of the next row if that reaches
+    /// the screen's right edge. Past the bottom margin, the region scrolls up
+    /// by the overshoot, and the cursor stays on the screen.
+    fn move_past_image(&mut self, cols: usize, rows: usize) {
+        self.pending = false;
+        let (mut col, mut row) = (self.col.saturating_add(cols), self.row.saturating_add(rows.saturating_sub(1)));
+        if (col, row) == (self.col, self.row) {
+            return;
+        }
+        // kitty keeps the cursor in the margins only in origin mode, and only
+        // if the move left it inside them, before the wrap.
+        let (top, bottom) = if self.origin && (self.top..=self.bottom).contains(&row) {
+            (self.top, self.bottom)
+        } else {
+            (0, self.rows - 1)
+        };
+        if col >= self.cols {
+            col = 0;
+            row = row.saturating_add(1);
+        }
+        if row > self.bottom {
+            self.scroll_up(self.top, self.bottom, (row - self.bottom).min(self.rows));
+        }
+        self.col = col.min(self.cols - 1);
+        self.row = row.clamp(top, bottom);
     }
 
     /// Switch to the alternate screen or back. clear_first blanks the
@@ -1170,10 +1200,7 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
                         if let Some((dc, dr)) = screen.graphics.command(
                             &data[i + 1..end - 2], screen.col, screen.row, cell_size, rows,
                         ) {
-                            screen.col = screen.col.saturating_add(dc).min(cols - 1);
-                            // The protocol leaves overflow positioning implementation-defined.
-                            screen.row = screen.row.saturating_add(dr).min(screen.bottom.max(screen.row));
-                            screen.pending = false;
+                            screen.move_past_image(dc, dr);
                         }
                     } else { screen.graphics.abort(); }
                     i = end;

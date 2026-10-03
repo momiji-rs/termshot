@@ -321,9 +321,10 @@ fn grid_outputs(bin: &str) {
             cmd.arg(png);
         }
         assert!(cmd.status().unwrap().success());
-        assert_eq!(fs::read_to_string(text).unwrap(), "\n X\n\n\n");
+        // One cell: the cursor moves right by one, and down by none.
+        assert_eq!(fs::read_to_string(text).unwrap(), " X\n\n\n\n");
         let data = fs::read_to_string(json).unwrap();
-        assert!(data.contains("\"cursor\":{\"col\":2,\"row\":1,\"shape\":\"block\"}"), "{data}");
+        assert!(data.contains("\"cursor\":{\"col\":2,\"row\":0,\"shape\":\"block\"}"), "{data}");
     }
     for extension in ["txt", "json"] {
         assert_eq!(

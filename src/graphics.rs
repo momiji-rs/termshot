@@ -29,6 +29,8 @@ pub struct Graphics {
     /// Hands out image and placement keys, which are also kitty's creation
     /// order and its atime: both only need to increase.
     clock: u64,
+    /// The screen's height in rows, as the last command gave it.
+    screen_rows: usize,
 }
 
 struct Image {
@@ -540,6 +542,7 @@ impl Graphics {
         cell: (i32, i32),
         screen_rows: usize,
     ) -> Option<(usize, usize)> {
+        self.screen_rows = screen_rows;
         let split = bytes.iter().position(|&b| b == b';').unwrap_or(bytes.len());
         let Some(mut cmd) = Command::parse(&bytes[..split]) else {
             self.abort();
@@ -555,7 +558,7 @@ impl Graphics {
             b'p' => {
                 self.abort();
                 let index = self.find(&cmd)?;
-                return self.put(index, &cmd, col, row, cell, screen_rows);
+                return self.put(index, &cmd, col, row, cell);
             }
             b't' | b'T' => {}
             _ => {
@@ -617,7 +620,7 @@ impl Graphics {
         self.images.push(Image { key, id, number: cmd.number, pixels, width, height, atime });
         let mut advance = None;
         if cmd.action == b'T' {
-            advance = self.put(self.images.len() - 1, &cmd, col, row, cell, screen_rows);
+            advance = self.put(self.images.len() - 1, &cmd, col, row, cell);
             if id == 0 && !self.placements.iter().any(|p| p.image == key) {
                 self.images.pop();
             }
@@ -662,7 +665,6 @@ impl Graphics {
         col: usize,
         row: usize,
         cell: (i32, i32),
-        screen_rows: usize,
     ) -> Option<(usize, usize)> {
         let image = &self.images[index];
         let (image_key, id, width, height) = (image.key, image.id, image.width, image.height);
@@ -689,9 +691,11 @@ impl Graphics {
         };
         self.images[index].atime = self.tick();
         if visible {
-            let (ch, y) = (i64::from(cell.1), row as i64 * i64::from(cell.1) + y);
+            // Not clipped at the screen's bottom: the screen may scroll the
+            // rest into view, as kitty's does, and draw.c clips at the canvas.
+            let y = row as i64 * i64::from(cell.1) + y;
             let mut slices = Vec::new();
-            append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
+            append_slice(&mut slices, y, y, y + h);
             self.placements.push(Placement {
                 pixels,
                 width,
@@ -839,12 +843,16 @@ impl Graphics {
     /// Scroll only placements wholly inside the region, as required by kitty.
     /// Use the surviving visible bounds: clipping is permanent, so clipped
     /// source pixels neither block later scrolling nor reappear on reversal.
+    /// Without margins, kitty moves every placement and clips none, so the
+    /// screen's bottom is no edge: what is below it stays, and can scroll up
+    /// into view. Its top still clips.
     pub fn scroll(&mut self, top: usize, bottom: usize, delta: i64, cell_h: i32) {
         if self.placements.is_empty() {
             return;
         }
         let ch = i64::from(cell_h);
-        let (first, last) = (top as i64, bottom as i64 + 1);
+        let open = top == 0 && bottom + 1 >= self.screen_rows;
+        let (first, last) = (top as i64, if open { i64::MAX / 2 / ch.max(1) } else { bottom as i64 + 1 });
         let (top, bottom, dy) = (first * ch, last * ch, delta * ch);
         for p in &mut self.placements {
             if p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {

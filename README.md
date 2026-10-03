@@ -245,8 +245,9 @@ screen. `x`, `y`, `w`, `h` choose a source rectangle in pixels, and the part of
 it inside the image is shown; that crop's aspect ratio is the one kept, and an
 empty crop draws nothing. Scaling uses deterministic nearest-neighbor sampling. Cell dimensions
 come from the selected font and `--px`. `C=1` keeps the cursor in place;
-otherwise it advances by the placement's columns and rows, clamped to the
-screen/scroll area's bottom and right edges.
+otherwise it moves as kitty moves it: right by the placement's columns and
+down by its rows less one, to the next row's start if that reaches the right
+edge, scrolling the region up if it passes the bottom margin.
 
 A placement id `p` names one placement of an image: putting the same `i,p`
 again moves it. Deletes follow kitty's selectors: all (`d=a`, the default), by

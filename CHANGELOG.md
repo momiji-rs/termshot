@@ -134,6 +134,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- After a kitty placement, the cursor moves as kitty moves it
+  (`handle_put_command`, `screen_handle_graphics_command`): right by the
+  placement's columns and down by its rows less one, so it ends beside the
+  image's last row, not below it. Reaching the right edge goes to the start
+  of the next row, and passing the bottom margin scrolls the region up by the
+  overshoot instead of clamping the cursor there. An image is no longer cut
+  at the screen's bottom when placed: as in kitty, scrolling without margins
+  brings the rest into view. `C=1` still leaves the cursor in place.
 - A font that can't be used is reported as "not a usable font", no longer
   "not a usable TrueType font".
 - Renders now show the cursor unless the log hides it with `ESC [ ? 25 l`

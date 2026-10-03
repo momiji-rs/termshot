@@ -11,8 +11,9 @@ fn red(extra: &str) -> Vec<u8> {
 
 #[test]
 fn rgb_placement_and_cursor() {
+    // As kitty moves it: right by c, down by r - 1.
     let g = replay(&red(""));
-    assert_eq!(g.cursor, Some((1, 2)));
+    assert_eq!(g.cursor, Some((0, 2)));
     assert_eq!(g.images.len(), 1);
     let p = &g.images[0];
     assert_eq!(*p.pixels, [255, 0, 0, 255]);
@@ -45,7 +46,7 @@ fn chunks_commit_only_on_final_chunk_at_final_cursor() {
     assert_eq!(g.images.len(), 1);
     assert_eq!(*g.images[0].pixels, [255, 0, 0, 255, 0, 255, 0, 255]);
     assert_eq!((g.images[0].x, g.images[0].slices[0].y), (30, 40));
-    assert_eq!(g.cursor, Some((3, 7)));
+    assert_eq!(g.cursor, Some((2, 7)));
 }
 
 #[test]
@@ -515,7 +516,7 @@ fn explicit_image_id_must_be_nonzero_but_omission_is_valid() {
     for extra in ["", ",i=1", ",i=4294967295"] {
         let g = replay(&red(extra));
         assert_eq!(g.images.len(), 1);
-        assert_eq!(g.cursor, Some((1, 2)));
+        assert_eq!(g.cursor, Some((0, 2)));
     }
 }
 
@@ -549,7 +550,10 @@ fn repeated_partial_scrolls_match_independent_pixel_row_model() {
     for _ in 0..100 {
         let mut g = Graphics::default();
         g.command(b"a=T,f=24,s=1,v=1,c=20,r=10,C=1;/wAA", 0, 0, (10, 20), 10);
-        let mut expected: Vec<_> = (0..200).map(Some).collect();
+        // Pixel rows of the screen and below it, where a scroll without
+        // margins moves rows and keeps them: at most 20 scrolls of 10 rows.
+        const ROWS: usize = 200 + 20 * 10 * 20;
+        let mut expected: Vec<_> = (0..ROWS).map(|row| (row < 200).then_some(row)).collect();
         for _ in 0..20 {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             let top = (seed as usize >> 8) % 10;
@@ -557,25 +561,25 @@ fn repeated_partial_scrolls_match_independent_pixel_row_model() {
             let n = 1 + (seed as usize >> 24) % (bottom - top + 1);
             let delta = if seed & 1 == 0 { n as i64 } else { -(n as i64) };
             let old = expected.clone();
+            // Without margins the region runs on below the screen.
+            let end = if top == 0 && bottom == 9 { ROWS } else { (bottom + 1) * 20 };
             // A placement is eligible only if every surviving source row is
             // inside the margins. Otherwise its entire raster stays fixed.
-            let contained = old.iter().enumerate().all(|(row, pixel)| {
-                pixel.is_none() || (row >= top * 20 && row < (bottom + 1) * 20)
-            });
-            for row in top * 20..(bottom + 1) * 20 {
+            let contained =
+                old.iter().enumerate().all(|(row, pixel)| pixel.is_none() || (row >= top * 20 && row < end));
+            for row in top * 20..end {
                 if !contained {
                     continue;
                 }
                 let source = row as i64 - delta * 20;
-                expected[row] =
-                    if source >= (top * 20) as i64 && source < ((bottom + 1) * 20) as i64 {
-                        old[source as usize]
-                    } else {
-                        None
-                    };
+                expected[row] = if source >= (top * 20) as i64 && source < end as i64 {
+                    old[source as usize]
+                } else {
+                    None
+                };
             }
             g.scroll(top, bottom, delta, 20);
-            let mut actual = vec![None; 200];
+            let mut actual = vec![None; ROWS];
             for p in &g.placements {
                 // A placement remains one contiguous visible rectangle.
                 assert_eq!(p.slices.len(), 1);
@@ -942,4 +946,55 @@ fn delete_cells_follow_scrolling_and_scrolled_off_anonymous_images_go() {
     g.scroll(0, 9, -1, 20);
     assert!(g.placements.is_empty());
     assert!(g.images.is_empty());
+}
+
+#[test]
+fn the_cursor_moves_past_an_image_as_kitty_moves_it() {
+    let put = |at: &str, keys: &str| replay(format!("{at}\x1b_Ga=T,f=24,s=1,v=1,{keys};/wAA\x1b\\").as_bytes());
+    // Right by c, down by r - 1: the next text goes beside the image's last row.
+    assert_eq!(put("", "c=2,r=3").cursor, Some((2, 2)));
+    assert_eq!(put("\x1b[2;5H", "c=1,r=1").cursor, Some((1, 5)));
+    // Reaching the right edge goes to the start of the next row.
+    assert_eq!(put("", "c=20,r=1").cursor, Some((1, 0)));
+    assert_eq!(put("\x1b[1;15H", "c=9,r=2").cursor, Some((2, 0)));
+    // Past the bottom, the screen scrolls by the overshoot, the image with it.
+    // The image is centred in its 2x3 cells, which end on the last row.
+    let g = put("\x1b[10;1H", "c=2,r=3");
+    assert_eq!(g.cursor, Some((9, 2)));
+    let s = g.images[0].slices[0];
+    assert_eq!((s.y, s.top, s.bottom), (7 * 20 + 20, 7 * 20 + 20, 8 * 20 + 20));
+    let g = put("\x1b[10;1H", "c=20,r=1");
+    assert_eq!(g.cursor, Some((9, 0)));
+    assert_eq!(g.images[0].slices[0].y, 8 * 20);
+    // In a region, past its bottom margin the region scrolls, and the cursor
+    // may stay below it, as kitty clamps it to the screen.
+    let g = put("\x1b[3;6r\x1b[5;1H", "c=2,r=3");
+    assert_eq!(g.cursor, Some((6, 2)));
+    // In origin mode, a cursor the move left inside the margins stays in them.
+    let g = put("\x1b[3;6r\x1b[?6h\x1b[3;1H", "c=20,r=2");
+    assert_eq!(g.cursor, Some((5, 0)));
+    // C=1 leaves it.
+    assert_eq!(put("\x1b[2;3H", "c=2,r=3,C=1").cursor, Some((1, 2)));
+}
+
+/// A long run of text at the bottom row skips the rows it would scroll away,
+/// but an image below the screen still moves the whole way, as row-by-row
+/// printing moves it.
+#[test]
+fn a_long_run_moves_an_image_below_the_screen_the_whole_way() {
+    // A 1x40 image on the last row of 6-pixel rows, most of it below the screen.
+    let image = format!("\x1b[4;1H\x1b_Ga=T,f=24,s=1,v=40,C=1;{}\x1b\\", "/wAA".repeat(40));
+    for rows in [4, 6, 9, 11, 13, 20] {
+        let text: Vec<u8> = (0..6 * rows).map(|i| b'a' + (i / 6) as u8).collect();
+        let mut batched = image.as_bytes().to_vec();
+        let mut split = batched.clone();
+        batched.extend_from_slice(&text);
+        for row in text.chunks(6) {
+            split.extend_from_slice(row);
+            split.extend_from_slice(b"\x1b[m");
+        }
+        let a = replay_sized(&batched, 6, 4, Lf::Index, (10, 6));
+        let b = replay_sized(&split, 6, 4, Lf::Index, (10, 6));
+        assert_eq!(a.images, b.images, "{rows} rows");
+    }
 }
