@@ -257,9 +257,9 @@ layout" section and kitty's `handle_put_command`, `update_dest_rect`,
   over the cell's background colour, so an image under the text shows
   through them as through a glyph. Without such an image the pixels are the
   same, and every existing golden hash is unchanged.
-- The bar and underline cursors stay above every image, as before. In kitty
-  they are drawn with the text, so a `z >= 0` image covers them; that is a
-  separate question from this stage.
+- The bar and underline cursors are drawn with the text, as kitty draws them
+  in its cell foreground pass (`cell.slang`): over the images under the text,
+  under `z >= 0`. Until the follow-up to this stage they were above every image.
 
 Tests: `src/graphics/geometry_tests.rs` covers crops in and past each edge,
 empty crops, offsets at and past the cell size, offsets with `c`, `r` and

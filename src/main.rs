@@ -2067,11 +2067,13 @@ fn main() -> ExitCode {
             match (cursor, cursor_shape) {
                 (None, _) => {}
                 (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, cols, row, col),
-                // Over everything, images too, as a terminal draws it.
+                // As kitty draws it, with the text: over the images under
+                // the text, under those of z-index 0 and up, so it goes first
+                // among the views drawn after the text.
                 (Some(at), shape) => {
                     let ((x, y, w, h), pixel) = cursor_mark(&cells, cols, at, shape, (cell_w, cell_h));
                     mark_pixel = pixel;
-                    image_views.push(graphics::ImageView::solid(&mark_pixel, x, y, w, h));
+                    image_views.insert(0, graphics::ImageView::solid(&mark_pixel, x, y, w, h));
                 }
             }
             opaque_backgrounds(&mut cells);

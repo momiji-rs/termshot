@@ -78,7 +78,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stays on the last column, as terminals draw it.
 - The cursor takes the shape a program sets with DECSCUSR (`CSI Ps SP q`,
   #39): an underline (3, 4) or a bar (5, 6) in the default foreground, over
-  the cell's own colours and over images, or a block (0 to 2). Blinking
+  the cell's own colours, or a block (0 to 2). As in kitty, which draws it
+  with the text, it is over images under the text and under images of
+  z-index 0 and up (Sixel images too). Blinking
   shapes are drawn steady. Like tmux, the shape survives DECSC/DECRC, DECSTR
   and the alternate screen; unlike tmux, and like xterm, RIS resets it.
   `--cursor-shape block|underline|bar` overrides it, and `--json` reports it

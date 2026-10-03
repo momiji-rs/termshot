@@ -167,20 +167,22 @@ fn stored_placements(bin: &str) {
 }
 
 // Underline and bar cursors (DECSCUSR), pixel by pixel: a solid rectangle an
-// eighth of a cell wide in the default foreground, over images too, and
-// nothing else changed.
+// eighth of a cell wide in the default foreground, and nothing else changed.
+// kitty draws the cursor with the text, so it shows over an image under the
+// text (z=-1) and under one over it (z=0).
 fn cursor_shapes(bin: &str) {
     const FG: [u8; 3] = [219, 231, 247];
     const RED: [u8; 3] = [255, 0, 0];
-    // A red image fills cell 1, which the cursor is on.
-    let image = "\x1b[1;2H\x1b_Ga=T,f=24,s=1,v=1,c=1,r=1,C=1;/wAA\x1b\\";
     for px in ["9", "24", "47.5"] {
         for (shape, ps) in [("underline", 4), ("bar", 6)] {
-            for with_image in [false, true] {
-                let name = format!("graphics-cursor-{shape}-{px}-{with_image}");
+            for z in [None, Some(-1), Some(0)] {
+                let name = format!("graphics-cursor-{shape}-{px}-{z:?}");
                 let (input, out) = (format!("target/test/{name}.pty"), format!("target/test/{name}.png"));
-                let log = format!("\x1b[{ps} q{}\x1b[1;2H", if with_image { image } else { "" });
-                fs::write(&input, log).unwrap();
+                // A red image fills cell 1, which the cursor is on.
+                let image = z.map_or(String::new(), |z| {
+                    format!("\x1b[1;2H\x1b_Ga=T,f=24,s=1,v=1,c=1,r=1,z={z},C=1;/wAA\x1b\\")
+                });
+                fs::write(&input, format!("\x1b[{ps} q{image}\x1b[1;2H")).unwrap();
                 let ok = Command::new(bin).args(["--size", "3x1", "--px", px, &input, &out]).status().unwrap().success();
                 assert!(ok, "{name}");
                 let (w, h, pixels) = decode(&out);
@@ -193,15 +195,20 @@ fn cursor_shapes(bin: &str) {
                     for x in 0..w {
                         let in_cell = (cw..2 * cw).contains(&x);
                         let mark = in_cell && if shape == "bar" { x < cw + thick } else { y >= h - thick };
-                        let red = with_image && (left..left + side).contains(&x) && (top..top + side).contains(&y);
-                        let want = if mark { FG } else if red { RED } else { BG };
+                        let red = z.is_some() && (left..left + side).contains(&x) && (top..top + side).contains(&y);
+                        let want = match (mark, red) {
+                            (true, true) if z == Some(0) => RED,
+                            (true, _) => FG,
+                            (false, true) => RED,
+                            (false, false) => BG,
+                        };
                         assert_eq!(&pixels[(y * w + x) * 4..][..3], &want, "{name} at ({x},{y})");
                     }
                 }
             }
         }
     }
-    println!("ok, underline and bar cursors, over the background and over an image");
+    println!("ok, underline and bar cursors, over the background, over an image under the text, under one over it");
 }
 
 // Compare the final PNG with an independent raster-row scroll oracle. The
@@ -423,7 +430,8 @@ fn crops_and_offsets(bin: &str) {
 // shade and a plain cell. A green image covers the row. From kitty: z >= 0 is
 // over everything; z < 0 is over every background and under the text; below
 // -2^30 the image shows only through default backgrounds, which reverse video
-// and the block cursor are not. The bar cursor is over everything.
+// and the block cursor are not. The bar cursor is drawn with the text: over
+// z < 0, under z >= 0.
 fn layers(bin: &str) {
     const FG: [u8; 3] = [219, 231, 247];
     const RED: [u8; 3] = [205, 0, 0];
@@ -472,11 +480,11 @@ fn layers(bin: &str) {
                             for c in 0..3 {
                                 want[c] = ((u32::from(fg[c]) * coverage + u32::from(want[c]) * (4 - coverage) + 2) / 4) as u8;
                             }
-                            if z >= 0 {
-                                want = over(GREEN, alpha, want);
-                            }
                             if cursor == "bar" && x < thick {
                                 want = FG;
+                            }
+                            if z >= 0 {
+                                want = over(GREEN, alpha, want);
                             }
                             assert_eq!(&pixels[(y * w + x) * 4..][..3], &want, "{name} at ({x},{y})");
                             checked += 1;

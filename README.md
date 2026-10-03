@@ -258,7 +258,9 @@ image and removes its placements. Images draw by `z`, then the order images
 and placements were made: from 0 over the text, below 0 under the text but over
 every cell background, and below -1,073,741,824 under the backgrounds that are
 not the default colour, so they show only through default ones. Reverse-video
-cells and the block cursor are opaque there, as in kitty. Only images wholly inside a scrolling
+cells and the block cursor are opaque there, as in kitty. The underline and
+bar cursors are drawn with the text, as kitty draws them: over the images under
+it, under those of `z` 0 and up. Only images wholly inside a scrolling
 region move and clip at its edges; images crossing a margin stay stationary.
 Full-screen erase and reset remove every placement and free every stored image,
 as kitty does. Explicit image ids and numbers must be nonzero; omitting `i` is

@@ -121,8 +121,9 @@ impl Placement {
 }
 
 impl ImageView {
-    /// A rectangle of one colour: the opaque pixel, stretched over it, above
-    /// everything else. The pixel is borrowed; it must outlive the view.
+    /// A rectangle of one colour: the opaque pixel, stretched over it, in the
+    /// layer over the text, where the views are drawn in their order. The
+    /// pixel is borrowed; it must outlive the view.
     pub fn solid(pixel: &[u8; 4], x: i64, y: i64, w: i64, h: i64) -> ImageView {
         ImageView {
             pixels: pixel.as_ptr(),
