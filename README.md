@@ -242,8 +242,9 @@ decoder (its `graphics_sixel.c`, patch 412) and the VT340 it emulates:
   dimensions come from the font and `--px`, as for kitty's native sizing.
   The image is as large as `Ph`x`Pv` or its pixels reach, whichever is larger;
   an extent given as 0 or left empty counts as 1, as in xterm.
-- `P2` 1 leaves pixels no sixel set transparent. `P2` 0 or 2 paints the declared
-  area with register 0, as xterm does; pixels past it stay transparent.
+- `P2` 1 leaves pixels no sixel set transparent. `P2` 0 or 2 paints the area
+  the raster attributes declared before the first sixel with register 0, as
+  xterm does; pixels past it stay transparent.
 - With Sixel scrolling on (the default), the image starts at the cursor, and
   the cursor ends on the last text row the image covers, in the same column,
   so the program's next newline goes below it. An image that would pass the

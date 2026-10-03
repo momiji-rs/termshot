@@ -142,6 +142,11 @@ fn raster_attributes_size_the_image_and_p2_its_background() {
         assert_eq!((w, h), (3, 2), "{p2}");
         assert_eq!(px, [RED, background, background, background, background, background], "{p2}");
     }
+    // Of several raster attributes before the first sixel, the largest area
+    // is painted, as xterm paints the image as large as they made it.
+    let (w, h, px) = pixels(b"q\"1;1;3;2\"1;1;1;1#1;2;100;0;0@");
+    assert_eq!((w, h), (3, 2));
+    assert_eq!(px, [RED, [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255]]);
     // Register 0 is the background, at its final colour.
     let (_, _, px) = pixels(b"q\"1;1;2;1#1;2;100;0;0@#0;2;0;0;100");
     assert_eq!(px, [RED, BLUE]);

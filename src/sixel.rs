@@ -10,8 +10,9 @@
 //! - Pixels keep their register, so redefining a register later recolours
 //!   what was drawn with it: the palette at the end of the image applies.
 //! - P2 1 leaves pixels no sixel set transparent. P2 0 or 2 paints the area
-//!   the raster attributes declared, as it stands at the first sixel, with
-//!   register 0; pixels outside it that nothing set stay transparent.
+//!   the raster attributes declared before the first sixel, the largest of
+//!   them, with register 0; pixels outside it that nothing set stay
+//!   transparent.
 //! - The image is as wide and tall as the raster attributes declared or its
 //!   set pixels reach, whichever is larger.
 
@@ -143,8 +144,6 @@ struct Decoder {
     rows: Vec<Vec<u16>>,
     width: usize,
     height: usize,
-    /// The raster attributes' Ph and Pv.
-    declared: (usize, usize),
     /// The area painted with register 0, fixed at the first sixel.
     fill: Option<(usize, usize)>,
     opaque: bool,
@@ -168,7 +167,6 @@ impl Decoder {
             rows: Vec::new(),
             width: 0,
             height: 0,
-            declared: (0, 0),
             fill: None,
             opaque,
             started: false,
@@ -197,7 +195,8 @@ impl Decoder {
         if !self.started {
             self.started = true;
             if self.opaque {
-                self.fill = Some(self.declared);
+                // Only raster attributes can have sized the image so far.
+                self.fill = Some((self.width, self.height));
             }
         }
         if bits == 0 {
@@ -249,8 +248,7 @@ impl Decoder {
     /// is at least 1; one left out declares nothing.
     fn raster(&mut self, params: &[Option<u32>]) -> Option<()> {
         let get = |i: usize| params.get(i).map_or(0, |v| v.unwrap_or(0).max(1) as usize);
-        self.declared = (get(2), get(3));
-        self.extend(self.declared.0, self.declared.1)
+        self.extend(get(2), get(3))
     }
 
     fn run(&mut self, data: &[u8]) -> Option<()> {
