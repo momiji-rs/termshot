@@ -15,7 +15,7 @@ fn rgb_placement_and_cursor() {
     assert_eq!(g.cursor, Some((1, 2)));
     assert_eq!(g.images.len(), 1);
     let p = &g.images[0];
-    assert_eq!(p.pixels, [255, 0, 0, 255]);
+    assert_eq!(*p.pixels, [255, 0, 0, 255]);
     assert_eq!((p.x, p.slices[0].y, p.w, p.h), (0, 0, 20, 20));
 }
 
@@ -23,7 +23,7 @@ fn rgb_placement_and_cursor() {
 fn rgba_default_format_and_no_cursor_move() {
     let g = replay(b"\x1b[3;4H\x1b_Ga=T,s=1,v=1,C=1;/wAAgA==\x1b\\");
     assert_eq!(g.cursor, Some((2, 3)));
-    assert_eq!(g.images[0].pixels, [255, 0, 0, 128]);
+    assert_eq!(*g.images[0].pixels, [255, 0, 0, 128]);
     assert_eq!(
         (
             g.images[0].x,
@@ -43,7 +43,7 @@ fn chunks_commit_only_on_final_chunk_at_final_cursor() {
     log.extend_from_slice(b"\x1b[3;4H\x1b_Gm=0,q=2;AP8A\x1b\\");
     let g = replay(&log);
     assert_eq!(g.images.len(), 1);
-    assert_eq!(g.images[0].pixels, [255, 0, 0, 255, 0, 255, 0, 255]);
+    assert_eq!(*g.images[0].pixels, [255, 0, 0, 255, 0, 255, 0, 255]);
     assert_eq!((g.images[0].x, g.images[0].slices[0].y), (30, 40));
     assert_eq!(g.cursor, Some((3, 7)));
 }
@@ -71,8 +71,9 @@ fn malformed_and_unsupported_commands_are_ignored() {
         "x=1",
         "z=-1",
         "a=q",
-        "a=t",
-        "a=p",
+        "a=f",
+        "I=0",
+        "i=1,I=1",
         "f=99",
         "s=0",
         "v=0",
@@ -221,14 +222,19 @@ fn scroll_region_leaves_images_outside_it_alone() {
 }
 
 #[test]
-fn z_order_is_stable_and_id_breaks_ties() {
+fn z_order_then_creation_order() {
+    // kitty draws by z-index, then the image's creation, then the placement's.
     let mut log = red(",C=1,i=3,z=2");
     log.extend(red(",C=1,i=2,z=0"));
     log.extend(red(",C=1,i=1,z=0"));
-    assert_eq!(
-        replay(&log).images.iter().map(|p| p.id).collect::<Vec<_>>(),
-        [1, 2, 3]
-    );
+    log.extend_from_slice(b"\x1b_Ga=p,i=2,p=1,C=1\x1b\\");
+    let order = |log: &[u8]| replay(log).images.iter().map(|p| (p.id, p.placement_id)).collect::<Vec<_>>();
+    assert_eq!(order(&log), [(2, 0), (2, 1), (1, 0), (3, 0)]);
+    // Moving a placement keeps its place; retransmitting keeps the image's.
+    log.extend_from_slice(b"\x1b[5;5H\x1b_Ga=p,i=2,p=1,C=1\x1b\\");
+    assert_eq!(order(&log), [(2, 0), (2, 1), (1, 0), (3, 0)]);
+    log.extend(red(",C=1,i=2,z=0"));
+    assert_eq!(order(&log), [(2, 0), (1, 0), (3, 0)]);
 }
 
 #[test]
@@ -238,6 +244,8 @@ fn placement_count_is_bounded() {
         g.command(b"a=T,f=24,s=1,v=1,C=1;/wAA", 0, 0, (1, 1), 10);
     }
     assert_eq!(g.placements.len(), MAX_PLACEMENTS);
+    // An image without an id that could not be placed is not kept either.
+    assert_eq!(g.images.len(), MAX_PLACEMENTS);
 }
 
 #[test]
@@ -266,7 +274,7 @@ fn png_decoder_is_reentrant() {
                 for _ in 0..20 {
                     let g = replay(include_bytes!("../../tests/fixtures/kitty-png-alpha.pty"));
                     assert_eq!(
-                        g.images[0].pixels,
+                        *g.images[0].pixels,
                         [255, 0, 0, 128, 0, 255, 0, 128, 0, 0, 255, 128, 255, 255, 0, 128]
                     );
                 }
@@ -287,13 +295,12 @@ fn upload_and_retained_memory_are_bounded() {
     assert!(g.pending.is_none());
     assert!(g.placements.is_empty());
     g.command(b"a=T,f=24,s=1,v=1,i=1;/wAA", 0, 0, (1, 1), 10);
-    g.placements[0].pixels.resize(MAX_BYTES, 0);
+    Rc::make_mut(&mut g.images[0].pixels).resize(MAX_BYTES, 0);
+    // A new image over the quota evicts the old one, placement and all.
     g.command(b"a=T,f=24,s=1,v=1,i=2;/wAA", 0, 0, (1, 1), 10);
+    assert_eq!(ids(&g), [2]);
     assert_eq!(g.placements.len(), 1);
-    assert_eq!(g.placements[0].id, 1);
-    // Replacing an ID releases its old quota before charging the new image.
-    g.command(b"a=T,f=24,s=1,v=1,i=1;/wAA", 0, 0, (1, 1), 10);
-    assert_eq!(g.placements[0].pixels.len(), 4);
+    assert_eq!(g.placements[0].id, 2);
 }
 
 #[test]
@@ -423,7 +430,7 @@ fn stationary_images_preserve_limits_and_replacement() {
         .all(|p| p.slices.len() == 1 && p.pixels.len() == 4));
     g.command(b"a=T,f=24,s=1,v=1,C=1,i=1;AP8A", 0, 0, (10, 20), 10);
     assert_eq!(g.placements.len(), MAX_PLACEMENTS);
-    assert_eq!(g.placements[0].pixels, [0, 255, 0, 255]);
+    assert_eq!(*g.placements[0].pixels, [0, 255, 0, 255]);
     assert_eq!(g.placements[0].slices.len(), 1);
 }
 
@@ -485,6 +492,9 @@ fn font_metrics_are_needed_only_for_potential_cursor_movement() {
     assert!(needs_cell_metrics(&red("")));
     assert!(!needs_cell_metrics(&red(",C=1")));
     assert!(needs_cell_metrics(b"\x1b_Ga=T,f=24,s=2,v=1,m=1;/wAA\x1b\\"));
+    assert!(needs_cell_metrics(b"\x1b_Ga=p,i=1\x1b\\"));
+    assert!(!needs_cell_metrics(b"\x1b_Ga=p,i=1,C=1\x1b\\"));
+    assert!(!needs_cell_metrics(b"\x1b_Ga=t,i=1,f=24,s=1,v=1;/wAA\x1b\\"));
     for log in [
         b"text".as_slice(),
         b"\x1b_Ga=q,f=24,s=1,v=1;AAAA\x1b\\",
@@ -495,4 +505,204 @@ fn font_metrics_are_needed_only_for_potential_cursor_movement() {
     ] {
         assert!(!needs_cell_metrics(log));
     }
+}
+
+const PIXEL: &str = "f=24,s=1,v=1;/wAA";
+const GREEN: &str = "f=24,s=1,v=1;AP8A";
+
+fn run(g: &mut Graphics, (col, row): (usize, usize), cmd: &str) -> Option<(usize, usize)> {
+    g.command(cmd.as_bytes(), col, row, (10, 20), 10)
+}
+
+/// The ids of the stored images, sorted.
+fn ids(g: &Graphics) -> Vec<u32> {
+    let mut ids: Vec<_> = g.images.iter().map(|img| img.id).collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// (image id, placement id) of each placement, in draw order.
+fn placed(g: &Graphics) -> Vec<(u32, u32)> {
+    g.placements.iter().map(|p| (p.id, p.placement_id)).collect()
+}
+
+#[test]
+fn transmit_stores_and_put_places_at_the_cursor() {
+    let mut log = format!("\x1b_Ga=t,i=5,{PIXEL}\x1b\\").into_bytes();
+    let g = replay(&log);
+    assert!(g.images.is_empty());
+    assert_eq!(g.cursor, Some((0, 0)));
+    log.extend_from_slice(b"\x1b[3;4H\x1b_Ga=p,i=5,c=2,r=1\x1b\\\x1b[6;1H\x1b_Ga=p,i=5,C=1\x1b\\");
+    let g = replay(&log);
+    assert_eq!(g.cursor, Some((5, 0)));
+    let [a, b] = &g.images[..] else {
+        panic!("{} placements", g.images.len())
+    };
+    assert_eq!((a.x, a.slices[0].y, a.w, a.h), (30, 40, 20, 20));
+    assert_eq!((b.x, b.slices[0].y, b.w, b.h), (0, 100, 1, 1));
+    // Placements share the stored pixels rather than copying them.
+    assert!(Rc::ptr_eq(&a.pixels, &b.pixels));
+    assert_eq!(*a.pixels, [255, 0, 0, 255]);
+}
+
+#[test]
+fn placement_ids_move_a_placement_unless_the_image_has_no_id() {
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), &format!("a=t,i=1,{PIXEL}"));
+    run(&mut g, (0, 0), "a=p,i=1,p=7,C=1");
+    run(&mut g, (0, 2), "a=p,i=1,p=7,C=1");
+    assert_eq!(placed(&g), [(1, 7)]);
+    assert_eq!(g.placements[0].slices[0].y, 40);
+    run(&mut g, (0, 0), "a=p,i=1,p=8,C=1");
+    run(&mut g, (0, 0), "a=p,i=1,C=1");
+    run(&mut g, (0, 0), "a=p,i=1,C=1");
+    assert_eq!(placed(&g), [(1, 7), (1, 8), (1, 0), (1, 0)]);
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), &format!("a=T,p=7,C=1,{PIXEL}"));
+    run(&mut g, (0, 0), &format!("a=T,p=7,C=1,{PIXEL}"));
+    assert_eq!(placed(&g), [(0, 0), (0, 0)]);
+}
+
+#[test]
+fn put_needs_a_stored_image_and_ignores_its_payload() {
+    for put in ["a=p,i=9", "a=p,I=9", "a=p", "a=p,p=1", "a=p,i=1,I=1"] {
+        let log = format!("\x1b_Ga=t,i=1,{PIXEL}\x1b\\\x1b_G{put}\x1b\\OK");
+        let g = replay(log.as_bytes());
+        assert!(g.images.is_empty(), "{put}");
+        assert_eq!(g.cursor, Some((0, 2)), "{put}");
+        assert_eq!(g.cells[0].ch, b'O' as u32);
+    }
+    let g = replay(format!("\x1b_Ga=t,i=1,{PIXEL}\x1b\\\x1b_Ga=p,i=1;!!\x1b\\").as_bytes());
+    assert_eq!(g.images.len(), 1);
+}
+
+#[test]
+fn retransmission_drops_old_placements_even_when_the_new_data_fails() {
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), &format!("a=T,i=1,C=1,{PIXEL}"));
+    run(&mut g, (0, 0), "a=p,i=1,p=2,C=1");
+    run(&mut g, (0, 0), &format!("a=t,i=1,{GREEN}"));
+    assert!(g.placements.is_empty());
+    run(&mut g, (0, 0), "a=p,i=1,C=1");
+    assert_eq!(*g.placements[0].pixels, [0, 255, 0, 255]);
+    run(&mut g, (0, 0), "a=t,i=1,f=24,s=2,v=1;/wAA");
+    assert!(g.placements.is_empty());
+    assert!(ids(&g).is_empty());
+    assert_eq!(run(&mut g, (0, 0), "a=p,i=1"), None);
+    assert!(g.placements.is_empty());
+}
+
+#[test]
+fn image_numbers_name_the_newest_image_and_get_a_free_id() {
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), &format!("a=t,i=1,{PIXEL}"));
+    run(&mut g, (0, 0), &format!("a=t,I=3,{PIXEL}"));
+    run(&mut g, (0, 0), &format!("a=t,I=3,{GREEN}"));
+    assert_eq!(ids(&g), [1, 2, 3]);
+    run(&mut g, (0, 0), "a=p,I=3,C=1");
+    assert_eq!(*g.placements[0].pixels, [0, 255, 0, 255]);
+    assert_eq!(g.placements[0].id, 3);
+    // The newest goes with its placement; the older one is the newest now.
+    run(&mut g, (0, 0), "a=d,d=N,I=3");
+    assert_eq!(ids(&g), [1, 2]);
+    run(&mut g, (0, 0), "a=p,I=3,C=1");
+    assert_eq!(*g.placements[0].pixels, [255, 0, 0, 255]);
+    assert_eq!(g.placements[0].id, 2);
+    run(&mut g, (0, 0), "a=d,d=n,I=3");
+    assert!(g.placements.is_empty());
+    assert_eq!(ids(&g), [1, 2]);
+}
+
+/// Image 1 covers cells (0..2, 0) at z 0, image 2 cells (5..7, 3..5) at z 1.
+fn scene() -> Graphics {
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), &format!("a=T,i=1,c=2,r=1,C=1,{PIXEL}"));
+    run(&mut g, (5, 3), &format!("a=T,i=2,c=2,r=2,z=1,C=1,{PIXEL}"));
+    g
+}
+
+#[test]
+fn uppercase_deletes_free_images_left_unplaced() {
+    // Only a selector naming the image frees one already without placements.
+    for (delete, freed) in [
+        ("d=I,i=3", true),
+        ("d=i,i=3", false),
+        ("d=I,i=3,p=1", false),
+        ("d=A", false),
+    ] {
+        let mut g = scene();
+        run(&mut g, (0, 0), &format!("a=t,i=3,{PIXEL}"));
+        run(&mut g, (0, 0), &format!("a=d,{delete}"));
+        assert_eq!(ids(&g).contains(&3), !freed, "{delete}");
+    }
+    // A lowercase delete frees an image without an id: nothing could place it again.
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), &format!("a=T,C=1,{PIXEL}"));
+    run(&mut g, (0, 0), "a=d,d=a");
+    assert!(g.images.is_empty());
+    run(&mut g, (0, 0), &format!("a=t,{PIXEL}"));
+    assert!(g.images.is_empty());
+}
+
+#[test]
+fn clearing_a_screen_frees_its_stored_images() {
+    let placed = |between: &[u8]| {
+        let mut log = format!("\x1b_Ga=t,i=1,{PIXEL}\x1b\\").into_bytes();
+        log.extend_from_slice(between);
+        log.extend_from_slice(b"\x1b_Ga=p,i=1,C=1\x1b\\");
+        replay(&log).images.len()
+    };
+    assert_eq!(placed(b""), 1);
+    assert_eq!(placed(b"\x1b[2J"), 0);
+    assert_eq!(placed(b"\x1bc"), 0);
+    // Other erases leave graphics alone.
+    assert_eq!(placed(b"\x1b[J\x1b[1J\x1b[3J\x1b[K\x1b[2K"), 1);
+    // Each screen keeps its own images.
+    assert_eq!(placed(b"\x1b[?1049h"), 0);
+    assert_eq!(placed(b"\x1b[?1049h\x1b[2J\x1b[?1049l"), 1);
+}
+
+#[test]
+fn quota_frees_unplaced_images_first_then_the_least_recently_used() {
+    let grow = |g: &mut Graphics, id: u32, len: usize| {
+        let img = g.images.iter_mut().find(|img| img.id == id).unwrap();
+        Rc::make_mut(&mut img.pixels).resize(len, 0);
+    };
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), &format!("a=t,i=1,{PIXEL}"));
+    grow(&mut g, 1, MAX_BYTES / 2);
+    for id in [2, 3] {
+        run(&mut g, (0, 0), &format!("a=t,i={id},{PIXEL}"));
+        grow(&mut g, id, MAX_BYTES / 4);
+        run(&mut g, (0, 0), &format!("a=p,i={id},C=1"));
+    }
+    // Over by four bytes: every unplaced image but the new one goes.
+    run(&mut g, (0, 0), &format!("a=t,i=4,{PIXEL}"));
+    assert_eq!(ids(&g), [2, 3, 4]);
+    grow(&mut g, 4, MAX_BYTES / 2);
+    run(&mut g, (0, 0), "a=p,i=4,C=1");
+    // Putting an image again makes it recently used.
+    run(&mut g, (0, 0), "a=p,i=2,C=1");
+    run(&mut g, (0, 0), &format!("a=t,i=5,{PIXEL}"));
+    assert_eq!(ids(&g), [2, 4, 5]);
+    assert_eq!(placed(&g), [(2, 0), (2, 0), (4, 0)]);
+
+    let mut g = Graphics::default();
+    for id in 1..=MAX_IMAGES {
+        run(&mut g, (0, 0), &format!("a=t,i={id},{PIXEL}"));
+    }
+    run(&mut g, (0, 0), "a=p,i=1,C=1");
+    assert_eq!(g.images.len(), MAX_IMAGES);
+    run(&mut g, (0, 0), &format!("a=t,i={},{PIXEL}", MAX_IMAGES + 1));
+    // As kitty does, all the unplaced images go at once, not just enough.
+    assert_eq!(ids(&g), [1, MAX_IMAGES as u32 + 1]);
+}
+
+#[test]
+fn scrolled_off_anonymous_images_go() {
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), &format!("a=T,C=1,{PIXEL}"));
+    g.scroll(0, 9, -1, 20);
+    assert!(g.placements.is_empty());
+    assert!(g.images.is_empty());
 }

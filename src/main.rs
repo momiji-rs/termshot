@@ -815,7 +815,7 @@ impl Screen {
                     }
                     2 => {
                         self.erase_rows(0, self.rows);
-                        self.graphics.placements.clear();
+                        self.graphics.clear();
                     },
                     // 3 clears only the scrollback, which termshot does not keep.
                     _ => {}

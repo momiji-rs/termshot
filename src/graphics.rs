@@ -1,7 +1,11 @@
-//! Replay the self-contained subset of kitty graphics: direct a=T images.
+//! Replay the self-contained subset of kitty graphics: directly transmitted
+//! images, stored (a=t) and placed (a=p, a=T), and deleted as kitty does.
 //! All coordinates are pixels computed from the same font metrics as draw.c.
 
+use std::rc::Rc;
+
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+const MAX_IMAGES: usize = 4096;
 const MAX_PLACEMENTS: usize = 1024;
 const MAX_EXTENT: i64 = 1 << 24;
 
@@ -10,22 +14,43 @@ extern "C" {
     fn image_png_decode(data: *const u8, len: i32, out: *mut u8, w: i32, h: i32) -> i32;
 }
 
+/// Stored images and their placements, kept in draw order. Every placement's
+/// image is stored, and an image without an id or number lives only as long
+/// as it has a placement, since nothing could place it again.
 #[derive(Default)]
 pub struct Graphics {
+    images: Vec<Image>,
     pub placements: Vec<Placement>,
     pending: Option<(Command, Vec<u8>)>,
+    /// Hands out image and placement keys, which are also kitty's creation
+    /// order and its atime: both only need to increase.
+    clock: u64,
+}
+
+struct Image {
+    key: u64,
+    id: u32,
+    number: u32,
+    pixels: Rc<Vec<u8>>,
+    width: u32,
+    height: u32,
+    atime: u64,
 }
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Placement {
-    pub pixels: Vec<u8>,
+    pub pixels: Rc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
     pub x: i64,
     pub w: i64,
     pub h: i64,
     slices: Vec<ImageSlice>,
+    /// The image's key, and a copy of its id, which never changes while the
+    /// image has placements.
+    image: u64,
     id: u32,
+    key: u64,
     placement_id: u32,
     z: u32,
 }
@@ -95,12 +120,15 @@ struct Command {
     cols: u32,
     rows: u32,
     id: u32,
+    number: u32,
     placement_id: u32,
     z: u32,
     no_move: bool,
     more: bool,
     delete: u8,
     continuation: bool,
+    /// The key of the image this transmission replaces, kept for its order.
+    reuse: Option<u64>,
 }
 
 fn number(s: &[u8]) -> Option<u32> {
@@ -150,6 +178,12 @@ impl Command {
                         return None;
                     }
                 }
+                b'I' => {
+                    cmd.number = number(val)?;
+                    if cmd.number == 0 {
+                        return None;
+                    }
+                }
                 b'p' => cmd.placement_id = number(val)?,
                 b'z' if number(val)? <= i32::MAX as u32 => cmd.z = number(val)?,
                 b'C' if val == b"0" || val == b"1" => cmd.no_move = val == b"1",
@@ -161,7 +195,7 @@ impl Command {
                 _ => return None,
             }
         }
-        Some(cmd)
+        (cmd.id == 0 || cmd.number == 0).then_some(cmd)
     }
 }
 
@@ -180,7 +214,7 @@ pub fn needs_cell_metrics(data: &[u8]) -> bool {
             {
                 let bytes = &data[start + 1..end - 2];
                 let header = bytes.split(|&b| b == b';').next().unwrap_or_default();
-                if Command::parse(header).is_some_and(|c| c.action == b'T' && !c.no_move) {
+                if Command::parse(header).is_some_and(|c| matches!(c.action, b'T' | b'p') && !c.no_move) {
                     return true;
                 }
             }
@@ -274,6 +308,18 @@ impl Graphics {
         self.pending = None;
     }
 
+    /// ED 2, as kitty's grman_clear: remove every placement and free every
+    /// image left without one, stored images included. An upload continues.
+    pub fn clear(&mut self) {
+        self.placements.clear();
+        self.images.clear();
+    }
+
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
     /// Returns the cursor advance in cells, if the command placed an image.
     pub fn command(
         &mut self,
@@ -289,16 +335,30 @@ impl Graphics {
             return None;
         };
         let payload = bytes.get(split + 1..).unwrap_or_default();
-        if cmd.action == b'd' {
-            self.abort();
-            match cmd.delete {
-                b'a' | b'A' => self.placements.clear(),
-                b'i' | b'I' if cmd.id != 0 => self.placements.retain(|p| {
-                    p.id != cmd.id || (cmd.placement_id != 0 && p.placement_id != cmd.placement_id)
-                }),
-                _ => {}
+        match cmd.action {
+            b'd' => {
+                self.abort();
+                self.delete(&cmd);
+                return None;
             }
-            return None;
+            b'p' => {
+                self.abort();
+                let index = self.find(&cmd)?;
+                return self.put(index, &cmd, col, row, cell, screen_rows);
+            }
+            b't' | b'T' => {}
+            _ => {
+                self.abort();
+                return None;
+            }
+        }
+        // Transmitting an id replaces its image and placements at once,
+        // whether or not the new data turns out to load.
+        if cmd.id != 0 {
+            if let Some(index) = self.images.iter().position(|img| img.id == cmd.id) {
+                cmd.reuse = Some(self.images[index].key);
+                self.remove_image(index);
+            }
         }
         let Some(chunk) = base64(payload) else {
             self.abort();
@@ -322,14 +382,75 @@ impl Graphics {
                 cmd.more = more;
             }
         }
-        if cmd.action != b'T' {
-            return None;
-        }
         if cmd.more {
             self.pending = Some((cmd, data));
             return None;
         }
+        // Nothing could ever place an image stored with neither id nor number.
+        if cmd.action == b't' && cmd.id == 0 && cmd.number == 0 {
+            return None;
+        }
         let (width, height, pixels) = decode(&cmd, &data)?;
+        let key = match cmd.reuse {
+            Some(key) => key,
+            None => self.tick(),
+        };
+        let id = if cmd.id == 0 && cmd.number != 0 { self.free_id() } else { cmd.id };
+        let atime = self.tick();
+        let pixels = Rc::new(pixels);
+        self.images.push(Image { key, id, number: cmd.number, pixels, width, height, atime });
+        let mut advance = None;
+        if cmd.action == b'T' {
+            advance = self.put(self.images.len() - 1, &cmd, col, row, cell, screen_rows);
+            if id == 0 && !self.placements.iter().any(|p| p.image == key) {
+                self.images.pop();
+            }
+        }
+        self.enforce_quota(key);
+        advance
+    }
+
+    /// The image a put or delete names: by id, or the newest with a number.
+    fn find(&self, cmd: &Command) -> Option<usize> {
+        if cmd.id != 0 {
+            self.images.iter().position(|img| img.id == cmd.id)
+        } else if cmd.number != 0 {
+            (0..self.images.len())
+                .filter(|&i| self.images[i].number == cmd.number)
+                .max_by_key(|&i| self.images[i].key)
+        } else {
+            None
+        }
+    }
+
+    /// The lowest id no image has, as kitty gives one numbered without an id.
+    fn free_id(&self) -> u32 {
+        let mut ids: Vec<u32> = self.images.iter().map(|img| img.id).filter(|&id| id != 0).collect();
+        ids.sort_unstable();
+        let mut free = 1;
+        for id in ids {
+            if id > free {
+                break;
+            }
+            free = id + 1;
+        }
+        free
+    }
+
+    /// Place a stored image at the cursor. The same nonzero placement id on
+    /// the same image moves that placement instead of adding one.
+    fn put(
+        &mut self,
+        index: usize,
+        cmd: &Command,
+        col: usize,
+        row: usize,
+        cell: (i32, i32),
+        screen_rows: usize,
+    ) -> Option<(usize, usize)> {
+        let image = &self.images[index];
+        let (image_key, id, width, height) = (image.key, image.id, image.width, image.height);
+        let pixels = Rc::clone(&image.pixels);
         let (cw, ch) = (i64::from(cell.0), i64::from(cell.1));
         let (sw, sh) = (i64::from(width), i64::from(height));
         // Bound target extents before multiplying by source dimensions. A
@@ -353,19 +474,24 @@ impl Graphics {
         } else {
             ((bh * sw / sh).max(1), bh)
         };
-        let (count, retained) = self
-            .placements
-            .iter()
-            .filter(|p| cmd.id == 0 || p.id != cmd.id)
-            .fold((0, 0), |(count, size), p| {
-                (count + 1, size + p.pixels.len())
-            });
-        if retained + pixels.len() > MAX_BYTES || count >= MAX_PLACEMENTS {
+        // kitty ignores a placement id on an image without an id.
+        let placement_id = if id == 0 { 0 } else { cmd.placement_id };
+        let existing = match placement_id {
+            0 => None,
+            _ => self
+                .placements
+                .iter()
+                .position(|p| p.image == image_key && p.placement_id == placement_id),
+        };
+        if existing.is_none() && self.placements.len() >= MAX_PLACEMENTS {
             return None;
         }
-        if cmd.id != 0 {
-            self.placements.retain(|p| p.id != cmd.id);
-        }
+        let key = match existing {
+            Some(i) => self.placements.remove(i).key,
+            None => self.tick(),
+        };
+        self.images[index].atime = self.tick();
+        let (cols, rows) = ((bw + cw - 1) / cw, (bh + ch - 1) / ch);
         let y = row as i64 * ch + (bh - h) / 2;
         self.placements.push(Placement {
             pixels,
@@ -379,22 +505,127 @@ impl Graphics {
                 append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
                 slices
             },
-            id: cmd.id,
-            placement_id: cmd.placement_id,
+            image: image_key,
+            id,
+            key,
+            placement_id,
             z: cmd.z,
         });
-        self.placements.sort_by_key(|p| (p.z, p.id));
+        // kitty's draw order: z-index, then image and placement creation.
+        self.placements.sort_by_key(|p| (p.z, p.image, p.key));
         if cmd.no_move {
             None
         } else {
-            Some((((bw + cw - 1) / cw) as usize, ((bh + ch - 1) / ch) as usize))
+            Some((cols as usize, rows as usize))
         }
+    }
+
+    fn remove_image(&mut self, index: usize) {
+        let key = self.images.swap_remove(index).key;
+        self.placements.retain(|p| p.image != key);
+    }
+
+    /// Free the images left without placements that `free` selects, and
+    /// those without an id, which nothing could place again.
+    fn free_unplaced(&mut self, free: impl Fn(&Image) -> bool) {
+        let mut placed: Vec<u64> = self.placements.iter().map(|p| p.image).collect();
+        placed.sort_unstable();
+        self.images
+            .retain(|img| (img.id != 0 && !free(img)) || placed.binary_search(&img.key).is_ok());
+    }
+
+    /// kitty's delete command. Lowercase removes placements; uppercase also
+    /// frees the images it leaves without one. Unsupported selectors do nothing.
+    fn delete(&mut self, cmd: &Command) {
+        let upper = cmd.delete.is_ascii_uppercase();
+        let selector = cmd.delete.to_ascii_lowercase();
+        let pid = cmd.placement_id;
+        match selector {
+            b'a' => self.delete_where(upper, |_| true, |_| false),
+            b'i' | b'n' => {
+                // A command cannot give both, so find uses the one selected.
+                let image = match selector {
+                    b'i' if cmd.id != 0 => self.find(cmd),
+                    b'n' if cmd.number != 0 => self.find(cmd),
+                    _ => None,
+                };
+                let Some(id) = image.map(|i| self.images[i].id) else {
+                    return;
+                };
+                // Without a placement id, an image with no placements is freed too.
+                self.delete_where(
+                    upper,
+                    |p| p.id == id && (pid == 0 || p.placement_id == pid),
+                    |img| pid == 0 && img.id == id,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Remove the placements `hit` selects. With `free`, then free the images
+    /// left without one that lost a placement here, or that `also` names.
+    fn delete_where(
+        &mut self,
+        free: bool,
+        hit: impl Fn(&Placement) -> bool,
+        also: impl Fn(&Image) -> bool,
+    ) {
+        let mut matched = Vec::new();
+        self.placements.retain(|p| {
+            let hit = hit(p);
+            if hit {
+                matched.push(p.image);
+            }
+            !hit
+        });
+        matched.sort_unstable();
+        self.free_unplaced(|img| free && (also(img) || matched.binary_search(&img.key).is_ok()));
+    }
+
+    fn over_quota(&self) -> bool {
+        self.images.len() > MAX_IMAGES
+            || self.images.iter().map(|img| img.pixels.len()).sum::<usize>() > MAX_BYTES
+    }
+
+    /// kitty's storage quota: first free every image without a placement, then
+    /// the least recently used ones with their placements, until it fits.
+    /// The image just added always fits on its own.
+    fn enforce_quota(&mut self, added: u64) {
+        if !self.over_quota() {
+            return;
+        }
+        self.free_unplaced(|img| img.key != added);
+        let mut bytes: usize = self.images.iter().map(|img| img.pixels.len()).sum();
+        let mut count = self.images.len();
+        let mut oldest: Vec<_> = self
+            .images
+            .iter()
+            .filter(|img| img.key != added)
+            .map(|img| (img.atime, img.key, img.pixels.len()))
+            .collect();
+        oldest.sort_unstable();
+        let mut evict = Vec::new();
+        for (_, key, len) in oldest {
+            if count <= MAX_IMAGES && bytes <= MAX_BYTES {
+                break;
+            }
+            evict.push(key);
+            count -= 1;
+            bytes -= len;
+        }
+        evict.sort_unstable();
+        self.placements.retain(|p| evict.binary_search(&p.image).is_err());
+        self.images.retain(|img| evict.binary_search(&img.key).is_err());
     }
 
     /// Scroll only placements wholly inside the region, as required by kitty.
     /// Use the surviving visible bounds: clipping is permanent, so clipped
     /// source pixels neither block later scrolling nor reappear on reversal.
     pub fn scroll(&mut self, top: usize, bottom: usize, delta: i64, cell_h: i32) {
+        if self.placements.is_empty() {
+            return;
+        }
         let ch = i64::from(cell_h);
         let (top, bottom, dy) = (top as i64 * ch, (bottom + 1) as i64 * ch, delta * ch);
         for p in &mut self.placements {
@@ -408,7 +639,11 @@ impl Graphics {
             }
             p.slices.retain(|s| s.top < s.bottom);
         }
+        let before = self.placements.len();
         self.placements.retain(|p| !p.slices.is_empty());
+        if self.placements.len() < before {
+            self.free_unplaced(|_| false);
+        }
     }
 }
 
