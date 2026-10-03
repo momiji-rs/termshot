@@ -22,6 +22,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   placement and then the least recently placed are freed instead of refusing
   the new image. Draw order now breaks z-index ties by creation, as kitty does.
 
+- Kitty graphics accept zlib-compressed payloads (`o=z`, #44) for RGB, RGBA
+  and PNG, including streams split across `m=1` chunks. The stream must
+  inflate to exactly the stated size (`s`×`v` pixels, or `S` bytes for a PNG)
+  and end with its Adler-32 and nothing more; anything else is ignored.
+  Inflation stops at that size, and a compressed RGB or RGBA payload may be
+  at most 1 KiB larger than it, as in kitty. Unknown `o` values are ignored.
+
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so
