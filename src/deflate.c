@@ -16,7 +16,8 @@
    - Buckets are fixed arrays of positions instead of per-bucket stretchy
      buffers; stb caps a bucket at 2*quality entries anyway.
    - Length/distance indexes are calculated directly and each token is emitted
-     in one operation. Independent Adler-32 reductions permit vectorization.
+     in one operation.
+   - Adler-32 keeps per-lane sums and applies the weights once per block.
    - Allocation failures return NULL, as stb's
      hash-table failure does, instead of asserting. */
 
@@ -34,6 +35,14 @@ static double profile_now(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 }
+
+/* GCC at -O2 keeps some per-token helpers out of line, which cost it up to
+   6% of matching time on x86-64; clang inlines them anyway. */
+#if defined(__GNUC__) || defined(__clang__)
+#define HOT static inline __attribute__((always_inline))
+#else
+#define HOT static inline
+#endif
 
 #define ZHASH 16384
 #define WINDOW 32768
@@ -62,7 +71,7 @@ static void put_byte(Out *o, unsigned char b) {
     o->p[o->n++] = b;
 }
 
-static void add_bits(Out *o, unsigned int code, int bits) {
+HOT void add_bits(Out *o, unsigned int code, int bits) {
     o->bitbuf |= (uint64_t)code << o->bitcount;
     o->bitcount += bits;
     /* At most 31 new bits plus seven trailing bits: reserve four bytes once,
@@ -90,13 +99,21 @@ static void add_bits(Out *o, unsigned int code, int bits) {
     o->bitcount &= 7;
 }
 
-static unsigned int bitrev(unsigned int code, int bits) {
-    unsigned int r = 0;
-    while (bits--) {
-        r = (r << 1) | (code & 1);
-        code >>= 1;
-    }
-    return r;
+/* Every byte with its bits reversed. */
+#define R2(n) n, n + 2 * 64, n + 1 * 64, n + 3 * 64
+#define R4(n) R2(n), R2(n + 2 * 16), R2(n + 1 * 16), R2(n + 3 * 16)
+#define R6(n) R4(n), R4(n + 2 * 4), R4(n + 1 * 4), R4(n + 3 * 4)
+static const unsigned char reversed_byte[256] = {R6(0), R6(2), R6(1), R6(3)};
+#undef R2
+#undef R4
+#undef R6
+
+/* code (below 2^bits, bits <= 9) with its bits reversed, Huffman codes being
+   sent most significant bit first. A bit-at-a-time loop here cost GCC 3-10%
+   of matching time. */
+HOT unsigned int bitrev(unsigned int code, int bits) {
+    unsigned int r9 = ((unsigned int)reversed_byte[code & 0xff] << 1) | ((code >> 8) & 1);
+    return r9 >> (9 - bits);
 }
 
 /* Callers pass nonzero values. Compilers map this to a leading-zero count. */
@@ -111,14 +128,14 @@ static unsigned int log2_floor(unsigned int value) {
 }
 
 /* Fixed Huffman codes, as in stb. */
-static void huff(Out *o, int n) {
+HOT void huff(Out *o, int n) {
     if (n <= 143) add_bits(o, bitrev(0x30 + n, 8), 8);
     else if (n <= 255) add_bits(o, bitrev(0x190 + n - 144, 9), 9);
     else if (n <= 279) add_bits(o, bitrev(n - 256, 7), 7);
     else add_bits(o, bitrev(0xc0 + n - 280, 8), 8);
 }
 
-static unsigned int zhash(const unsigned char *d) {
+HOT unsigned int zhash(const unsigned char *d) {
     uint32_t h = d[0] + (d[1] << 8) + (d[2] << 16);
     h ^= h << 3;
     h += h >> 5;
@@ -130,7 +147,7 @@ static unsigned int zhash(const unsigned char *d) {
 }
 
 /* Length of the common prefix of a and b, at most limit (limit <= 258). */
-static int countm(const unsigned char *a, const unsigned char *b, int limit) {
+HOT int countm(const unsigned char *a, const unsigned char *b, int limit) {
     int i = 0;
 #if (defined(__GNUC__) || defined(__clang__)) && defined(__BYTE_ORDER__)
     while (i + 16 <= limit) {
@@ -169,23 +186,66 @@ static int countm(const unsigned char *a, const unsigned char *b, int limit) {
     return i;
 }
 
+/* Adler-32 in 16 lanes. Within a block of n 16-byte chunks, byte k of chunk c
+   is added to s2 (16 * (n - 1 - c) + 16 - k) times, so it is enough to keep,
+   per lane k, the byte sum a[k] and the sum of earlier byte sums p[k] (p += a
+   before each a += chunk): s2 += 16n * s1 + 16 * sum(p) + sum((16 - k) * a[k]).
+   The inner loop is then only widening adds, with no multiply, which plain
+   SSE2 and NEON both do well. A block of 5552 bytes (347 chunks) is the
+   largest whose sums cannot overflow 32 bits before the modulo, as in zlib.
+
+   GCC vectorizes the plain C loop at -O2; clang leaves it scalar, so clang
+   gets the same arithmetic in its generic vector types. Both give the value
+   of the scalar definition, which tests/deflate_diff.c checks against stb;
+   TERMSHOT_PORTABLE_ADLER forces the plain loop so it is tested on clang too. */
+#define ADLER_BLOCK 5552
+#if defined(__clang__) && defined(__has_builtin) && !defined(TERMSHOT_PORTABLE_ADLER)
+#if __has_builtin(__builtin_convertvector)
+#define ADLER_VECTOR 1
+#endif
+#endif
+
+#ifdef ADLER_VECTOR
+typedef unsigned char AdlerBytes __attribute__((vector_size(16)));
+typedef uint32_t AdlerLanes __attribute__((vector_size(64)));
+#endif
+
 static uint32_t adler32(const unsigned char *d, size_t len) {
     uint32_t s1 = 1, s2 = 0;
     while (len) {
-        size_t block = len < 5552 ? len : 5552; /* largest n with no 32-bit overflow */
+        size_t block = len < ADLER_BLOCK ? len : ADLER_BLOCK;
+        size_t chunks = block / 16;
         len -= block;
-        /* Independent reductions let the compiler vectorize the weighted
-           checksum; expanding s2's recurrence gives 32*s1 + sum((32-k)*d[k]). */
-        while (block >= 32) {
-            uint32_t sum = 0, weighted = 0;
-            for (unsigned k = 0; k < 32; k++) {
-                sum += d[k];
-                weighted += (32 - k) * d[k];
+        if (chunks) {
+#ifdef ADLER_VECTOR
+            AdlerLanes a = {0}, p = {0};
+            for (size_t c = 0; c < chunks; c++) {
+                AdlerBytes x;
+                memcpy(&x, d, 16);
+                p += a;
+                a += __builtin_convertvector(x, AdlerLanes);
+                d += 16;
             }
-            s2 += 32 * s1 + weighted;
+#else
+            uint32_t a[16] = {0}, p[16] = {0};
+            for (size_t c = 0; c < chunks; c++) {
+                for (unsigned k = 0; k < 16; k++) {
+                    p[k] += a[k];
+                    a[k] += d[k];
+                }
+                d += 16;
+            }
+#endif
+            uint32_t sum = 0, prefix = 0, weighted = 0;
+            for (unsigned k = 0; k < 16; k++) {
+                sum += a[k];
+                prefix += p[k];
+                weighted += (16 - k) * a[k];
+            }
+            /* No sum here exceeds the s2 the scalar loop would reach. */
+            s2 += (uint32_t)(chunks * 16) * s1 + 16 * prefix + weighted;
             s1 += sum;
-            d += 32;
-            block -= 32;
+            block -= chunks * 16;
         }
         while (block--) {
             s1 += *d++;
@@ -226,8 +286,11 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
 
     double allocated = profile_now();
     int i = 0;
+    /* The hash of position i, carried over from the previous step: lazy
+       matching has already hashed i + 1, and after a match it is computed
+       before the token is emitted. */
+    unsigned int h = data_len > 3 ? zhash(data) : 0;
     while (i < data_len - 3) {
-        unsigned int h = zhash(data + i);
         int32_t *list = tab + (size_t)h * cap;
         int n = cnt[h];
         int limit = data_len - i < MAX_MATCH ? data_len - i : MAX_MATCH;
@@ -250,11 +313,14 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
         list[n] = i;
         cnt[h] = n + 1;
 
+        int next_hashed = 0;
         if (bestpos >= 0) {
             /* Lazy matching: if the match at i+1 is longer, emit i as a literal. */
             int limit1 = data_len - i - 1 < MAX_MATCH ? data_len - i - 1 : MAX_MATCH;
             if (best < limit1) {
                 unsigned int h1 = zhash(data + i + 1);
+                h = h1; /* i + 1 < data_len - 3, as limit1 > best >= 3 */
+                next_hashed = 1;
                 int32_t *list1 = tab + (size_t)h1 * cap;
                 for (int j = cnt[h1] - 1; j >= 0; j--) {
                     if (list1[j] <= i - (WINDOW - 1)) break;
@@ -291,11 +357,13 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
             bits += disteb[j];
             /* A complete length/distance token fits in 31 bits. The 64-bit
                accumulator also holds the previous token's trailing bits. */
-            add_bits(&o, code, (int)bits);
             i += best;
+            if (i < data_len - 3) h = zhash(data + i);
+            add_bits(&o, code, (int)bits);
         } else {
             huff(&o, data[i]);
             i++;
+            if (!next_hashed && i < data_len - 3) h = zhash(data + i);
         }
     }
     for (; i < data_len; i++) huff(&o, data[i]);
