@@ -288,12 +288,16 @@ macOS arm64, Linux x86-64 and Linux aarch64 (GCC there).
 ```sh
 python3 scripts/build-baseline.py /tmp/termshot-main --revision bb21b3c
 ./build.sh && cp termshot /tmp/termshot-branch
-python3 scripts/bench.py \
-  --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
-  --describe main=bb21b3c --describe branch=3bf2ffc \
-  --reference main --runs 40 --warmups 5 --memory-runs 5 \
-  --verify-identical --cjk-font /usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc \
-  --seed 17 --output /tmp/termshot-a.json        # again with --seed 29
+# Arch's copy; on macOS, point this at a copy of the same file (same sha256).
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
+    --describe main=bb21b3c --describe branch=3bf2ffc \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 \
+    --verify-identical --cjk-font "$cjk" \
+    --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
+done
 python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
 ```
 
