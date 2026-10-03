@@ -134,11 +134,13 @@ the semantics taken from kitty's `docs/graphics-protocol.rst` and
   transmission starts, so a failed retransmission leaves nothing to place.
 - Draw order is kitty's: z-index, then image creation, then placement
   creation. The earlier code broke ties by image id, which kitty does not.
-- Delete selectors `a i n` follow `handle_delete_command` and `filter_refs`:
-  lowercase removes placements and frees only images without an id;
-  uppercase also frees the images it emptied. `d=I`/`d=N` without `p` also
-  free a matching image that already had no placement; `d=A` keeps stored
-  images it did not touch. Other selectors are ignored for now.
+- Delete selectors `a i n r c p q x y z` follow `handle_delete_command` and
+  `filter_refs`: lowercase removes placements and frees only images without
+  an id; uppercase also frees the images it emptied. `d=I`/`d=N` without `p`
+  and `d=R` also free matching images that already had no placement; `d=A`
+  keeps stored images it did not touch. Cell selectors use the cells each
+  placement covers, which follow scrolling and are clipped at the margins as
+  kitty's `scroll_filter_margins_func` clips them. `f` (frames) is ignored.
 - ED 2, RIS and entering the alternate screen act as `grman_clear`: every
   placement goes and every image left without one is freed, stored ones too.
 - Over 16 MiB or 4,096 images, an upload frees every image without a
@@ -146,11 +148,12 @@ the semantics taken from kitty's `docs/graphics-protocol.rst` and
   placements, as `apply_storage_quota` does. The image count limit is
   termshot's: it bounds the linear lookups. kitty's own quota is 320 MB.
 
-`src/graphics/tests.rs` covers freeing of stored images in both cases, the
-quota order, numbers, placement moves and retransmission. `tests/graphics.rs`
-checks one full raster with two stored images put in seven cells: draw order
-by z-index and creation and a moved placement, against pixels it computes
-itself.
+`src/graphics/tests.rs` covers each selector in both cases against a fixed
+scene, freeing of stored images, the quota order, numbers, placement moves,
+retransmission and scrolled cell bounds. Seventeen hand-made mutants of this
+logic all fail the tests. `tests/graphics.rs` checks one full raster with two
+stored images put in seven cells: draw order by z-index and creation, a moved
+placement and a delete by column, against pixels it computes itself.
 
 
 ## ASCII autowrap regression

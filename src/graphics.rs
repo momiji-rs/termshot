@@ -53,6 +53,11 @@ pub struct Placement {
     key: u64,
     placement_id: u32,
     z: u32,
+    /// The cells it covers, for the delete selectors; rows follow scrolling.
+    col: i64,
+    cols: i64,
+    row: i64,
+    rows: i64,
 }
 
 /// Borrowed only for the duration of draw_png_images; pixels remain Rust-owned.
@@ -122,6 +127,8 @@ struct Command {
     id: u32,
     number: u32,
     placement_id: u32,
+    x: u32,
+    y: u32,
     z: u32,
     no_move: bool,
     more: bool,
@@ -185,17 +192,21 @@ impl Command {
                     }
                 }
                 b'p' => cmd.placement_id = number(val)?,
+                b'x' => cmd.x = number(val)?,
+                b'y' => cmd.y = number(val)?,
                 b'z' if number(val)? <= i32::MAX as u32 => cmd.z = number(val)?,
                 b'C' if val == b"0" || val == b"1" => cmd.no_move = val == b"1",
                 b'm' if val == b"0" || val == b"1" => cmd.more = val == b"1",
                 b'q' if number(val)? <= 2 => {}
                 b'd' if val.len() == 1 => cmd.delete = val[0],
                 // These defaults are harmless. Reject features we cannot replay.
-                b'U' | b'x' | b'y' | b'w' | b'h' | b'X' | b'Y' if val == b"0" => {}
+                b'U' | b'w' | b'h' | b'X' | b'Y' if val == b"0" => {}
                 _ => return None,
             }
         }
-        (cmd.id == 0 || cmd.number == 0).then_some(cmd)
+        // x and y select cells only for a delete; elsewhere they crop.
+        let crops = cmd.action != b'd' && (cmd.x != 0 || cmd.y != 0);
+        (!crops && (cmd.id == 0 || cmd.number == 0)).then_some(cmd)
     }
 }
 
@@ -338,7 +349,7 @@ impl Graphics {
         match cmd.action {
             b'd' => {
                 self.abort();
-                self.delete(&cmd);
+                self.delete(&cmd, col, row);
                 return None;
             }
             b'p' => {
@@ -510,6 +521,10 @@ impl Graphics {
             key,
             placement_id,
             z: cmd.z,
+            col: col as i64,
+            cols,
+            row: row as i64,
+            rows,
         });
         // kitty's draw order: z-index, then image and placement creation.
         self.placements.sort_by_key(|p| (p.z, p.image, p.key));
@@ -536,9 +551,16 @@ impl Graphics {
 
     /// kitty's delete command. Lowercase removes placements; uppercase also
     /// frees the images it leaves without one. Unsupported selectors do nothing.
-    fn delete(&mut self, cmd: &Command) {
+    fn delete(&mut self, cmd: &Command, col: usize, row: usize) {
         let upper = cmd.delete.is_ascii_uppercase();
         let selector = cmd.delete.to_ascii_lowercase();
+        // Cells are 1-based in the command; the cursor's are not.
+        let (x, y) = match selector {
+            b'c' => (col as i64, row as i64),
+            _ => (i64::from(cmd.x) - 1, i64::from(cmd.y) - 1),
+        };
+        let in_col = |p: &Placement| p.col <= x && x < p.col + p.cols;
+        let in_row = |p: &Placement| p.row <= y && y < p.row + p.rows;
         let pid = cmd.placement_id;
         match selector {
             b'a' => self.delete_where(upper, |_| true, |_| false),
@@ -559,6 +581,15 @@ impl Graphics {
                     |img| pid == 0 && img.id == id,
                 );
             }
+            b'r' => {
+                let in_range = |id: u32| id != 0 && cmd.x <= id && id <= cmd.y;
+                self.delete_where(upper, |p| in_range(p.id), |img| pid == 0 && in_range(img.id));
+            }
+            b'c' | b'p' => self.delete_where(upper, |p| in_col(p) && in_row(p), |_| false),
+            b'q' => self.delete_where(upper, |p| in_col(p) && in_row(p) && p.z == cmd.z, |_| false),
+            b'x' => self.delete_where(upper, in_col, |_| false),
+            b'y' => self.delete_where(upper, in_row, |_| false),
+            b'z' => self.delete_where(upper, |p| p.z == cmd.z, |_| false),
             _ => {}
         }
     }
@@ -627,7 +658,8 @@ impl Graphics {
             return;
         }
         let ch = i64::from(cell_h);
-        let (top, bottom, dy) = (top as i64 * ch, (bottom + 1) as i64 * ch, delta * ch);
+        let (first, last) = (top as i64, bottom as i64 + 1);
+        let (top, bottom, dy) = (first * ch, last * ch, delta * ch);
         for p in &mut self.placements {
             if p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {
                 continue;
@@ -638,6 +670,10 @@ impl Graphics {
                 part.bottom = (part.bottom + dy).min(bottom);
             }
             p.slices.retain(|s| s.top < s.bottom);
+            // Its cells move too, clipped at the margins as kitty clips them.
+            let (start, end) = ((p.row + delta).max(first), (p.row + delta + p.rows).min(last));
+            p.row = start;
+            p.rows = (end - start).max(0);
         }
         let before = self.placements.len();
         self.placements.retain(|p| !p.slices.is_empty());

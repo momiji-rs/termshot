@@ -17,7 +17,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Kitty graphics store images apart from their placements (#44): `a=t`
   transmits without placing, `a=p` places a stored image again, `I` names
   images by number, and a placement id moves one placement. Deletes support
-  kitty's `a`, `i` and `n` selectors, and uppercase frees the image data. Over the storage limit, images without a
+  kitty's `a`, `i`, `n`, `r`, `c`, `p`, `q`, `x`, `y` and `z` selectors, and
+  uppercase frees the image data. Over the storage limit, images without a
   placement and then the least recently placed are freed instead of refusing
   the new image. Draw order now breaks z-index ties by creation, as kitty does.
 

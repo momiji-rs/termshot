@@ -622,13 +622,69 @@ fn scene() -> Graphics {
 }
 
 #[test]
+fn delete_selectors_pick_placements_by_id_cell_and_z() {
+    let both: &[u32] = &[1, 2];
+    for (delete, cursor, left) in [
+        ("d=x,x=1", (0, 0), &[2][..]),
+        ("d=x,x=2", (0, 0), &[2]),
+        ("d=x,x=3", (0, 0), both),
+        ("d=x,x=6", (0, 0), &[1]),
+        ("d=x,x=8", (0, 0), both),
+        ("d=x", (0, 0), both), // 0 names no column
+        ("d=y,y=1", (0, 0), &[2]),
+        ("d=y,y=5", (0, 0), &[1]),
+        ("d=y,y=6", (0, 0), both),
+        ("d=p,x=7,y=4", (0, 0), &[1]),
+        ("d=p,x=1,y=4", (0, 0), both),
+        ("d=q,x=6,y=4,z=0", (0, 0), both),
+        ("d=q,x=6,y=4,z=1", (0, 0), &[1]),
+        ("d=z,z=1", (0, 0), &[1]),
+        ("d=z", (0, 0), &[2]),
+        ("d=c", (1, 0), &[2]),
+        ("d=c", (4, 3), both),
+        ("d=c", (6, 4), &[1]),
+        ("d=c", (5, 3), &[1]),
+        ("d=c", (2, 0), both),
+        ("d=r,x=2,y=9", (0, 0), &[1]),
+        ("d=r,x=1,y=2", (0, 0), &[]),
+        ("d=r,x=2,y=1", (0, 0), both),
+        ("d=i,i=2", (0, 0), &[1]),
+        ("d=i,i=2,p=1", (0, 0), both),
+        ("d=i,i=9", (0, 0), both),
+        ("d=n,I=2", (0, 0), both),
+        ("d=a", (0, 0), &[]),
+        ("", (0, 0), &[]),
+        ("d=f", (0, 0), both),
+        ("d=w", (0, 0), both),
+    ] {
+        let mut g = scene();
+        run(&mut g, cursor, &format!("a=d,{delete}"));
+        let shown: Vec<_> = placed(&g).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(shown, left, "{delete}");
+        assert_eq!(ids(&g), both, "{delete} keeps the images");
+        // Uppercase removes the same placements and frees what it emptied.
+        if let Some(rest) = delete.strip_prefix("d=") {
+            let mut g = scene();
+            let (selector, keys) = rest.split_at(1);
+            run(&mut g, cursor, &format!("a=d,d={}{keys}", selector.to_ascii_uppercase()));
+            let shown: Vec<_> = placed(&g).into_iter().map(|(id, _)| id).collect();
+            assert_eq!(shown, left, "{delete} uppercase");
+            assert_eq!(ids(&g), left, "{delete} uppercase frees");
+        }
+    }
+}
+
+#[test]
 fn uppercase_deletes_free_images_left_unplaced() {
     // Only a selector naming the image frees one already without placements.
     for (delete, freed) in [
         ("d=I,i=3", true),
         ("d=i,i=3", false),
         ("d=I,i=3,p=1", false),
+        ("d=R,x=3,y=3", true),
+        ("d=r,x=1,y=5", false),
         ("d=A", false),
+        ("d=X,x=1", false),
     ] {
         let mut g = scene();
         run(&mut g, (0, 0), &format!("a=t,i=3,{PIXEL}"));
@@ -699,7 +755,20 @@ fn quota_frees_unplaced_images_first_then_the_least_recently_used() {
 }
 
 #[test]
-fn scrolled_off_anonymous_images_go() {
+fn delete_cells_follow_scrolling_and_scrolled_off_anonymous_images_go() {
+    let mut g = Graphics::default();
+    run(&mut g, (0, 2), &format!("a=T,i=1,c=1,r=2,C=1,{PIXEL}"));
+    g.scroll(0, 9, -1, 20);
+    assert_eq!((g.placements[0].row, g.placements[0].rows), (1, 2));
+    // Clipped at a margin, it covers only the rows it still shows.
+    g.scroll(1, 9, -1, 20);
+    assert_eq!((g.placements[0].row, g.placements[0].rows), (1, 1));
+    run(&mut g, (0, 0), "a=d,d=y,y=3");
+    assert_eq!(g.placements.len(), 1);
+    run(&mut g, (0, 0), "a=d,d=y,y=2");
+    assert!(g.placements.is_empty());
+    assert_eq!(ids(&g), [1]);
+
     let mut g = Graphics::default();
     run(&mut g, (0, 0), &format!("a=T,C=1,{PIXEL}"));
     g.scroll(0, 9, -1, 20);

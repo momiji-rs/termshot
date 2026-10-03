@@ -199,7 +199,9 @@ screen/scroll area's bottom and right edges.
 
 A placement id `p` names one placement of an image: putting the same `i,p`
 again moves it. Deletes follow kitty's selectors: all (`d=a`, the default), by
-id (`i`, with `p`), or by number (`n`). Lowercase keeps the image data for another `a=p`; uppercase also frees
+id (`i`, with `p`), by number (`n`), by id range (`r`), at the cursor (`c`), at
+a cell (`p`, `q` with a z-index), in a column (`x`), a row (`y`), or by z-index
+(`z`). Lowercase keeps the image data for another `a=p`; uppercase also frees
 the images it leaves without a placement. Retransmitting an id replaces its
 image and removes its placements. Nonnegative `z` orders overlays, then the
 order images and placements were made. Only images wholly inside a scrolling
