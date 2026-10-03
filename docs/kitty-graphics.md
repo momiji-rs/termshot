@@ -277,6 +277,97 @@ crop checks fail against `origin/main`. `kitty-crop` and `kitty-layers` add
 four goldens; the existing goldens are unchanged.
 
 
+## Relative placements
+
+This stage of #44 follows the spec's "Relative placements" section and
+kitty's `handle_put_command`, `has_good_ancestry`, `resolve_parent_offset`
+and `grman_update_layers` in `kitty/graphics.c`, and
+`parse-graphics-command.h` (master, read 2026-10-03):
+
+- **Keys.** `P` (parent image id) and `Q` (its placement id) are unsigned,
+  `H` and `V` (cells right and down) signed 32-bit integers, as kitty parses
+  them. `P=0` is no parent; `Q`, `H` and `V` without `P` do nothing.
+- **Parent.** The image with id `P`, and its placement `Q`. Without `Q`,
+  kitty takes the first placement in its hash map, which is no order a client
+  can rely on; termshot takes the oldest, by creation, which a move keeps.
+- **Refusals.** A put is refused, changing nothing and leaving the cursor
+  where it is, when no image has id `P`, it has no placements, or none with
+  id `Q` (kitty's `ENOPARENT`); when the placement would be its own parent
+  (`EINVAL`) or ancestor (`ECYCLE`), which only putting an existing placement
+  again can do; or when the chain from it to its root would have more than 8
+  links (`ETOODEEP`, kitty's `PARENT_DEPTH_LIMIT`; the spec asks for at least
+  8). A refused move leaves the placement where it was. kitty makes a new
+  placement before checking its chain, so a new one refused as too deep
+  still marks its image used for the storage quota; termshot does the same.
+- **Position.** The root's start cell plus the `H` and `V` of every link on
+  the way; the positions of the placements in between do not count. The
+  child's own `X`, `Y`, `c`, `r`, crop and `z` apply as for any placement.
+  A child may lie partly or wholly off the screen; it is kept, and drawn
+  clipped to the screen when its parent brings it back.
+- **Cursor.** It never moves after a relative put, whatever `C` says (the
+  spec's note; kitty moves it only in the branch for a placement without a
+  parent). Text and JSON output therefore need no font for such a put.
+- **Lifetime.** kitty drops a placement whose chain no longer resolves (a
+  parent gone, or a chain made too long) when it next lays out its images,
+  and then frees its image if it has no placements left, whatever its id: the
+  spec's "if the image … has no more placements, the image is deleted as
+  well". termshot does this after every command and scroll, so every way a
+  parent can go takes its children: each delete selector, in either case,
+  retransmitting the parent's image, the storage quota, an empty crop put on
+  it (termshot keeps no empty placements; kitty does, and they can be
+  parents), ED 2, RIS, and scrolling off. The images the delete itself hit
+  keep the lowercase and uppercase rules.
+- **Moves.** Putting a parent again moves its whole group. Putting a child
+  again with a new `P` re-parents it, with its own children; without `P` it
+  becomes an ordinary placement at the cursor, which moves again. Moving a
+  placement under a deeper chain can make its descendants too deep: as in
+  kitty, they go.
+- **Scrolling.** A child does not scroll on its own; it follows its root's
+  start row. In a full-screen scroll that row goes above the screen, as
+  kitty's goes into its scrollback, so the children keep moving with the
+  part of the root still shown. In a partial region kitty stops the start
+  row at the top margin when the margin clips the root, so its children stop
+  there too; termshot does the same. Once the root leaves the screen or the
+  region it is removed, as before, and its children with it.
+
+Where termshot differs from kitty, deliberately:
+
+- kitty keeps a root that scrolls off a full screen in its scrollback, where
+  its children can still reach the screen. termshot keeps no scrollback, so
+  they go with the root.
+- kitty sets a child's own start cell to the cursor at its put, never draws
+  from it, but uses it for the cell delete selectors (`c`, `p`, `q`, `x`,
+  `y`) and for scrolling a region, where it can clip or remove the child by
+  rows it is not drawn in. termshot uses the cells the child is drawn in for
+  both, and clips children only at the screen's edges.
+- Virtual (`U=1`) parents wait for Unicode placeholders (#14).
+
+Every relative placement counts toward the 1,024-placement limit. Layout is
+linear in the placements: each child keeps its parent's index, checked
+against its key, so scrolling 1,024 placements costs no lookups. Each walk
+up a chain stops at a placement already resolved, and marks the ones it
+passes, so a cycle, which the checks above prevent, is found rather than
+followed. Depth is counted on the way back down, where each placement's own
+is known: a placement passed on the walk up from one too deep may itself be
+fine ([review](https://github.com/momiji-rs/termshot/pull/63#discussion_r4175211540)).
+
+Tests: `src/graphics/relative_tests.rs` covers the keys at their limits,
+offsets with `X`, `Y` and `c`, the cursor with and without `C`, `Q` and the
+oldest placement, each missing-parent case with an existing placement named,
+chains at 8 and 9 links, new and moved (with the too-deep descendants laid
+out before their ancestors too), cycles of one, two and three, every
+delete selector in both cases against a three-level family with the images
+it frees, retransmission, the quota, empty crops, full-screen and partial
+scrolling, off-screen children, `z` order, and 1,024 placements in chains
+re-parented under each other; eleven of twelve hand-made mutants fail them,
+and the twelfth (scrolling children before laying them out) is equivalent.
+`tests/graphics.rs` checks every pixel at px 9, 24 and 47.5 for a chain of
+three, a corner-clipped child and a put after them (in the parent's cell,
+since the cursor stayed), still, with the parent moved, scrolled, its child
+deleted and itself deleted (325,440 checks); they fail on `origin/main`.
+`kitty-relative` adds two goldens; the existing goldens are unchanged.
+
+
 ## ASCII autowrap regression
 
 [Copilot review](https://github.com/momiji-rs/termshot/pull/43#discussion_r4170788572)

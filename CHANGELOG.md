@@ -63,6 +63,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its own aspect ratio when fitted to `c` and `r`. Commands with these keys
   were ignored before.
 
+- Kitty relative placements (#44): `P` and `Q` name a parent placement, and
+  the image starts `H`, `V` cells from its top left cell. Children move and
+  scroll with their parent and are deleted with it, by every delete
+  selector; a child's image left without placements is freed. The cursor
+  does not move after a relative put. A missing parent, a cycle, or a chain
+  of more than 8 links refuses the put, as kitty does. Commands with these
+  keys were ignored before.
+
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so
