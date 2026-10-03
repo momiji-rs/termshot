@@ -9,7 +9,8 @@
    - a wide character's glyph is centered over its two cells: the same glyph
      narrow and wide differs only by half a cell, also when both are in one render;
    - an italic glyph keeps its height and leans right by 12 degrees about the
-     middle of its cell, so it stays centered in it; the same glyph upright
+     middle of its cell, so it stays centered in it, also when the fallback
+     draws it at its own scale or shrinks it to fit; the same glyph upright
      and italic in one render are each drawn their own way, and italic leaves
      box drawing and the box for a missing character upright.
 
@@ -115,6 +116,36 @@ static unsigned char *with_empty_glyph(const unsigned char *ttf, long len, uint3
     return copy;
 }
 
+/* A copy of a TrueType font with its hhea ascender and descender times
+   factor, so a fallback scales its glyphs by 1 / factor: smaller than the main
+   font's for 2, and for 0.5 too wide for a cell, so they are shrunk. */
+static unsigned char *with_height(const unsigned char *ttf, long len, double factor) {
+    unsigned char *copy = malloc((size_t)len);
+    stbtt_fontinfo info;
+    if (!copy || !init_font(&info, ttf)) exit(1);
+    memcpy(copy, ttf, (size_t)len);
+    for (int at = info.hhea + 4; at <= info.hhea + 6; at += 2) {
+        int v = (int)lround(ttSHORT(copy + at) * factor);
+        copy[at] = (unsigned char)((unsigned)v >> 8);
+        copy[at + 1] = (unsigned char)v;
+    }
+    return copy;
+}
+
+/* Slanting moves each row of 'l' right by tan(12 degrees) times its height
+   above the middle of the cell, and a row below it left. The upright and
+   italic inks go to *u and *it. */
+static void expect_slant(double px, const char *what, Ink *u, Ink *it) {
+    Cell upright_l[] = {cell(' ', 0), cell('l', 0), cell(' ', 0)};
+    Cell italic_l[] = {cell(' ', 0), cell('l', ATTR_ITALIC), cell(' ', 0)};
+    *u = ink(upright_l, 3, px), *it = ink(italic_l, 3, px);
+    double mid = u->cell_h / 2.0, tan12 = 0.2126;
+    double top = tan12 * (mid - (u->y0 + 0.5)), bottom = tan12 * (mid - (u->y1 - 0.5));
+    expect(it->x1 && it->y0 == u->y0 && it->y1 == u->y1 && fabs(it->top_x0 - u->top_x0 - top) <= 1 &&
+               fabs(it->bottom_x0 - u->bottom_x0 - bottom) <= 1,
+           what, px);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) return 2;
     FILE *fp = fopen(argv[1], "rb");
@@ -144,6 +175,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     unsigned char *hollow = with_empty_glyph(data, len, 'A');
+    unsigned char *hollow_l = with_empty_glyph(data, len, 'l');
+    unsigned char *short_font = with_height(data, len, 2), *tall_font = with_height(data, len, 0.5);
 
     const double sizes[] = {1, 5, 9, 16, 23, 47.5, 128, 255};
     int checks = 0;
@@ -193,16 +226,16 @@ int main(int argc, char **argv) {
         font = main_font;
         fallback_font = NULL;
 
-        /* Slanting moves each row of 'l' right by tan(12 degrees) times its
-           height above the middle of the cell, and a row below it left. */
-        Cell upright_l[] = {cell(' ', 0), cell('l', 0), cell(' ', 0)};
-        Cell italic_l[] = {cell(' ', 0), cell('l', ATTR_ITALIC), cell(' ', 0)};
-        Ink u = ink(upright_l, 3, px), it = ink(italic_l, 3, px);
-        double mid = u.cell_h / 2.0, tan12 = 0.2126;
-        double top = tan12 * (mid - (u.y0 + 0.5)), bottom = tan12 * (mid - (u.y1 - 0.5));
-        expect(it.x1 && it.y0 == u.y0 && it.y1 == u.y1, "an italic glyph keeps its height", px);
-        expect(fabs(it.top_x0 - u.top_x0 - top) <= 1 && fabs(it.bottom_x0 - u.bottom_x0 - bottom) <= 1,
-               "an italic glyph leans 12 degrees about the middle of its cell", px);
+        Ink u, it, fu, fi;
+        expect_slant(px, "an italic glyph keeps its height and leans 12 degrees about the middle of its cell", &u, &it);
+        /* The fallback slants about the same middle, in its own units. */
+        font = hollow_l;
+        fallback_font = short_font;
+        expect_slant(px, "the fallback's smaller italic glyph leans about the middle of the cell", &fu, &fi);
+        fallback_font = tall_font;
+        expect_slant(px, "the fallback's shrunk italic glyph leans about the middle of the cell", &fu, &fi);
+        font = main_font;
+        fallback_font = NULL;
         /* The cache must not hand one to the other. */
         Cell both_l[] = {cell(' ', 0), cell('l', ATTR_ITALIC), cell(' ', 0), cell('l', 0), cell(' ', 0)};
         Ink bi = ink_in(both_l, 5, px, 0, 3), bu = ink_in(both_l, 5, px, 3, 5);
@@ -215,9 +248,12 @@ int main(int argc, char **argv) {
         expect(gu.x0 == gi.x0 && gu.x1 == gi.x1 && gu.y0 == gi.y0 && gu.y1 == gi.y1 && gu.top_x0 == gi.top_x0 &&
                    gu.bottom_x0 == gi.bottom_x0,
                "box drawing stays upright in italic", px);
-        checks += 17;
+        checks += 18;
     }
     free(hollow);
+    free(hollow_l);
+    free(short_font);
+    free(tall_font);
     free(data);
     if (failures) return 1;
     printf("ok, %d glyph placement checks over %zu sizes\n", checks, sizeof sizes / sizeof sizes[0]);
