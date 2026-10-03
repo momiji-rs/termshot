@@ -250,8 +250,9 @@ screen. `x`, `y`, `w`, `h` choose a source rectangle in pixels, and the part of
 it inside the image is shown; that crop's aspect ratio is the one kept, and an
 empty crop draws nothing. Scaling uses deterministic nearest-neighbor sampling. Cell dimensions
 come from the selected font and `--px`. `C=1` keeps the cursor in place;
-otherwise it advances by the placement's columns and rows, clamped to the
-screen/scroll area's bottom and right edges.
+otherwise it moves as kitty moves it: right by the placement's columns and
+down by its rows less one, to the next row's start if that reaches the right
+edge, scrolling the region up if it passes the bottom margin.
 
 A placement id `p` names one placement of an image: putting the same `i,p`
 again moves it. Deletes follow kitty's selectors: all (`d=a`, the default), by
@@ -263,7 +264,9 @@ image and removes its placements. Images draw by `z`, then the order images
 and placements were made: from 0 over the text, below 0 under the text but over
 every cell background, and below -1,073,741,824 under the backgrounds that are
 not the default colour, so they show only through default ones. Reverse-video
-cells and the block cursor are opaque there, as in kitty. Only images wholly inside a scrolling
+cells and the block cursor are opaque there, as in kitty. The underline and
+bar cursors are drawn with the text, as kitty draws them: over the images under
+it, under those of `z` 0 and up. Only images wholly inside a scrolling
 region move and clip at its edges; images crossing a margin stay stationary.
 Full-screen erase and reset remove every placement but the virtual ones and
 free every stored image left without one, as kitty does. A relative placement (`P` and `Q` name a parent image and
@@ -327,6 +330,10 @@ decoder (its `graphics_sixel.c`, patch 412) and the VT340 it emulates:
   corner, clipped at the bottom, without scrolling or moving the cursor.
 - The image joins the kitty image store as an unnamed image drawn above the
   text, so it shares the layering, scrolling, erase and storage limits above.
+  Unlike a kitty image, its pixels belong to the cells, as in xterm: a
+  character written there later clears them in the cells it takes, and
+  erasing below or above the cursor (ED 0 or 1) clears them in the rows
+  below or above the cursor's, though not in its own row.
   Only `ESC \` commits an image; BEL, CAN, SUB, another escape or the end of
   the log discard it, and C1 controls (such as the 8-bit ST) are not
   recognised. A DCS that is not Sixel (`DECRQSS`, `XTGETTCAP`, ...) is
@@ -338,9 +345,9 @@ decoder (its `graphics_sixel.c`, patch 412) and the VT340 it emulates:
   pixel a sixel sets, each time it sets it, and every pixel of each finished
   image; an image past that budget is refused.
 
-Text written later where an image is stays under it. Erasing below or above
-the cursor (ED 0 or 1) leaves images in place, where xterm erases their pixels.
-An image with no pixels moves nothing. Non-square pixels from `P1` or `Pan;Pad`
+EL, ECH, ICH and DCH leave the pixels, as in xterm; IL and DL move images as
+they move kitty's, where xterm leaves them. An image with no pixels moves
+nothing. Non-square pixels from `P1` or `Pan;Pad`
 (xterm ignores them too), DECSET 8452 (the cursor to the right of the image),
 shared colour registers (`CSI ? 1070 l`) and ReGIS are not supported.
 

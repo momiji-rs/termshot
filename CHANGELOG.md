@@ -35,7 +35,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of Sixel data, so a short log cannot demand unbounded work, overdrawing
   included. Text and
   JSON output load the font for a log with Sixel, since the cell height moves
-  the cursor.
+  the cursor. As in xterm, whose Sixel pixels belong to the cells, a
+  character written over the image later clears its pixels in the cells it
+  takes, and ED 0 and 1 clear them in the rows below or above the cursor's
+  (not in its own row); EL, ECH, ICH and DCH leave them, as xterm does.
+  Kitty images, a layer of their own, keep their pixels.
 
 - Kitty graphics store images apart from their placements (#44): `a=t`
   transmits without placing, `a=p` places a stored image again, `I` names
@@ -100,7 +104,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stays on the last column, as terminals draw it.
 - The cursor takes the shape a program sets with DECSCUSR (`CSI Ps SP q`,
   #39): an underline (3, 4) or a bar (5, 6) in the default foreground, over
-  the cell's own colours and over images, or a block (0 to 2). Blinking
+  the cell's own colours, or a block (0 to 2). As in kitty, which draws it
+  with the text, it is over images under the text and under images of
+  z-index 0 and up (Sixel images too). Blinking
   shapes are drawn steady. Like tmux, the shape survives DECSC/DECRC, DECSTR
   and the alternate screen; unlike tmux, and like xterm, RIS resets it.
   `--cursor-shape block|underline|bar` overrides it, and `--json` reports it
@@ -168,6 +174,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- After a kitty placement, the cursor moves as kitty moves it
+  (`handle_put_command`, `screen_handle_graphics_command`): right by the
+  placement's columns and down by its rows less one, so it ends beside the
+  image's last row, not below it. Reaching the right edge goes to the start
+  of the next row, and passing the bottom margin scrolls the region up by the
+  overshoot instead of clamping the cursor there. An image is no longer cut
+  at the screen's bottom when placed: as in kitty, scrolling without margins
+  brings the rest into view. `C=1` still leaves the cursor in place.
 - A font that can't be used is reported as "not a usable font", no longer
   "not a usable TrueType font".
 - Renders now show the cursor unless the log hides it with `ESC [ ? 25 l`
