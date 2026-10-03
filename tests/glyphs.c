@@ -17,9 +17,14 @@
      box drawing and the box for a missing character upright.
 
    Renders with draw_png, decodes with tests/png_read.c. Built and run by
-   test.sh with the vendored font: ./glyphs <font.ttf> <scratch.png> [<out.ttf>].
-   It writes the font with no outline for 'A' to out.ttf, for test.sh to pass
-   through the CLI's --fallback-font. */
+   test.sh with the vendored font:
+
+       ./glyphs <font.ttf> <scratch.png> [<hollow.ttf> <reference.png>]
+
+   It writes the font with no outline for 'A' to hollow.ttf, and 'A' drawn
+   from it with font.ttf as the fallback, in the CLI's default colours and
+   size, to reference.png. test.sh checks that the CLI's --fallback-font
+   renders that same PNG. */
 #include "../src/draw.c"
 
 unsigned char *png_read_rgba(const char *path, int *width, int *height);
@@ -151,7 +156,7 @@ static void expect_slant(double px, const char *what, Ink *u, Ink *it) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3 && argc != 4) return 2;
+    if (argc != 3 && argc != 5) return 2;
     FILE *fp = fopen(argv[1], "rb");
     if (!fp) return 1;
     fseek(fp, 0, SEEK_END);
@@ -179,12 +184,15 @@ int main(int argc, char **argv) {
         return 1;
     }
     unsigned char *hollow = with_empty_glyph(data, len, 'A');
-    if (argc == 4) {
+    if (argc == 5) {
         FILE *out = fopen(argv[3], "wb");
         if (!out || fwrite(hollow, 1, (size_t)len, out) != (size_t)len || fclose(out) != 0) {
             fprintf(stderr, "cannot write %s\n", argv[3]);
             return 1;
         }
+        /* main.rs's DEFAULT_FG and DEFAULT_BG, at the default px 48. */
+        Cell a = {.ch = 'A', .fr = 219, .fg = 231, .fb = 247, .br = 17, .bg = 24, .bb = 35};
+        if (draw_png(&a, 1, 1, hollow, data, 48, argv[4], 0) != 0) return 1;
     }
     unsigned char *hollow_l = with_empty_glyph(data, len, 'l');
     unsigned char *short_font = with_height(data, len, 2), *tall_font = with_height(data, len, 0.5);
