@@ -904,19 +904,22 @@ impl Graphics {
         let ch = i64::from(cell_h);
         let open = top == 0 && bottom + 1 >= self.screen_rows;
         let (first, last) = (top as i64, if open { i64::MAX / 2 / ch.max(1) } else { bottom as i64 + 1 });
-        let (top, bottom, dy) = (first * ch, last * ch, delta * ch);
+        // Saturating: a distance can be as long as the log, and an image as
+        // far below the screen as scrolling down has moved it.
+        let (top, bottom, dy) = (first * ch, last * ch, delta.saturating_mul(ch));
         for p in &mut self.placements {
             if p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {
                 continue;
             }
             for part in &mut p.slices {
-                part.y += dy;
-                part.top = (part.top + dy).max(top);
-                part.bottom = (part.bottom + dy).min(bottom);
+                part.y = part.y.saturating_add(dy);
+                part.top = part.top.saturating_add(dy).max(top);
+                part.bottom = part.bottom.saturating_add(dy).min(bottom);
             }
             p.slices.retain(|s| s.top < s.bottom);
             // Its cells move too, clipped at the margins as kitty clips them.
-            let (start, end) = ((p.row + delta).max(first), (p.row + delta + p.rows).min(last));
+            let row = p.row.saturating_add(delta);
+            let (start, end) = (row.max(first), row.saturating_add(p.rows).min(last));
             p.row = start;
             p.rows = (end - start).max(0);
         }

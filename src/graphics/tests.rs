@@ -1038,3 +1038,23 @@ fn a_long_run_clears_sixel_pixels_as_row_by_row_printing() {
         }
     }
 }
+
+/// Scrolling down moves an image without margins below the screen, where it
+/// stays; a long run then moves it the whole distance back, however far.
+#[test]
+fn a_long_run_moves_an_image_however_far_below_the_screen() {
+    let run = |rows: usize| {
+        // A 2^24-pixel tall image on the last row of a 1x2 grid of 1-pixel
+        // cells, moved 20 rows further down by SD.
+        let mut log = format!("\x1b[2;1H\x1b_Ga=T,f=24,s=1,v=1,r={},C=1;/wAA\x1b\\", 1 << 24).into_bytes();
+        for _ in 0..10 {
+            log.extend_from_slice(b"\x1b[2T");
+        }
+        log.extend(std::iter::repeat(b'x').take(rows));
+        replay_sized(&log, 1, 2, Lf::Index, (1, 1))
+    };
+    assert_eq!(run(50).images[0].slices[0].y, 21 - 49);
+    // 2^24 + 99 rows scroll it all past the top; a distance capped at 2^24
+    // would leave 21 of them.
+    assert!(run((1 << 24) + 100).images.is_empty());
+}

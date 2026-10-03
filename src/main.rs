@@ -419,11 +419,10 @@ impl Screen {
 
     /// Rotate row storage and move graphics together. Pixel clipping uses the
     /// logical distance, not the rotation modulo. Without margins, images
-    /// below the screen move the whole distance, as far as 2^24 rows, which
-    /// takes any image (at most 2^24 pixels tall) past the top.
+    /// below the screen move the whole distance, however far below they are.
     fn rotate_rows(&mut self, top: usize, bottom: usize, n: usize, up: bool) {
         let height = bottom + 1 - top;
-        let distance = n.min(1 << 24) as i64;
+        let distance = i64::try_from(n).unwrap_or(i64::MAX);
         self.graphics.scroll(top, bottom, if up { -distance } else { distance }, self.cell_size.1);
         if up {
             self.map[top..=bottom].rotate_left(n % height);
