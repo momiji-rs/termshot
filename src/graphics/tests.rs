@@ -109,6 +109,109 @@ fn base64_validation() {
     }
 }
 
+extern "C" {
+    fn termshot_zlib_compress(data: *mut u8, len: i32, out_len: *mut i32, quality: i32) -> *mut u8;
+    fn free(p: *mut std::ffi::c_void);
+}
+
+/// A zlib stream from the renderer's own compressor.
+fn zlib(data: &[u8]) -> Vec<u8> {
+    let mut data = data.to_vec();
+    let mut len = 0;
+    unsafe {
+        let p = termshot_zlib_compress(data.as_mut_ptr(), data.len() as i32, &mut len, 8);
+        assert!(!p.is_null());
+        let z = std::slice::from_raw_parts(p, len as usize).to_vec();
+        free(p.cast());
+        z
+    }
+}
+
+fn b64(data: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n = u32::from(c[0]) << 16 | u32::from(*c.get(1).unwrap_or(&0)) << 8 | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            out.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// A 2x2 RGBA PNG, and its pixels.
+const PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0, 114, 182,
+    13, 36, 0, 0, 0, 23, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 208, 192, 240, 31, 136, 25, 24, 254, 55,
+    252, 7, 50, 0, 56, 232, 6, 252, 229, 30, 226, 71, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+const PNG_PIXELS: [u8; 16] = [255, 0, 0, 128, 0, 255, 0, 128, 0, 0, 255, 128, 255, 255, 0, 128];
+
+/// The stored image's pixels after one transmission, if it loaded.
+fn transmitted(cmd: &str) -> Option<Vec<u8>> {
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), cmd);
+    g.images.first().map(|img| img.pixels.to_vec())
+}
+
+#[test]
+fn compressed_payloads_inflate_to_exactly_the_size_kitty_expects() {
+    let rgb = b64(&zlib(&[255, 0, 0, 0, 255, 0]));
+    assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=24,s=2,v=1;{rgb}")), Some(vec![255, 0, 0, 255, 0, 255, 0, 255]));
+    let rgba = b64(&zlib(&[1, 2, 3, 4]));
+    assert_eq!(transmitted(&format!("a=t,i=1,o=z,s=1,v=1;{rgba}")), Some(vec![1, 2, 3, 4]));
+    // The stream must hold exactly the pixels: too few or too many fail.
+    for size in ["s=3,v=1", "s=1,v=1"] {
+        assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=24,{size};{rgb}")), None, "{size}");
+    }
+    // A PNG inside needs its size in S; without S, kitty expects 100 KiB.
+    let png = b64(&zlib(PNG));
+    let n = PNG.len();
+    assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=100,S={n};{png}")), Some(PNG_PIXELS.to_vec()));
+    for size in [format!("S={}", n - 1), format!("S={}", n + 1), "S=0".into(), "".into()] {
+        assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=100,{size};{png}")), None, "{size}");
+    }
+    let mut padded = PNG.to_vec();
+    padded.resize(100 * 1024, 0);
+    let padded = b64(&zlib(&padded));
+    assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=100;{padded}")), Some(PNG_PIXELS.to_vec()));
+    assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=100,S=102400;{padded}")), Some(PNG_PIXELS.to_vec()));
+    // S changes nothing without compression.
+    assert_eq!(transmitted("a=t,i=1,f=24,s=1,v=1,S=7;/wAA"), Some(vec![255, 0, 0, 255]));
+    // Only zlib is defined; data that is not a stream fails.
+    assert_eq!(transmitted(&format!("a=t,i=1,o=x,f=24,s=2,v=1;{rgb}")), None);
+    assert_eq!(transmitted("a=t,i=1,o=z,f=24,s=1,v=1;/wAA"), None);
+    // An inflated size over the limit fails before anything is allocated for it.
+    assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=24,s=8192,v=8192;{rgb}")), None);
+}
+
+#[test]
+fn compressed_png_data_is_limited_to_16_mib() {
+    let mut padded = PNG.to_vec();
+    padded.resize(MAX_BYTES + 1, 0);
+    let over = b64(&zlib(&padded));
+    assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=100,S={};{over}", MAX_BYTES + 1)), None);
+    padded.pop();
+    let limit = b64(&zlib(&padded));
+    assert_eq!(transmitted(&format!("a=t,i=1,o=z,f=100,S={MAX_BYTES};{limit}")), Some(PNG_PIXELS.to_vec()));
+}
+
+#[test]
+fn compressed_payloads_arrive_in_chunks() {
+    let raw: Vec<u8> = (0..64 * 64 * 3).map(|i| (i % 251) as u8).collect();
+    let z = b64(&zlib(&raw));
+    let chunks: Vec<&str> = z.as_bytes().chunks(64).map(|c| std::str::from_utf8(c).unwrap()).collect();
+    let mut g = Graphics::default();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let more = u8::from(i + 1 < chunks.len());
+        let cmd = if i == 0 { format!("a=T,i=1,o=z,f=24,s=64,v=64,m={more};{chunk}") } else { format!("m={more};{chunk}") };
+        run(&mut g, (0, 0), &cmd);
+    }
+    let want: Vec<u8> = raw.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+    assert_eq!(g.images.len(), 1);
+    assert_eq!(*g.placements[0].pixels, want);
+}
+
 #[test]
 fn incorrect_payload_lengths_and_dimensions() {
     for log in [

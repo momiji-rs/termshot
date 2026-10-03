@@ -12,6 +12,7 @@ const MAX_EXTENT: i64 = 1 << 24;
 extern "C" {
     fn image_png_size(data: *const u8, len: i32, w: *mut i32, h: *mut i32) -> i32;
     fn image_png_decode(data: *const u8, len: i32, out: *mut u8, w: i32, h: i32) -> i32;
+    fn image_inflate(data: *const u8, len: i32, out: *mut u8, olen: i32) -> i32;
 }
 
 /// Stored images and their placements, kept in draw order. Every placement's
@@ -130,6 +131,10 @@ struct Command {
     x: u32,
     y: u32,
     z: u32,
+    /// o=z: the payload is a zlib stream.
+    compressed: bool,
+    /// S: the size of the PNG data inside a compressed payload.
+    size: u32,
     no_move: bool,
     more: bool,
     delete: u8,
@@ -195,6 +200,8 @@ impl Command {
                 b'x' => cmd.x = number(val)?,
                 b'y' => cmd.y = number(val)?,
                 b'z' if number(val)? <= i32::MAX as u32 => cmd.z = number(val)?,
+                b'o' if val == b"z" => cmd.compressed = true,
+                b'S' => cmd.size = number(val)?,
                 b'C' if val == b"0" || val == b"1" => cmd.no_move = val == b"1",
                 b'm' if val == b"0" || val == b"1" => cmd.more = val == b"1",
                 b'q' if number(val)? <= 2 => {}
@@ -299,7 +306,33 @@ fn base64(data: &[u8]) -> Option<Vec<u8>> {
     (out.len() <= MAX_BYTES).then_some(out)
 }
 
-fn decode(cmd: &Command, data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+/// Inflates a zlib payload to exactly `size` bytes, as kitty's `inflate_zlib`
+/// requires. `data` gets the 8 bytes of zero padding `image_inflate` needs.
+fn inflate(mut data: Vec<u8>, size: usize) -> Option<Vec<u8>> {
+    let len = i32::try_from(data.len()).ok()?;
+    data.extend_from_slice(&[0; 8]);
+    let mut out = vec![0; size];
+    let ok = unsafe { image_inflate(data.as_ptr(), len, out.as_mut_ptr(), size as i32) };
+    (ok != 0).then_some(out)
+}
+
+fn decode(cmd: &Command, mut data: Vec<u8>) -> Option<(u32, u32, Vec<u8>)> {
+    if cmd.compressed {
+        // The data's size must be known before inflating: from the pixel
+        // size, or for PNG from S, which kitty takes as 100 KiB when absent.
+        let size = match cmd.format {
+            24 | 32 => (cmd.width as usize)
+                .checked_mul(cmd.height as usize)?
+                .checked_mul(cmd.format as usize / 8)?,
+            100 if cmd.size == 0 => 100 * 1024,
+            100 => cmd.size as usize,
+            _ => return None,
+        };
+        if size == 0 || size > MAX_BYTES {
+            return None;
+        }
+        data = inflate(data, size)?;
+    }
     let (mut w, mut h) = (cmd.width, cmd.height);
     if cmd.format == 100 {
         let (mut x, mut y) = (0, 0);
@@ -318,7 +351,7 @@ fn decode(cmd: &Command, data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             .chunks_exact(3)
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
-        32 if data.len() == size => data.to_vec(),
+        32 if data.len() == size => data,
         100 => {
             let mut rgba = vec![0; size];
             if unsafe {
@@ -427,7 +460,7 @@ impl Graphics {
         if cmd.action == b't' && cmd.id == 0 && cmd.number == 0 {
             return None;
         }
-        let (width, height, pixels) = decode(&cmd, &data)?;
+        let (width, height, pixels) = decode(&cmd, data)?;
         let key = match cmd.reuse {
             Some(key) => key,
             None => self.tick(),
