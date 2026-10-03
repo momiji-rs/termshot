@@ -25,6 +25,12 @@ Two binaries per host, built on that host from the same sources:
 
 Every case produced **byte-identical PNGs** from both binaries, in all four
 batches, and **the same PNG on macOS arm64 and Linux x86-64** for all 25 cases.
+The timed batches compared each binary's last PNG per case. Two later
+verification batches ([macOS](performance-2026-10-03-macos-verify.json),
+[Linux](performance-2026-10-03-linux-verify.json); 1 warmup, 5 rounds, 1 RSS
+run, and on Linux 2 cold runs of two cases) hashed every run's PNG. They found
+one PNG per case across every run of both binaries, and it matched the timed
+batches' PNG on both platforms. Their timings are not used below.
 
 | | macOS arm64 | Linux x86-64 |
 | --- | --- | --- |
@@ -319,8 +325,8 @@ python3 scripts/build-baseline.py /tmp/termshot-main --revision d83c8fd
 python3 scripts/bench.py \
   --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
   --describe main=d83c8fd --describe branch="$(git rev-parse --short HEAD)" \
-  --reference main --runs 40 --warmups 5 --memory-runs 5 --verify-identical \
-  --cjk-font /usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc \
+  --unchecked main --reference main --runs 40 --warmups 5 --memory-runs 5 \
+  --verify-identical --cjk-font /usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc \
   --seed 17 --output /tmp/termshot-a.json        # again with --seed 29
 python3 scripts/bench.py ... --case font-builtin --case font-file \
   --case cjk-subset --case cjk-full --runs 5 --warmups 1 --cold-runs 15 \
@@ -328,7 +334,12 @@ python3 scripts/bench.py ... --case font-builtin --case font-file \
 python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
 ```
 
-`--suite legacy` or `--suite fonts` runs one half; `--case` is repeatable.
+`--suite legacy` or `--suite fonts` runs one half; `--case` and `--cold-case`
+are repeatable. A path check whose counter is missing fails the batch;
+`--unchecked main` exempts a binary that predates the counters, as `d83c8fd`
+does. The timed batches above ran before that option and the per-run PNG
+hashing existed; then, a missing counter was skipped, so only the branch
+binary's counters were checked, as now.
 
 ## Historical: third optimization round (2026-10-01, `c44d83c`, Apple M3)
 
