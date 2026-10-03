@@ -210,6 +210,23 @@ fn a_log_decodes_only_as_many_pixels_as_its_budget() {
 }
 
 #[test]
+fn drawing_over_the_same_pixels_again_is_paid_for() {
+    // Each `!8192~$` writes 49,152 pixels and pays for 7 * 256.
+    let over = |times: usize| [&b"q"[..], &b"!8192~$".repeat(times)].concat();
+    let mut budget = Budget::default();
+    assert_eq!(decode(&over(300), &mut budget).map(|i| i.width), Some(8192));
+    let spent = 300 * 49_152 + 8192 * 6;
+    assert_eq!(budget.0, BUDGET_BASE + 300 * 7 * BUDGET_PER_BYTE - spent);
+    // Past the budget the image is refused, and what it wrote stays spent.
+    assert!(decode(&over(300), &mut budget).is_none());
+    assert!(budget.0 < 49_152);
+    // Each pixel set once, as a real image sets it, costs twice its area.
+    let mut budget = Budget(0);
+    assert!(decode(b"q!40~", &mut budget).is_some());
+    assert_eq!(budget.0, 4 * BUDGET_PER_BYTE - 2 * 240);
+}
+
+#[test]
 fn needs_cell_metrics_only_for_committed_sixel() {
     assert!(needs_cell_metrics(b"\x1bPq~\x1b\\"));
     assert!(needs_cell_metrics(b"x\x1bP0;1;0q\"1;1;1;1\x1b\\"));

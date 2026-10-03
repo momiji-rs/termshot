@@ -25,13 +25,15 @@ const HOLE: u16 = u16::MAX;
 /// of RGBA.
 const MAX_AXIS: usize = 8192;
 const MAX_PIXELS: usize = 16 * 1024 * 1024 / 4;
-/// A few bytes can declare or repeat a large image, so a log may decode only
-/// so many pixels: four of the largest images, plus 256 for each byte of
-/// Sixel data, about what a byte of a zlib-compressed kitty upload can give.
+/// A few bytes can declare a large image or draw over the same pixels again
+/// and again, so a log may only write so many pixels: four of the largest
+/// images, plus 256 for each byte of Sixel data, about what a byte of a
+/// zlib-compressed kitty upload can give.
 const BUDGET_BASE: usize = 4 * MAX_PIXELS;
 const BUDGET_PER_BYTE: usize = 256;
 
-/// The pixels the rest of a log may still decode.
+/// The pixel writes the rest of a log may still make: every pixel a sixel
+/// sets, each time it sets it, and every pixel of each finished image.
 pub struct Budget(usize);
 
 impl Default for Budget {
@@ -152,12 +154,12 @@ struct Decoder {
     y: usize,
     color: u16,
     palette: Vec<[u8; 3]>,
-    /// The most pixels this image may have.
-    limit: usize,
+    /// What is left of the log's budget.
+    work: usize,
 }
 
 impl Decoder {
-    fn new(opaque: bool, limit: usize) -> Self {
+    fn new(opaque: bool, work: usize) -> Self {
         let mut palette = vec![[0; 3]; REGISTERS];
         for (reg, percent) in palette.iter_mut().zip(VT340) {
             *reg = rgb(percent.map(u32::from));
@@ -174,14 +176,15 @@ impl Decoder {
             y: 0,
             color: 3,
             palette,
-            limit,
+            work,
         }
     }
 
-    /// Grow the image to at least w x h, or refuse it past the limits.
+    /// Grow the image to at least w x h, or refuse it past the limits or
+    /// once the budget could not pay for finishing it.
     fn extend(&mut self, w: usize, h: usize) -> Option<()> {
         let (w, h) = (w.max(self.width), h.max(self.height));
-        if w > MAX_AXIS || h > MAX_AXIS || w * h > self.limit {
+        if w > MAX_AXIS || h > MAX_AXIS || w * h > MAX_PIXELS || w * h > self.work {
             return None;
         }
         (self.width, self.height) = (w, h);
@@ -189,7 +192,7 @@ impl Decoder {
     }
 
     /// `count` columns of one sixel (6 bits, the lowest on top) at the cursor.
-    /// The limits bound the columns before any are written.
+    /// The limits and the budget bound the columns before any are written.
     fn sixel(&mut self, bits: u8, count: usize) -> Option<()> {
         if !self.started {
             self.started = true;
@@ -204,6 +207,7 @@ impl Decoder {
         let end = self.x.checked_add(count)?;
         let top_bit = 7 - bits.leading_zeros() as usize;
         self.extend(end, self.y.checked_add(top_bit + 1)?)?;
+        self.work = self.work.checked_sub(count * bits.count_ones() as usize)?;
         if self.rows.len() < self.height {
             self.rows.resize_with(self.height, Vec::new);
         }
@@ -247,10 +251,39 @@ impl Decoder {
         self.extend(self.declared.0, self.declared.1)
     }
 
-    fn finish(self) -> Option<Image> {
+    fn run(&mut self, data: &[u8]) -> Option<()> {
+        let mut i = 0;
+        while let Some(&c) = data.get(i) {
+            i += 1;
+            match c {
+                0x3f..=0x7e => self.sixel(c - 0x3f, 1)?,
+                // A repeat with no count or 0 draws once. Followed by anything
+                // but a sixel, xterm drops both.
+                b'!' => {
+                    let count = number(data, &mut i).unwrap_or(1).max(1);
+                    if let Some(&s @ 0x3f..=0x7e) = data.get(i) {
+                        self.sixel(s - 0x3f, count as usize)?;
+                    }
+                    i += 1;
+                }
+                b'#' => self.color(&params(data, &mut i)),
+                b'"' => self.raster(&params(data, &mut i))?,
+                b'$' => self.x = 0,
+                b'-' => {
+                    self.x = 0;
+                    self.y = self.y.saturating_add(6);
+                }
+                _ => {}
+            }
+        }
+        Some(())
+    }
+
+    fn finish(&mut self) -> Option<Image> {
         if self.width == 0 || self.height == 0 {
             return None;
         }
+        self.work = self.work.checked_sub(self.width * self.height)?;
         let (fw, fh) = self.fill.unwrap_or((0, 0));
         let mut rgba = Vec::with_capacity(self.width * self.height * 4);
         let empty = Vec::new();
@@ -300,41 +333,18 @@ fn params(data: &[u8], i: &mut usize) -> Vec<Option<u32>> {
 }
 
 /// Decode the bytes between ESC P and ST, if they are a Sixel image with at
-/// least one pixel inside the limits and the budget, which pays for it. An
-/// image past them is refused whole, before its pixels are allocated.
+/// least one pixel inside the limits and the budget. An image past them is
+/// refused whole, before the pixels past them are allocated or written; the
+/// writes it made before that stay paid for.
 pub fn decode(body: &[u8], budget: &mut Budget) -> Option<Image> {
     let (p2, data) = split(body)?;
     budget.0 = budget.0.saturating_add(data.len().saturating_mul(BUDGET_PER_BYTE));
     // Spaces, controls and bytes past ASCII are ignored, even inside numbers.
     let data: Vec<u8> = data.iter().copied().filter(|b| (0x21..0x7f).contains(b)).collect();
-    let mut decoder = Decoder::new(p2 != 1, MAX_PIXELS.min(budget.0));
-    let mut i = 0;
-    while let Some(&c) = data.get(i) {
-        i += 1;
-        match c {
-            0x3f..=0x7e => decoder.sixel(c - 0x3f, 1)?,
-            // A repeat with no count or 0 draws once. Followed by anything
-            // but a sixel, xterm drops both.
-            b'!' => {
-                let count = number(&data, &mut i).unwrap_or(1).max(1);
-                if let Some(&s @ 0x3f..=0x7e) = data.get(i) {
-                    decoder.sixel(s - 0x3f, count as usize)?;
-                }
-                i += 1;
-            }
-            b'#' => decoder.color(&params(&data, &mut i)),
-            b'"' => decoder.raster(&params(&data, &mut i))?,
-            b'$' => decoder.x = 0,
-            b'-' => {
-                decoder.x = 0;
-                decoder.y = decoder.y.saturating_add(6);
-            }
-            _ => {}
-        }
-    }
-    let image = decoder.finish()?;
-    budget.0 -= image.width as usize * image.height as usize;
-    Some(image)
+    let mut decoder = Decoder::new(p2 != 1, budget.0);
+    let image = decoder.run(&data).and_then(|()| decoder.finish());
+    budget.0 = decoder.work;
+    image
 }
 
 /// A kitty command that transmits and places the image at the cursor at its

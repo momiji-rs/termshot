@@ -257,8 +257,10 @@ decoder (its `graphics_sixel.c`, patch 412) and the VT340 it emulates:
   skipped. An image wider or taller than 8,192 pixels or over 4,194,304
   pixels is refused whole, before its pixels are allocated, and a repeat
   costs nothing beyond those bounds. Since a few bytes can declare a large
-  image, a log decodes at most 16,777,216 Sixel pixels plus 256 for each byte
-  of Sixel data; images past that budget are refused.
+  image or draw over the same pixels again and again, a log may write at most
+  16,777,216 Sixel pixels plus 256 for each byte of Sixel data, counting every
+  pixel a sixel sets, each time it sets it, and every pixel of each finished
+  image; an image past that budget is refused.
 
 Text written later where an image is stays under it. Erasing below or above
 the cursor (ED 0 or 1) leaves images in place, where xterm erases their pixels.

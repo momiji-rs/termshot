@@ -23,8 +23,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the last row it covers; DECSDM (`CSI ? 80 h`) draws it at the top left
   instead. Images share the kitty image store, its layering and its limits;
   one over 8,192 pixels on a side or 4,194,304 in all is refused, as are
-  images past a per-log budget of 16,777,216 pixels plus 256 per byte of
-  Sixel data, so a short log cannot demand unbounded work. Text and
+  images past a per-log budget of 16,777,216 pixel writes plus 256 per byte
+  of Sixel data, so a short log cannot demand unbounded work, overdrawing
+  included. Text and
   JSON output load the font for a log with Sixel, since the cell height moves
   the cursor.
 
