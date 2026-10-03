@@ -1,9 +1,13 @@
 # Performance measurements
 
-This file holds dated, versioned measurement rounds. **The current baseline is
-the first section** (2026-10-03, main `d83c8fd`, Apple M2 Max and AMD Ryzen 7
-8745HS). The [third optimization round](#historical-third-optimization-round-2026-10-01-c44d83c-apple-m3)
-below it (2026-10-01, `c44d83c`, Apple M3) is history: a different revision,
+This file holds dated, versioned measurement rounds, newest first. The
+[PNG compression round](#png-compression-adler-32-and-deflate-matching-2026-10-03-3bf2ffc-20)
+(2026-10-03, `3bf2ffc`, #20) changed only `src/deflate.c` and remeasured
+every case on the same two machines; for everything outside PNG compression,
+the [font-path baseline](#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)
+after it (main `d83c8fd`, Apple M2 Max and AMD Ryzen 7 8745HS) is still the
+reference. The [third optimization round](#historical-third-optimization-round-2026-10-01-c44d83c-apple-m3)
+below them (2026-10-01, `c44d83c`, Apple M3) is history: a different revision,
 a different machine and a different harness. Do not subtract its numbers from
 the current ones.
 
@@ -11,6 +15,291 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## PNG compression: Adler-32 and DEFLATE matching (2026-10-03, `3bf2ffc`, #20)
+
+Issue #20 asked what is left of PNG compression after #4 and #13, and to make
+it faster without changing a byte of output. The starting point is the
+[font-path baseline](#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)
+below: matching was the largest stage in most cases, and at 128 px Linux
+spent 13.6 ms in Adler-32 against 6.2 ms on macOS. Only `src/deflate.c`
+changed; the stream it writes is the same for every input and quality
+(`tests/deflate_diff.c`), so every PNG is too.
+
+### Result
+
+| | macOS arm64 (M2 Max, Apple clang 21) | Linux x86-64 (Ryzen 7 8745HS, GCC 16.2) |
+| --- | --- | --- |
+| end to end, 25 cases, paired wall speedup | 0.994-1.098 | 1.034-1.470 |
+| `reply-sent` (2200×1440) wall median | 9.74 → 9.55 ms | 9.94 → 7.90 ms |
+| `reply-128px` (5800×3840) wall median | 33.19 → 31.05 ms | 40.48 → 27.60 ms |
+| `large` (5280×3840) wall median | 43.52 → 40.83 ms | 51.88 → 39.32 ms |
+| Adler-32, `reply-128px` | 6.21 → 3.48 ms | 14.49 → 3.82 ms |
+| matching and emission, `reply-128px` | 10.27 → 10.29 ms | 14.37 → 11.97 ms |
+
+Speedups are main/branch paired wall ratios (above 1 is faster), batch A and
+B together; stage figures are batch A medians. The Linux gain is mostly
+Adler-32, which now costs the same on both machines, and 5-23% of
+matching time. On macOS the gain is Adler-32 alone; matching is unchanged
+within noise. No case is slower with confidence on either host: the lowest
+95% bound is 0.935 (`glyph-overflow`, macOS batch B, median 0.994).
+
+### What was measured
+
+- **main**: `bb21b3c` (main when this work started), built with
+  `scripts/build-baseline.py --revision bb21b3c`.
+- **branch**: `3bf2ffc`, the three `deflate.c` commits on top of it. The later
+  documentation commit does not change any build input.
+
+Each host built both binaries from the same sources (on Linux from a fresh
+clone of the pushed branch). Method, cases and harness are those of the
+baseline below: `bench.py`, 5 warmups and 40 shuffled rounds of plain and
+profiled runs per case and binary, 5 peak-RSS runs, seeds 17 (batch A) and
+29 (batch B), the full CJK collection (same sha256) on both hosts. Every run
+of a case, on both binaries, both batches and both hosts, gave one PNG.
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, macOS 26.6.2 | `starship`, kernel 7.2.5-3-omarchy, glibc 2.44, governor `performance` |
+| compilers | rustc 1.98.1, Apple clang 21.0.0 (clang-2100.3.34.2) | rustc 1.98.1, GCC 16.2.1 20260810 |
+| main / branch sha256 | `e12d181701fc…` / `3517189e0999…` | `c559de35b33b…` / `2a13d3ed4d88…` |
+| load average (1 min) during the batches | 5.9-8.1: a shared desktop, other sessions busy | 1.7-2.7 |
+
+Raw results: macOS [batch A](performance-2026-10-03-deflate-macos-a.json) and
+[batch B](performance-2026-10-03-deflate-macos-b.json); Linux
+[batch A](performance-2026-10-03-deflate-linux-a.json) and
+[batch B](performance-2026-10-03-deflate-linux-b.json). They hold every sample;
+none was discarded. The Mac's load was higher than in the baseline round, so
+its p95 values are noisier; the paired ratios are the figures to trust there.
+
+### End-to-end results
+
+Wall median / p95 (ms) from batch A, paired speedup with its 95% bootstrap
+interval for both batches, and the three PNG stages (batch A medians, main →
+branch). `png_encode` holds the other two.
+
+macOS arm64:
+
+| case | main wall | branch wall | speedup A | speedup B | match_emit | checksum | png_encode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `font-builtin` | 10.40 / 11.14 | 9.81 / 10.47 | 1.067 [1.031, 1.083] | 1.044 [1.026, 1.063] | 2.72 → 2.71 | 0.86 → 0.48 | 3.71 → 3.30 |
+| `font-file` | 10.35 / 11.67 | 9.84 / 10.76 | 1.058 [1.040, 1.075] | 1.051 [1.033, 1.066] | 2.75 → 2.69 | 0.87 → 0.48 | 3.77 → 3.29 |
+| `cjk-none` | 5.20 / 5.59 | 5.12 / 5.61 | 1.010 [0.998, 1.045] | 1.022 [0.995, 1.049] | 0.88 → 0.88 | 0.21 → 0.12 | 1.12 → 1.03 |
+| `cjk-subset` | 10.54 / 12.36 | 10.30 / 11.61 | 1.025 [1.010, 1.053] | 1.004 [0.992, 1.030] | 4.19 → 4.03 | 0.22 → 0.12 | 4.58 → 4.33 |
+| `cjk-cff-primary` | 10.20 / 12.28 | 9.72 / 11.35 | 1.031 [1.013, 1.065] | 1.023 [1.004, 1.045] | 4.03 → 3.93 | 0.24 → 0.14 | 4.45 → 4.26 |
+| `mixed-subset` | 7.98 / 8.60 | 7.80 / 8.48 | 1.022 [1.005, 1.032] | 1.016 [1.007, 1.048] | 2.30 → 2.26 | 0.22 → 0.12 | 2.62 → 2.47 |
+| `glyph-overflow` | 18.59 / 19.48 | 18.18 / 19.70 | 0.998 [0.984, 1.024] | 0.994 [0.935, 1.018] | 6.04 → 5.89 | 0.21 → 0.12 | 6.51 → 6.25 |
+| `cjk-full` | 13.63 / 15.40 | 13.36 / 14.73 | 1.030 [1.002, 1.044] | 1.039 [1.014, 1.129] | 4.09 → 4.00 | 0.21 → 0.12 | 4.50 → 4.30 |
+| `mixed-full` | 11.63 / 12.15 | 11.51 / 12.47 | 1.012 [0.992, 1.023] | 1.012 [0.994, 1.027] | 2.40 → 2.39 | 0.21 → 0.12 | 2.70 → 2.60 |
+| `cjk-overflow-full` | 29.89 / 31.37 | 29.49 / 31.50 | 1.015 [0.998, 1.032] | 1.018 [1.004, 1.036] | 7.91 → 7.71 | 0.22 → 0.12 | 8.43 → 8.16 |
+| `reply-sent` | 9.74 / 11.63 | 9.55 / 10.75 | 1.022 [0.995, 1.053] | 1.045 [1.028, 1.053] | 2.76 → 2.72 | 0.85 → 0.48 | 3.75 → 3.31 |
+| `draft-ready` | 9.65 / 12.40 | 9.45 / 12.78 | 1.032 [1.006, 1.052] | 1.047 [1.031, 1.071] | 2.69 → 2.64 | 0.85 → 0.48 | 3.68 → 3.22 |
+| `reply-24px` | 6.03 / 6.55 | 5.96 / 7.40 | 1.003 [0.991, 1.024] | 1.057 [1.031, 1.067] | 1.25 → 1.25 | 0.22 → 0.12 | 1.52 → 1.42 |
+| `reply-128px` | 33.19 / 40.37 | 31.05 / 38.04 | 1.074 [1.056, 1.091] | 1.093 [1.075, 1.115] | 10.27 → 10.29 | 6.21 → 3.48 | 17.10 → 14.29 |
+| `real-shell` | 6.92 / 9.48 | 6.55 / 7.22 | 1.064 [1.046, 1.085] | 1.047 [1.037, 1.067] | 1.32 → 1.28 | 0.55 → 0.30 | 1.93 → 1.64 |
+| `real-less` | 6.45 / 7.86 | 6.14 / 7.08 | 1.051 [1.030, 1.090] | 1.034 [1.012, 1.067] | 0.99 → 0.99 | 0.56 → 0.31 | 1.60 → 1.36 |
+| `real-vi` | 8.77 / 10.10 | 8.22 / 14.62 | 1.047 [1.029, 1.070] | 1.054 [1.036, 1.062] | 2.52 → 2.50 | 0.56 → 0.31 | 3.18 → 2.91 |
+| `blank` | 7.08 / 8.21 | 6.57 / 7.40 | 1.098 [1.046, 1.128] | 1.040 [1.015, 1.056] | 0.72 → 0.73 | 0.87 → 0.48 | 1.66 → 1.28 |
+| `color-grid` | 19.31 / 24.71 | 19.19 / 25.56 | 1.010 [0.999, 1.019] | 1.013 [1.002, 1.029] | 11.80 → 11.63 | 0.22 → 0.12 | 12.41 → 12.14 |
+| `ascii-overflow` | 9.06 / 9.93 | 8.82 / 9.28 | 1.023 [1.007, 1.030] | 1.008 [0.993, 1.023] | 0.39 → 0.39 | 0.21 → 0.12 | 0.64 → 0.54 |
+| `rounded-boxes` | 16.37 / 16.78 | 15.85 / 16.42 | 1.028 [1.018, 1.037] | 1.030 [1.013, 1.041] | 3.67 → 3.61 | 0.89 → 0.49 | 4.66 → 4.23 |
+| `dense` | 13.77 / 17.59 | 13.17 / 17.51 | 1.029 [1.015, 1.047] | 1.028 [1.011, 1.049] | 5.43 → 5.25 | 0.90 → 0.50 | 6.57 → 6.04 |
+| `ansi-replay` | 23.39 / 28.29 | 22.77 / 32.85 | 1.014 [1.004, 1.024] | 1.028 [1.015, 1.036] | 2.80 → 2.76 | 0.88 → 0.49 | 3.79 → 3.37 |
+| `large` | 43.52 / 46.92 | 40.83 / 43.27 | 1.066 [1.057, 1.080] | 1.064 [1.058, 1.074] | 17.83 → 17.51 | 5.70 → 3.17 | 24.39 → 21.57 |
+| `unicode` | 8.39 / 8.68 | 8.27 / 8.73 | 1.014 [0.996, 1.030] | 1.011 [1.003, 1.026] | 2.53 → 2.46 | 0.22 → 0.12 | 2.85 → 2.67 |
+
+Linux x86-64:
+
+| case | main wall | branch wall | speedup A | speedup B | match_emit | checksum | png_encode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `font-builtin` | 10.08 / 10.67 | 7.92 / 8.79 | 1.247 [1.201, 1.318] | 1.262 [1.231, 1.283] | 3.80 → 3.34 | 2.01 → 0.53 | 6.04 → 4.07 |
+| `font-file` | 10.16 / 11.26 | 8.10 / 8.79 | 1.259 [1.227, 1.277] | 1.261 [1.246, 1.288] | 3.97 → 3.44 | 2.03 → 0.53 | 6.28 → 4.23 |
+| `cjk-none` | 4.92 / 5.38 | 4.36 / 4.86 | 1.108 [1.086, 1.221] | 1.087 [1.049, 1.168] | 1.34 → 1.19 | 0.50 → 0.13 | 2.02 → 1.41 |
+| `cjk-subset` | 10.98 / 11.63 | 10.08 / 10.87 | 1.096 [1.076, 1.112] | 1.119 [1.090, 1.136] | 5.47 → 4.88 | 0.50 → 0.13 | 6.31 → 5.27 |
+| `cjk-cff-primary` | 9.78 / 10.95 | 9.31 / 9.99 | 1.086 [1.040, 1.136] | 1.126 [1.075, 1.168] | 5.38 → 4.82 | 0.57 → 0.15 | 6.23 → 5.22 |
+| `mixed-subset` | 8.46 / 9.07 | 7.75 / 8.35 | 1.078 [1.058, 1.114] | 1.109 [1.083, 1.136] | 3.09 → 2.82 | 0.50 → 0.13 | 3.75 → 3.10 |
+| `glyph-overflow` | 16.79 / 18.20 | 15.90 / 17.17 | 1.062 [1.040, 1.088] | 1.079 [1.056, 1.100] | 7.43 → 6.70 | 0.50 → 0.13 | 8.24 → 7.17 |
+| `cjk-full` | 15.60 / 16.92 | 14.49 / 15.32 | 1.093 [1.072, 1.110] | 1.063 [1.036, 1.105] | 5.33 → 4.83 | 0.50 → 0.13 | 6.08 → 5.23 |
+| `mixed-full` | 13.00 / 14.08 | 12.31 / 13.84 | 1.055 [1.027, 1.092] | 1.034 [1.010, 1.084] | 3.28 → 2.94 | 0.50 → 0.13 | 3.94 → 3.22 |
+| `cjk-overflow-full` | 30.49 / 33.34 | 29.44 / 30.53 | 1.041 [1.027, 1.064] | 1.075 [1.057, 1.092] | 9.67 → 8.74 | 0.51 → 0.13 | 10.62 → 9.34 |
+| `reply-sent` | 9.94 / 10.78 | 7.90 / 8.50 | 1.276 [1.258, 1.294] | 1.245 [1.207, 1.275] | 3.92 → 3.43 | 2.02 → 0.52 | 6.13 → 4.15 |
+| `draft-ready` | 9.88 / 10.31 | 7.89 / 8.69 | 1.251 [1.203, 1.274] | 1.270 [1.254, 1.301] | 3.79 → 3.44 | 2.03 → 0.52 | 6.09 → 4.17 |
+| `reply-24px` | 5.72 / 6.45 | 5.14 / 5.61 | 1.113 [1.091, 1.159] | 1.115 [1.090, 1.166] | 1.80 → 1.64 | 0.50 → 0.13 | 2.45 → 1.90 |
+| `reply-128px` | 40.48 / 42.79 | 27.60 / 29.44 | 1.459 [1.440, 1.482] | 1.305 [1.280, 1.426] | 14.37 → 11.97 | 14.49 → 3.82 | 29.84 → 16.65 |
+| `real-shell` | 6.91 / 7.68 | 5.57 / 6.13 | 1.233 [1.199, 1.277] | 1.238 [1.199, 1.267] | 1.96 → 1.67 | 1.29 → 0.33 | 3.46 → 2.17 |
+| `real-less` | 6.33 / 6.98 | 5.10 / 5.93 | 1.246 [1.202, 1.271] | 1.235 [1.215, 1.284] | 1.50 → 1.31 | 1.29 → 0.33 | 3.07 → 1.79 |
+| `real-vi` | 9.00 / 10.80 | 7.60 / 8.24 | 1.199 [1.179, 1.222] | 1.225 [1.191, 1.249] | 3.61 → 3.15 | 1.30 → 0.34 | 5.12 → 3.68 |
+| `blank` | 6.27 / 7.18 | 4.34 / 4.82 | 1.455 [1.396, 1.488] | 1.470 [1.437, 1.528] | 0.93 → 0.72 | 2.06 → 0.53 | 3.21 → 1.37 |
+| `color-grid` | 19.96 / 21.89 | 17.81 / 19.07 | 1.114 [1.098, 1.147] | 1.110 [1.096, 1.125] | 14.14 → 12.46 | 0.50 → 0.13 | 15.23 → 13.15 |
+| `ascii-overflow` | 8.23 / 8.81 | 7.84 / 8.92 | 1.038 [1.000, 1.062] | 1.063 [1.037, 1.083] | 0.60 → 0.53 | 0.50 → 0.13 | 1.15 → 0.70 |
+| `rounded-boxes` | 16.32 / 17.52 | 14.45 / 15.47 | 1.107 [1.099, 1.129] | 1.136 [1.121, 1.147] | 4.10 → 3.89 | 2.03 → 0.53 | 6.25 → 4.55 |
+| `dense` | 13.51 / 14.31 | 11.33 / 12.36 | 1.209 [1.158, 1.236] | 1.194 [1.184, 1.203] | 6.81 → 6.15 | 2.03 → 0.53 | 9.22 → 7.02 |
+| `ansi-replay` | 21.18 / 22.73 | 19.39 / 20.63 | 1.100 [1.076, 1.121] | 1.105 [1.092, 1.112] | 3.84 → 3.27 | 2.03 → 0.53 | 6.00 → 3.91 |
+| `large` | 51.88 / 54.30 | 39.32 / 42.89 | 1.325 [1.307, 1.350] | 1.312 [1.299, 1.340] | 22.12 → 19.16 | 13.04 → 3.55 | 36.51 → 23.92 |
+| `unicode` | 8.14 / 9.17 | 7.31 / 8.11 | 1.124 [1.100, 1.155] | 1.095 [1.075, 1.127] | 3.39 → 3.05 | 0.51 → 0.13 | 4.06 → 3.33 |
+
+Peak RSS medians differ by at most about 1 MiB (+1.02 MiB `large` on macOS
+batch A, -0.89 MiB `reply-128px` on macOS batch B, within 0.22 MiB on Linux).
+Two macOS p95 values rose (`real-vi` 10.10 → 14.62, `ansi-replay` 28.29 →
+32.85) while their medians and paired ratios improved; with the host's load
+at 6-8 these are single slow runs, not a pattern, and neither reproduces in
+batch B or on Linux. After this change Adler-32 is no longer the largest
+stage of any case; matching is the largest PNG stage everywhere.
+
+### Where the time went, and why Linux paid twice
+
+The old Adler-32 loop took 32 bytes at a time and computed
+`sum((32 - k) * d[k])`, a weighted sum with 32-bit products. Apple clang
+vectorizes it with NEON widening multiply-accumulates (`umull`/`umlal`).
+GCC 16 vectorizes it too (`-fopt-info-vec`: "loop vectorized using 16 byte
+vectors"), but baseline x86-64 is SSE2, which has no 32-bit lane multiply
+(`pmulld` is SSE4.1): `objdump -d` shows every product emulated with
+`pmuludq` plus `psrlq`/`pshufd`/`punpckldq` shuffles, and a horizontal
+reduction every 32 bytes. That is the 2.2× gap.
+
+Matching was attributed with `perf record` on Linux and with counters in a
+scratch copy of the compressor (not committed). On these images a position
+is cheap and long matches are common: `reply-128px` codes 67 MB of filtered
+scanlines from 427,000 positions (average match 210 bytes, about one
+`countm` per position), `color-grid` 2.4 MB from 435,000 positions (average
+match 17.5). Time goes to loading the newest bucket entry, the
+candidate-rejection byte test, `countm`, and per-token emission. Two GCC
+specifics showed in the profile: `countm`, `zhash`, `huff` and `add_bits`
+stayed out of line at `-O2`, and the Huffman bit reversal ran as a loop of
+up to nine iterations per literal. Allocation and the stored-block check
+are negligible (`deflate_allocate_ms` ≈ 0.005 ms, `deflate_finalize_ms`
+≈ 0.001 ms at 128 px).
+
+### Retained changes
+
+1. **Adler-32 in 16 lanes** (`e634fa1`). Per 16-byte chunk, keep the byte sum
+   of each lane `a[k]` and the sum of earlier sums `p[k]` (`p += a`, then
+   `a += chunk`). At the end of a 5552-byte block, `s2 += 16n·s1 + 16·Σp +
+   Σ(16 - k)·a[k]` and `s1 += Σa`: the inner loop is widening adds only, and
+   the weights are applied once per block. 5552 is zlib's NMAX, so no sum
+   can overflow before the modulo. GCC vectorizes this plain C loop at
+   `-O2`; clang leaves it scalar (it is 1.8× slower than the old loop on the
+   M2), so clang builds use the same arithmetic in its generic vector types
+   (`__attribute__((vector_size))`, `__builtin_convertvector`). No
+   intrinsics, nothing target-specific: the clang form lowers to NEON on
+   arm64 and SSE2 on x86-64 macOS. `TERMSHOT_PORTABLE_ADLER` forces the plain
+   loop, and `test.sh` runs `deflate_diff` both ways, so CI tests the plain
+   loop on clang as well as on GCC.
+2. **Huffman bit reversal by table** (`b4bd3a3`): a 256-byte table of
+   reversed bytes, built by macros, instead of a bit loop.
+3. **Inline the per-token helpers and carry the next hash** (`3bf2ffc`):
+   force `countm`, `zhash`, `huff`, `add_bits` and `bitrev` inline (GCC and
+   clang only; others get plain `static inline`). Lazy matching already
+   hashes position `i + 1`; a literal that follows reuses it, and after a
+   match the next position is hashed before the token is emitted.
+
+Compressor alone, in a scratch harness that calls main's and the branch's
+`termshot_zlib_compress` alternately on the deflate input of each image
+(the decompressed IDAT of its PNG) and checks that the outputs are
+identical: medians of 21 rounds (5 for the two synthetic inputs), ms, total
+and the paired match/emit ratio.
+
+| input | bytes | macOS total main → branch | macOS match ratio | Linux total main → branch | Linux match ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `reply-sent` | 9,505,440 | 3.57 → 3.14 | 0.991 | 5.27 → 3.24 | 0.841 |
+| `reply-24px` | 2,376,720 | 1.34 → 1.23 | 0.967 | 1.83 → 1.29 | 0.866 |
+| `reply-128px` | 66,819,840 | 15.87 → 13.19 | 0.999 | 26.04 → 13.58 | 0.801 |
+| `large` | 60,829,440 | 21.92 → 19.35 | 0.998 | 32.42 → 19.77 | 0.844 |
+| `color-grid` | 2,376,720 | 11.92 → 11.61 | 0.994 | 13.06 → 10.95 | 0.863 |
+| `dense` | 9,505,440 | 5.96 → 5.58 | 0.975 | 7.63 → 5.61 | 0.889 |
+| `rounded-boxes` | 9,505,440 | 4.26 → 3.88 | 0.999 | 5.73 → 4.06 | 0.939 |
+| `blank` | 9,505,440 | 1.53 → 1.16 | 1.025 | 2.74 → 1.12 | 0.762 |
+| uniform random bytes | 9,505,440 | 249.5 → 245.3 | 0.969 | 270.8 → 227.7 | 0.851 |
+| 4 symbols, skewed | 9,505,440 | 208.2 → 191.0 | 0.953 | 186.1 → 174.3 | 0.949 |
+
+The two synthetic inputs vary entropy: random bytes (every position a
+literal, about two hash-collision candidates each) and a skewed
+four-symbol alphabet. They are slow for any fixed-Huffman stb-style
+compressor and are not termshot images; they show that the changes hold
+outside the image workloads. The one ratio above 1 is `blank` matching on
+macOS (0.66 → 0.68 ms), outweighed by its Adler-32 saving.
+
+Adler-32 variants, in a scratch benchmark (interleaved, medians of 31 runs,
+ms; each checked against the old function on 3,000 random and all-0xff
+buffers of random length and alignment). The macOS inputs are the
+`reply-128px` and `reply-sent` scanlines; on Linux 67 MB of random bytes and
+the `reply-sent` scanlines (the checksum's speed does not depend on the
+data). On both hosts the two generic-vector rows come from a second run of
+the same benchmark.
+
+| variant | M2, clang, 67 MB | M2, clang, 9.5 MB | Ryzen, GCC 16, 67 MB | Ryzen, GCC 16, 9.5 MB |
+| --- | ---: | ---: | ---: | ---: |
+| old: 32-byte weighted sum | 6.15 | 0.87 | 15.26 | 2.16 |
+| plain C, 16 lanes (kept for GCC) | 10.95 | 1.54 | 3.93 | 0.54 |
+| plain C, 32 lanes | 8.47 | 1.19 | 7.56 | 1.06 |
+| plain C, 8 lanes | 9.60 | 1.36 | 9.56 | 1.34 |
+| plain C, 16 lanes, two chunks per step | 9.28 | 1.31 | 4.34 | 0.60 |
+| generic vectors, 16 lanes (kept for clang) | 3.45 | 0.49 | 58.56 | 8.25 |
+| generic vectors, 32 lanes | 4.82 | 0.69 | 29.73 | 4.16 |
+
+GCC lowers a 64-byte generic vector without AVX-512 one lane at a time, so
+the generic-vector form is clang-only. GCC 13.3 (Ubuntu 24.04, the CI
+compiler) vectorizes the 16-lane plain loop the same way: 0.56 ms against
+2.06 ms for the old loop on the 9.5 MB input.
+
+### Rejected experiments
+
+Match/emit time, paired median ratio of 21 interleaved rounds against the
+state after change 1, over the six image inputs above (below 1 is faster).
+
+| experiment | macOS | Linux | why rejected |
+| --- | --- | --- | --- |
+| buffer growth moved out of line from `add_bits` | — | match/emit medians 0.99-1.03 of main's (9 rounds) | no gain; marked `cold`, it also made GCC move part of the match loop to `termshot_zlib_compress.cold` |
+| 16-bit bucket counts (`cnt`, 32 KiB instead of 64) | 0.970-1.003 | 1.028-1.051 | slower on Linux |
+| `countm` 32 bytes per step, then 16 | 0.993-1.043 | 0.990-1.039 | no gain, as in the third round |
+| `__builtin_prefetch` of the next bucket and count, on top of carrying the hash | 0.977-1.013 | 0.949-0.990 | no consistent gain over carrying the hash alone (0.975-0.994 / 0.969-0.987) |
+| hash table aligned to 64 bytes, one cache line per bucket (against change 3) | 0.985-1.010 | 0.990-1.006 | no effect |
+| Adler-32 fused into the match loop, while the data is in cache | — | — | not built: 67 MB checksummed as hot 64 KiB pieces takes 3.46-3.83 ms against 3.70-5.21 ms streamed on macOS, and 3.66-3.77 against 3.69-3.95 ms on Linux (5 runs each). The new loop is compute-bound, leaving at most about 0.4 ms per 67 MB for a restructured match loop |
+
+For comparison, the retained bit-reversal table alone measured 0.996-1.016
+on macOS and 0.897-0.965 on Linux, forced inlining alone 0.986-1.019 and
+0.938-0.999, carrying the hash alone 0.975-0.994 and 0.969-0.987, and changes
+2 and 3 together 0.954-0.992 and 0.806-0.931.
+
+### Validation
+
+On macOS: `./test.sh` (3,060 compressor cases byte-identical to stb, plus
+the same with `TERMSHOT_PORTABLE_ADLER`), `SANITIZE=1 ./test.sh`, and
+`SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh` (round trips,
+48 PNG integrity cases, 11 compressor allocation failures, 8 concurrent
+renders) all pass. `deflate_diff` with 20,000 cases also passes. The new
+all-0xff cases catch an Adler block too large for 32-bit sums: with the
+block set to 4 × 5552, 20 of them fail. CI runs the suite on
+macOS arm64, Linux x86-64 and Linux aarch64 (GCC there).
+
+### Remaining limits
+
+- Matching is now the cost: 10-12 ms at 128 px and for `color-grid`, on
+  both hosts. What is left is the stb-compatible policy
+  itself (fixed Huffman codes, a 16-entry bucket scan, lazy matching); a
+  different policy would change the bytes and is outside #20.
+- The Adler-32 loop is compute-bound at about 18 GB/s on both hosts. A
+  faster one needs pairwise widening adds (`uadalp`, `psadbw`), which plain C
+  and generic vectors do not express portably.
+- One Mac batch pair, under a load average of 6-8.
+
+### Reproduce
+
+```sh
+python3 scripts/build-baseline.py /tmp/termshot-main --revision bb21b3c
+./build.sh && cp termshot /tmp/termshot-branch
+# Arch's copy; on macOS, point this at a copy of the same file (same sha256).
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
+    --describe main=bb21b3c --describe branch=3bf2ffc \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 \
+    --verify-identical --cjk-font "$cjk" \
+    --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
+done
+python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+```
 
 ## Current baseline: font paths and Linux (2026-10-03, `d83c8fd`)
 

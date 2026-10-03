@@ -35,6 +35,11 @@ echo "== deflate matches stb"
 cc tests/deflate_diff.c src/deflate.c -o "$out/deflate_diff" -O2 -Wno-deprecated-declarations \
     -I third_party/stb ${CFLAGS:-}
 "$out/deflate_diff"
+# The plain C Adler-32 loop, which clang builds would otherwise not use.
+# shellcheck disable=SC2086
+cc tests/deflate_diff.c src/deflate.c -o "$out/deflate_diff_portable" -O2 -Wno-deprecated-declarations \
+    -DTERMSHOT_PORTABLE_ADLER -I third_party/stb ${CFLAGS:-}
+"$out/deflate_diff_portable"
 
 echo "== box drawing and blocks"
 # shellcheck disable=SC2086
