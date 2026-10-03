@@ -111,7 +111,7 @@ check "an unused fallback font changes nothing" 'cmp -s "$out/fallback.png" "$ou
 # the same either way. tests/glyphs.c checks where the fallback's glyphs land.
 printf 'B' | ./termshot --size 1x1 --cursor none - "$out/fb-plain.png"
 printf 'B' | ./termshot --size 1x1 --cursor none --font "$out/hollow-A.ttf" - "$out/fb-b.png"
-printf 'A' | ./termshot --size 1x1 --cursor none --font "$out/hollow-A.ttf" - "$out/fb-tofu.png"
+printf 'A' | ./termshot --size 1x1 --cursor none --font "$out/hollow-A.ttf" - "$out/fb-tofu.png" 2>/dev/null
 printf 'A' | ./termshot --size 1x1 --cursor none --font "$out/hollow-A.ttf" --fallback-font "$font" - "$out/fb-drawn.png"
 check "a font missing only A draws B as the font does" 'cmp -s "$out/fb-b.png" "$out/fb-plain.png"'
 check "--fallback-font draws a glyph the font lacks" '! cmp -s "$out/fb-drawn.png" "$out/fb-tofu.png"'
@@ -286,5 +286,9 @@ cc tests/image.c -I third_party/stb -O2 -Wno-unused-function ${CFLAGS:-} -o "$ou
 echo "== output aliases"
 rustc --edition 2021 tests/output_aliases.rs -o "$out/output_aliases"
 "$out/output_aliases"
+
+echo "== font messages"
+rustc --edition 2021 tests/font_cli.rs -o "$out/font_cli"
+"$out/font_cli" ./termshot "$out/hollow-A.ttf" || fail=1
 
 exit "$fail"

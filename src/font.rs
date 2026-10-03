@@ -440,11 +440,7 @@ pub fn cff_outlines(d: &[u8], start: usize) -> Result<Option<cff::Font<'_>>, Str
         return Ok(None);
     }
     let Some(cff) = table(d, start, b"CFF ")? else {
-        return Err(if table(d, start, b"CFF2")?.is_some() {
-            "CFF2 (variable) outlines are not supported".into()
-        } else {
-            "missing the glyf table, and no CFF table either".into()
-        });
+        return Err(no_outlines(d, start)?);
     };
     let glyphs = u16_at(required(d, start, b"maxp")?, 4)? as usize;
     cff::Font::parse(cff.data, glyphs).map(Some).map_err(|reason| format!("CFF table: {reason}"))
@@ -476,6 +472,34 @@ fn check_glyf(d: &[u8], start: usize, head: &[u8], glyph_count: usize) -> Result
         components[g] = check_glyph(glyph, glyph_count).map_err(|reason| format!("glyph {g}: {reason}"))?;
     }
     check_composite_depth(&components)
+}
+
+/// Why a font with neither glyf nor CFF can't be drawn, from the tables it
+/// has instead.
+fn no_outlines(d: &[u8], start: usize) -> Result<String, String> {
+    if table(d, start, b"CFF2")?.is_some() {
+        return Ok("CFF2 (variable) outlines are not supported".into());
+    }
+    if let Some(tag) = color_bitmap_at(d, start)? {
+        return Ok(format!("a color bitmap font ({tag}) with no outlines; use a monochrome outline font, such as Noto Emoji"));
+    }
+    Ok("no glyf table, and no CFF table either".into())
+}
+
+fn color_bitmap_at(d: &[u8], start: usize) -> Result<Option<&'static str>, String> {
+    for tag in ["CBDT", "CBLC", "sbix"] {
+        if table(d, start, tag.as_bytes().try_into().unwrap())?.is_some() {
+            return Ok(Some(tag));
+        }
+    }
+    Ok(None)
+}
+
+/// The color bitmap table of a checked face, if it has one: such a face
+/// draws its color glyphs from bitmaps stb_truetype can't read, and maps
+/// those characters to empty outlines.
+pub fn color_bitmap(font: &Font) -> Option<&'static str> {
+    color_bitmap_at(&font.data, font.start).ok()?
 }
 
 /// Check one glyph's outline the way stbtt__GetGlyphShapeTT reads it, and
