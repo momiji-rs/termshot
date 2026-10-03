@@ -24,7 +24,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Kitty graphics accept zlib-compressed payloads (`o=z`, #44) in every format.
   As in kitty, the data must inflate to exactly its size, which a compressed
-  PNG gives in `S`.
+  PNG gives in `S`. A compressed RGB or RGBA upload may be at most 1 KiB over
+  its decoded size, as in kitty, checked as each chunk arrives, and its
+  dimensions are checked before anything is inflated.
 
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
@@ -101,6 +103,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "not a usable TrueType font".
 - Renders now show the cursor unless the log hides it with `ESC [ ? 25 l`
   (DECTCEM), as full-screen programs and progress bars often do.
+- `TERMSHOT_PROFILE` times the built-in font, a `--font` file and a
+  `--fallback-font` on the same allocate/read/check/padding boundaries
+  (`font_*_ms`, `fallback_*_ms`, with their sizes and `font_builtin`), adds
+  `face_ms`, and counts glyph cache evictions, missing glyphs and fallback
+  lookups and rasterizations (#19). The built-in font's `font_check_ms` no
+  longer includes copying and padding it.
 
 ### Fixed
 

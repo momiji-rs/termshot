@@ -5,6 +5,9 @@
 use std::rc::Rc;
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+/// How much larger than its decoded size a compressed RGB or RGBA payload may
+/// be, as kitty allows: room for the zlib framing of data that won't shrink.
+const COMPRESSION_SLACK: usize = 1024;
 const MAX_IMAGES: usize = 4096;
 const MAX_PLACEMENTS: usize = 1024;
 const MAX_EXTENT: i64 = 1 << 24;
@@ -270,8 +273,28 @@ pub fn needs_cell_metrics(data: &[u8]) -> bool {
     false
 }
 
-fn base64(data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() % 4 != 0 || data.len() > (MAX_BYTES + 2) / 3 * 4 {
+/// The decoded size of an RGB or RGBA image, from its stated dimensions.
+fn raw_size(cmd: &Command) -> Option<usize> {
+    let bytes = match cmd.format {
+        24 => 3,
+        32 => 4,
+        _ => return None,
+    };
+    (cmd.width as usize).checked_mul(cmd.height as usize)?.checked_mul(bytes)
+}
+
+/// The most payload bytes a transmission may carry, over all its chunks.
+/// kitty sizes a compressed RGB or RGBA upload's buffer at its decoded size
+/// plus 1 KiB and refuses more; anything else gets the decoded limit.
+fn payload_limit(cmd: &Command) -> usize {
+    match raw_size(cmd) {
+        Some(size) if cmd.compressed => size.min(MAX_BYTES) + COMPRESSION_SLACK,
+        _ => MAX_BYTES,
+    }
+}
+
+fn base64(data: &[u8], limit: usize) -> Option<Vec<u8>> {
+    if data.len() % 4 != 0 || data.len() > (limit + 2) / 3 * 4 {
         return None;
     }
     let value = |c| match c {
@@ -303,7 +326,7 @@ fn base64(data: &[u8]) -> Option<Vec<u8>> {
             }
         }
     }
-    (out.len() <= MAX_BYTES).then_some(out)
+    (out.len() <= limit).then_some(out)
 }
 
 /// Inflates a zlib payload to exactly `size` bytes, as kitty's `inflate_zlib`
@@ -316,22 +339,26 @@ fn inflate(mut data: Vec<u8>, size: usize) -> Option<Vec<u8>> {
     (ok != 0).then_some(out)
 }
 
+/// How many bytes a compressed payload must inflate to, if the command could
+/// load at all. It must be known before inflating: from the pixel size, or for
+/// PNG from S, which kitty takes as 100 KiB when absent. Raw pixels must also
+/// pass the decoded limits `decode` applies, so a stream for an image refused
+/// anyway is never inflated.
+fn inflated_size(cmd: &Command) -> Option<usize> {
+    let size = match cmd.format {
+        24 | 32 if cmd.width > 8192 || cmd.height > 8192 => return None,
+        24 | 32 if cmd.width as usize * cmd.height as usize * 4 > MAX_BYTES => return None,
+        24 | 32 => raw_size(cmd)?,
+        100 if cmd.size == 0 => 100 * 1024,
+        100 => cmd.size as usize,
+        _ => return None,
+    };
+    (size != 0 && size <= MAX_BYTES).then_some(size)
+}
+
 fn decode(cmd: &Command, mut data: Vec<u8>) -> Option<(u32, u32, Vec<u8>)> {
     if cmd.compressed {
-        // The data's size must be known before inflating: from the pixel
-        // size, or for PNG from S, which kitty takes as 100 KiB when absent.
-        let size = match cmd.format {
-            24 | 32 => (cmd.width as usize)
-                .checked_mul(cmd.height as usize)?
-                .checked_mul(cmd.format as usize / 8)?,
-            100 if cmd.size == 0 => 100 * 1024,
-            100 => cmd.size as usize,
-            _ => return None,
-        };
-        if size == 0 || size > MAX_BYTES {
-            return None;
-        }
-        data = inflate(data, size)?;
+        data = inflate(data, inflated_size(cmd)?)?;
     }
     let (mut w, mut h) = (cmd.width, cmd.height);
     if cmd.format == 100 {
@@ -430,7 +457,12 @@ impl Graphics {
                 self.remove_image(index);
             }
         }
-        let Some(chunk) = base64(payload) else {
+        // Continuation chunks are bounded by the command that began the upload.
+        let limit = match &self.pending {
+            Some((first, _)) if cmd.continuation => payload_limit(first),
+            _ => payload_limit(&cmd),
+        };
+        let Some(chunk) = base64(payload, limit) else {
             self.abort();
             return None;
         };
@@ -442,7 +474,7 @@ impl Graphics {
         let mut data = chunk;
         if let Some((first, mut previous)) = self.pending.take() {
             if cmd.continuation {
-                if previous.len() + data.len() > MAX_BYTES {
+                if previous.len() + data.len() > limit {
                     return None;
                 }
                 previous.extend_from_slice(&data);
@@ -744,3 +776,5 @@ impl Graphics {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod zlib_tests;

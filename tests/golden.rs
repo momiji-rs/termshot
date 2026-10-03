@@ -23,7 +23,7 @@ const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
 // (log, px, cols, rows, font options). A log is examples/<log>.pty or
 // tests/fixtures/<log>.pty; with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 34] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 40] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -34,6 +34,14 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 34] = [
     ("kitty-rgba", "24", 6, 4, &[]),
     ("kitty-png", "24", 6, 4, &[]),
     ("kitty-png-alpha", "24", 6, 4, &[]),
+    // Compressed (o=z): the same pixels as the four above; -chunks cuts the
+    // zlib stream across three chunks.
+    ("kitty-rgb-z", "24", 6, 4, &[]),
+    ("kitty-rgb-z-chunks", "24", 6, 4, &[]),
+    ("kitty-rgb-z-chunks", "47.5", 6, 4, &[]),
+    ("kitty-rgba-z", "24", 6, 4, &[]),
+    ("kitty-png-z", "24", 6, 4, &[]),
+    ("kitty-png-alpha-z", "24", 6, 4, &[]),
     ("blank", "24", 20, 8, &[]),
     ("geometry", "1", 12, 2, &[]),
     ("geometry", "9", 12, 2, &[]),

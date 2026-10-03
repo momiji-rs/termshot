@@ -12,6 +12,8 @@ use std::process::{Command, ExitCode};
 const OUT: &str = "target/test";
 const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 const LOG: &str = "tests/fixtures/random-colors.pty";
+const CJK_LOG: &str = "tests/fixtures/cjk.pty";
+const CJK_FONT: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
 
 type Record = BTreeMap<String, f64>;
 
@@ -77,10 +79,11 @@ fn single_render() -> Result<(), String> {
     ensure(found.len() == 2, format!("want 2 records, got {}", found.len()))?;
     let profile: Record = found.into_iter().flatten().collect();
 
-    let font_load = get(&profile, "font_load_ms")?;
-    ensure(font_load > 0.0, "font_load_ms is 0".into())?;
-    let parts = get(&profile, "font_read_ms")? + get(&profile, "font_check_ms")? + get(&profile, "font_padding_ms")?;
-    ensure(parts <= font_load + 0.00001, format!("font parts {parts} exceed font_load_ms {font_load}"))?;
+    font_parts(&profile)?;
+    ensure(get(&profile, "font_builtin")? == 0.0, "an explicit font counted as built in".into())?;
+    let font_len = fs::metadata(FONT).map_err(|error| format!("{FONT}: {error}"))?.len() as f64;
+    ensure(get(&profile, "font_bytes")? == font_len, "font_bytes is not the font's size".into())?;
+    ensure(get(&profile, "fallback_bytes")? == 0.0, "fallback_bytes without a fallback".into())?;
 
     let png = fs::read(&profiled).map_err(|error| format!("{profiled}: {error}"))?;
     ensure(png.len() >= 24, format!("{profiled}: too short"))?;
@@ -94,6 +97,51 @@ fn single_render() -> Result<(), String> {
     let unprofiled = fs::read(&plain).map_err(|error| format!("{plain}: {error}"))?;
     ensure(png == unprofiled, "profiling changed the PNG".into())?;
     println!("profile records match a single render");
+    Ok(())
+}
+
+/// Every font's allocate/read/check/padding timers sit inside font_load_ms
+/// and do not overlap.
+fn font_parts(profile: &Record) -> Result<(), String> {
+    let font_load = get(profile, "font_load_ms")?;
+    ensure(font_load > 0.0, "font_load_ms is 0".into())?;
+    let mut parts = 0.0;
+    for font in ["font", "fallback"] {
+        for part in ["allocate", "read", "check", "padding"] {
+            parts += get(profile, &format!("{font}_{part}_ms"))?;
+        }
+    }
+    ensure(parts <= font_load + 0.00001, format!("font parts {parts} exceed font_load_ms {font_load}"))
+}
+
+/// The built-in font with a CFF fallback: the fallback's own timers, and
+/// counters showing its glyphs were drawn.
+fn fallback_render() -> Result<(), String> {
+    let png = format!("{OUT}/profile-fallback.png");
+    let output = Command::new("./termshot")
+        .args(["--fallback-font", CJK_FONT, "--px", "20", "--size", "40x6", CJK_LOG, &png])
+        .env("TERMSHOT_PROFILE", "1")
+        .output()
+        .map_err(|error| format!("./termshot: {error}"))?;
+    ensure(output.status.success(), format!("./termshot {CJK_LOG}: {}", output.status))?;
+    let found = records(&output.stderr)?;
+    ensure(found.len() == 2, format!("want 2 records, got {}", found.len()))?;
+    let profile: Record = found.into_iter().flatten().collect();
+    font_parts(&profile)?;
+    ensure(get(&profile, "font_builtin")? == 1.0, "the built-in font not counted as built in".into())?;
+    ensure(get(&profile, "font_read_ms")? > 0.0, "copying the built-in font took no time".into())?;
+    let font_len = fs::metadata(FONT).map_err(|error| format!("{FONT}: {error}"))?.len() as f64;
+    ensure(get(&profile, "font_bytes")? == font_len, "font_bytes is not the built-in font's size".into())?;
+    let cjk_len = fs::metadata(CJK_FONT).map_err(|error| format!("{CJK_FONT}: {error}"))?.len() as f64;
+    ensure(get(&profile, "fallback_bytes")? == cjk_len, "fallback_bytes is not the fallback's size".into())?;
+    ensure(get(&profile, "fallback_check_ms")? > 0.0, "the fallback was not checked".into())?;
+    let lookups = get(&profile, "fallback_lookups")?;
+    let drawn = get(&profile, "fallback_rasterizations")?;
+    ensure(drawn > 0.0 && drawn <= lookups, format!("fallback drew {drawn} of {lookups} lookups"))?;
+    ensure(drawn <= get(&profile, "glyph_rasterizations")?, "more fallback glyphs than glyphs".into())?;
+    // 日本語 is in neither font.
+    ensure(get(&profile, "glyph_missing")? >= 3.0, "the characters neither font has were not missing".into())?;
+    println!("a fallback render times both fonts and draws {drawn} fallback glyphs");
     Ok(())
 }
 
@@ -131,7 +179,7 @@ fn main() -> ExitCode {
         eprintln!("{OUT}: {error}");
         return ExitCode::FAILURE;
     }
-    match single_render().and_then(|()| concurrent_renders(&unit)) {
+    match single_render().and_then(|()| fallback_render()).and_then(|()| concurrent_renders(&unit)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("FAIL {error}");
