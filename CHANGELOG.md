@@ -38,6 +38,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- ASCII autowrap and skipped-row batching now scroll images alongside text;
+  whole-region skips discard image pixels even when row-storage rotation is
+  zero modulo the region height (#43 review).
+
 - Partial-region scrolling preserves image pixels outside the affected rows,
   including images that cross either margin, insert/delete line and reverse
   index (#43 review).

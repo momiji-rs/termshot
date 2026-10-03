@@ -28,7 +28,7 @@ cross-platform reproducibility; it does not promise GPU-filter-identical output.
 
 Local validation passed on Linux x86-64:
 
-- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 125 unit tests passed; one existing
+- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 126 unit tests passed; one existing
   benchmark helper is ignored. All CLI, pixel, codec and geometry checks passed.
 - `SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh`: passed, including
   the image decoder/compositor, codec round trips and concurrent render checks.
@@ -113,3 +113,21 @@ unchanged; the new scroll fixture adds one hash.
 
 Remaining protocol work: Sixel is already tracked by #41; advanced kitty
 features now have a dedicated follow-up, #44.
+
+
+## ASCII autowrap regression
+
+[Copilot review](https://github.com/momiji-rs/termshot/pull/43#discussion_r4170788572)
+identified two optimized ASCII paths that rotated cell storage without moving
+images. Confirmed against `b125bc9`. All row rotations now use `rotate_rows`,
+which updates graphics from the logical scroll distance before taking the
+storage rotation modulo. Image clipping saturates at one whole region, so
+very large skips remain safe and cannot leave stale images.
+
+The existing fast-versus-scalar printing test now compares placements as well
+as cells and cursor state across grid sizes, scroll margins, wrapping modes,
+alternate screens and run lengths up to 4,097 bytes. A separate check covers
+whole-region multiples and extreme counts in both directions. Three additional
+end-to-end pixel comparisons match ASCII autowrap against explicit scroll-up:
+a single row, multiple skipped regions, and a trailing partial row. The old
+binary fails these new pixel checks; all 26 existing golden hashes are unchanged.

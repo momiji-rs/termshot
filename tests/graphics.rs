@@ -111,6 +111,7 @@ fn main() {
     let (_, _, actual) = render(&bin, "transparent", &transparent, "24", 2, 1);
     assert_eq!(actual, plain);
     scroll_regions(&bin);
+    ascii_scroll(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes; native clipping, text layering, transparency and deletion");
 }
 
@@ -155,4 +156,39 @@ fn scroll_regions(bin: &str) {
         }
     }
     println!("ok, 7 scroll-region pixel oracles (both boundaries, both directions, IL/DL, IND/RI)");
+}
+
+fn ascii_scroll(bin: &str) {
+    // Spaces have no foreground pixels, so an explicit SU command
+    // is an independent rendering oracle for the equivalent autowrap scroll.
+    let image = b"\x1b[2;2H\x1b_Ga=T,f=24,s=2,v=2,c=10,r=6,C=1;/wAAAP8AAAD///8A\x1b\\";
+    for (name, count) in [
+        ("one-row", 12),
+        ("skip-whole-regions", 12 * 16),
+        ("skip-and-tail", 12 * 17 + 1),
+    ] {
+        let mut setup = image.to_vec();
+        setup.extend_from_slice(b"\x1b[3;6r\x1b[6;12H "); // wrap pending at bottom margin
+        let mut actual_log = setup.clone();
+        actual_log.extend(std::iter::repeat(b' ').take(count));
+        let mut expected_log = setup;
+        expected_log.extend_from_slice(format!("\x1b[{}S", (count + 11) / 12).as_bytes());
+        let (_, _, actual) = render(bin, &format!("ascii-{name}"), &actual_log, "24", 12, 8);
+        let (_, _, expected) = render(
+            bin,
+            &format!("ascii-{name}-oracle"),
+            &expected_log,
+            "24",
+            12,
+            8,
+        );
+        for (i, (got, want)) in actual
+            .chunks_exact(4)
+            .zip(expected.chunks_exact(4))
+            .enumerate()
+        {
+            assert_eq!(got, want, "ASCII {name} pixel {i}");
+        }
+    }
+    println!("ok, 3 ASCII autowrap pixel comparisons (single-row, skipped regions, partial tail)");
 }

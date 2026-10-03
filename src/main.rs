@@ -357,19 +357,31 @@ impl Screen {
         self.mend_row(self.row);
     }
 
+    /// Rotate row storage and move graphics together. Pixel clipping uses the
+    /// logical distance, not the rotation modulo. After a whole region has
+    /// scrolled out, additional distance cannot change its surviving pixels.
+    fn rotate_rows(&mut self, top: usize, bottom: usize, n: usize, up: bool) {
+        let height = bottom + 1 - top;
+        let distance = n.min(height) as i64;
+        self.graphics.scroll(top, bottom, if up { -distance } else { distance }, self.cell_size.1);
+        if up {
+            self.map[top..=bottom].rotate_left(n % height);
+        } else {
+            self.map[top..=bottom].rotate_right(n % height);
+        }
+    }
+
     /// Move rows top..=bottom up by n, blanking the n rows that open at the bottom.
     fn scroll_up(&mut self, top: usize, bottom: usize, n: usize) {
         let n = n.min(bottom + 1 - top);
-        self.graphics.scroll(top, bottom, -(n as i64), self.cell_size.1);
-        self.map[top..=bottom].rotate_left(n);
+        self.rotate_rows(top, bottom, n, true);
         self.erase_rows(bottom + 1 - n, bottom + 1);
     }
 
     /// Move rows top..=bottom down by n, blanking the n rows that open at the top.
     fn scroll_down(&mut self, top: usize, bottom: usize, n: usize) {
         let n = n.min(bottom + 1 - top);
-        self.graphics.scroll(top, bottom, n as i64, self.cell_size.1);
-        self.map[top..=bottom].rotate_right(n);
+        self.rotate_rows(top, bottom, n, false);
         self.erase_rows(top, top + n);
     }
 
@@ -599,7 +611,7 @@ impl Screen {
                     let height = self.bottom + 1 - self.top;
                     let skip_rows = (text.len() / self.cols).saturating_sub(height);
                     if skip_rows > 0 {
-                        self.map[self.top..=self.bottom].rotate_left(skip_rows % height);
+                        self.rotate_rows(self.top, self.bottom, skip_rows, true);
                         text = &text[skip_rows * self.cols..];
                     }
                 }
@@ -608,7 +620,7 @@ impl Screen {
                     // The entire incoming row is overwritten below; avoid
                     // clearing it just before assigning every cell again.
                     self.pending = false;
-                    self.map[self.top..=self.bottom].rotate_left(1);
+                    self.rotate_rows(self.top, self.bottom, 1, true);
                 } else {
                     self.index();
                 }

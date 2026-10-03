@@ -16,6 +16,7 @@ pub struct Graphics {
     pending: Option<(Command, Vec<u8>)>,
 }
 
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Placement {
     pub pixels: Vec<u8>,
     pub width: u32,
