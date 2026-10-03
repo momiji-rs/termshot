@@ -126,6 +126,7 @@ fn main() {
     layers(&bin);
     sixel(&bin);
     relative(&bin);
+    placeholders(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes, plain and zlib-compressed; native clipping, text layering, transparency and deletion");
 }
 
@@ -639,4 +640,76 @@ fn relative(bin: &str) {
         }
     }
     println!("ok, {checked} relative placement pixel checks at 3 sizes: offsets, a chain, moving, scrolling, clipping, deletion");
+}
+
+// Unicode placeholders. QUAD has two virtual placements: 3x3 cells, shown
+// whole by a 3x3 block of placeholders whose rows come from the first
+// column's diacritics, and in part by two cells naming its row 1, columns 1
+// and 2; and 1x1 cells, named by the underline colour over a red
+// background. From the spec and kitty's grman_put_cell_image: the image is
+// fitted into the c x r cell box keeping its aspect ratio, centered across
+// the side it does not fill, and each placeholder cell shows the part of
+// the box under it; the cell's background shows around it. Checked still
+// and scrolled up a row, at three sizes.
+fn placeholders(bin: &str) {
+    const RED: [u8; 3] = [205, 0, 0];
+    let p = "\u{10EEEE}";
+    let d = ["\u{305}", "\u{30D}", "\u{30E}"];
+    let mut scene = format!(
+        "\x1b_Ga=t,q=2,i=7,f=24,s=4,v=2;{}\x1b\\\x1b_Ga=p,i=7,U=1,c=3,r=3\x1b\\\x1b_Ga=p,i=7,p=2,U=1,c=1,r=1\x1b\\",
+        base64(&QUAD.concat())
+    );
+    for (r, d) in d.iter().enumerate() {
+        scene += &format!("\x1b[{};2H\x1b[38;5;7m{p}{d}{p}{p}", r + 2);
+    }
+    scene += &format!("\x1b[6;7H{p}{}{}{p}", d[1], d[1]);
+    scene += &format!("\x1b[2;7H\x1b[38;5;7;58;5;2;41m{p}\x1b[0m");
+    // (box columns, box rows, then each cell: screen column, row, and its
+    // column and row in the box, and its background).
+    type Cells = &'static [(isize, isize, isize, isize)];
+    let shown: [(isize, isize, Cells, [u8; 3]); 3] = [
+        (
+            3,
+            3,
+            &[(1, 1, 0, 0), (2, 1, 1, 0), (3, 1, 2, 0), (1, 2, 0, 1), (2, 2, 1, 1), (3, 2, 2, 1), (1, 3, 0, 2), (2, 3, 1, 2), (3, 3, 2, 2)],
+            BG,
+        ),
+        (3, 3, &[(6, 5, 1, 1), (7, 5, 2, 1)], BG),
+        (1, 1, &[(6, 1, 0, 0)], RED),
+    ];
+    let mut checked = 0;
+    for px in ["9", "24", "47.5"] {
+        for scrolled in [false, true] {
+            let log = format!("{scene}{}", if scrolled { "\x1b[S" } else { "" });
+            let name = format!("placeholders-{px}-{scrolled}");
+            let (w, h, pixels) = render(bin, &name, log.as_bytes(), px, 9, 7);
+            let (cw, ch) = ((w / 9) as isize, (h / 7) as isize);
+            let up = isize::from(scrolled);
+            for y in 0..h as isize {
+                for x in 0..w as isize {
+                    let (col, row) = (x / cw, y / ch + up);
+                    let mut want = BG;
+                    for &(bc, br, cells, bg) in &shown {
+                        let Some(&(_, _, c, r)) = cells.iter().find(|&&(sc, sr, _, _)| (sc, sr) == (col, row)) else {
+                            continue;
+                        };
+                        want = bg;
+                        let (bw, bh) = (bc * cw, br * ch);
+                        // 4x2 into bw x bh: the width decides when 4 * bh > 2 * bw.
+                        let (iw, ih) = if 4 * bh > 2 * bw { (bw, bw * 2 / 4) } else { (bh * 4 / 2, bh) };
+                        let left = (col - c) * cw + (bw - iw) / 2;
+                        let top = (row - r) * ch + (bh - ih) / 2;
+                        let (fx, fy) = (x - left, y + up * ch - top);
+                        if (0..iw).contains(&fx) && (0..ih).contains(&fy) {
+                            want = QUAD[(fy * 2 / ih * 4 + fx * 4 / iw) as usize];
+                        }
+                    }
+                    let at = (y as usize * w + x as usize) * 4;
+                    assert_eq!(&pixels[at..][..3], &want, "{name} at ({x},{y})");
+                    checked += 1;
+                }
+            }
+        }
+    }
+    println!("ok, {checked} Unicode placeholder pixel checks at 3 sizes, still and scrolled: inherited rows, a partial box, a placement named by the underline colour");
 }
