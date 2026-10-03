@@ -1869,22 +1869,20 @@ fn main() -> ExitCode {
         Ok(data) => data,
         Err(error) => return cleanup(1, format!("{}: {error}", options.log)),
     };
-    let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
     let input_bytes = data.len();
     let name = if options.log == "-" { "stdin" } else { &options.log };
     // An asciinema recording replays its output events; its header gives
     // the grid size that --size and the original form's cols and rows don't.
+    // Decoding it is part of reading the log, in the profile too.
     let (data, cast_size) = if options.cast || cast::detect(&data) {
-        // The output is all that is replayed; the recording can go.
-        let decoded = cast::decode(&data);
-        drop(data);
-        match decoded {
+        match cast::decode(data) {
             Ok(cast) => (cast.output, Some((cast.final_size, cast.resized))),
             Err(reason) => return cleanup(1, format!("{name}: not a readable asciicast: {reason}")),
         }
     } else {
         (data, None)
     };
+    let read_ms = read_started.elapsed().as_secs_f64() * 1000.0;
     let source = match cast_size {
         Some((_, true)) => "its last resize event",
         _ => "its header",

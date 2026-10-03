@@ -6,7 +6,7 @@ use super::*;
 use cast::{decode, detect, parse, JsonError, Value, MAX_DEPTH};
 
 fn decode_str(text: &str) -> Result<cast::Cast, String> {
-    decode(text.as_bytes())
+    decode(text.as_bytes().to_vec())
 }
 
 fn error(text: &str) -> String {
@@ -59,6 +59,42 @@ fn json_rejects_what_rfc_8259_does() {
     assert_eq!(parse("[1,]").unwrap_err().at, 3);
     let JsonError { reason, .. } = parse(r#"{"k": 1, "k": 2}"#).unwrap_err();
     assert!(reason.contains("appears twice"), "{reason}");
+}
+
+#[test]
+fn duplicate_keys_are_found_among_many() {
+    let keys: Vec<String> = (0..50_000).map(|i| format!("\"k{i}\":{i}")).collect();
+    let many = format!("{{{}}}", keys.join(","));
+    assert!(matches!(parse(&many), Ok(Value::Object(members)) if members.len() == 50_000));
+    // The second of a pair is reported, wherever the two are.
+    let dup = format!("{{{},\"k7\":0}}", keys.join(","));
+    let error = parse(&dup).unwrap_err();
+    assert_eq!((error.reason.as_str(), &dup[error.at..]), ("the key \"k7\" appears twice", "\"k7\":0}"));
+    let error = parse(r#"{"b":1,"a":2,"b":3,"a":4}"#).unwrap_err();
+    assert_eq!((error.reason.as_str(), error.at), ("the key \"a\" appears twice", 19));
+}
+
+#[test]
+fn output_is_decoded_in_place_however_dense() {
+    // Escapes shrink as they decode and raw UTF-8 keeps its length, so the
+    // output always fits behind the line being read.
+    let header = "{\"version\":2,\"width\":10,\"height\":2}\n";
+    let mut text = header.to_string();
+    let mut want = Vec::new();
+    for (event, bytes) in [
+        (r#"\u0000😀\n"#, "\0😀\n"),
+        ("中é", "中é"),
+        (r#"\"\\\/"#, "\"\\/"),
+        ("", ""),
+        ("x", "x"),
+    ] {
+        text += &format!("[0,\"o\",\"{event}\"]\n");
+        want.extend_from_slice(bytes.as_bytes());
+    }
+    assert_eq!(decode_str(&text).unwrap().output, want);
+    // Many tiny events, each a byte of output for a line of JSON.
+    let tiny = header.to_string() + &"[0,\"o\",\"a\"]\n".repeat(10_000);
+    assert_eq!(decode_str(&tiny).unwrap().output, vec![b'a'; 10_000]);
 }
 
 #[test]
@@ -193,6 +229,14 @@ fn events_are_checked() {
     assert!(got.starts_with("line 3, column 11:"), "{got}");
     // Huge times that stay finite are fine; nothing is timed.
     assert_eq!(decode_str(&format!("{header}[1e300,\"o\",\"!\"]\n")).unwrap().output, b"ok!");
+    // A negative time is refused even when it rounds to -0.0; zero is not negative.
+    for negative in ["-1e-9999", "-0.0000001", "-1E-400"] {
+        let got = error(&format!("{header}[{negative},\"o\",\"a\"]\n"));
+        assert!(got.contains("must be a finite number"), "{negative}: {got}");
+    }
+    for zero in ["0", "-0", "-0.0", "-0e5", "0.0", "1e-9999"] {
+        assert_eq!(decode_str(&format!("{header}[{zero},\"o\",\"!\"]\n")).unwrap().output, b"ok!", "{zero}");
+    }
     // Unknown codes, and any data on ignored events, are skipped.
     assert_eq!(decode_str(&format!("{header}[0,\"z\",{{}}]\n[0,\"i\",5]\n")).unwrap().output, b"ok");
 }
@@ -201,13 +245,17 @@ fn events_are_checked() {
 fn invalid_utf8_is_refused_with_its_place() {
     let mut data = b"{\"version\":2,\"width\":10,\"height\":2}\n[0,\"o\",\"ab".to_vec();
     data.extend_from_slice(b"\xff\"]\n");
-    assert_eq!(decode(&data).unwrap_err(), "line 2, column 11: not UTF-8");
+    assert_eq!(decode(data.clone()).unwrap_err(), "line 2, column 11: not UTF-8");
+    // Columns count characters here too: after 中 (three bytes), one column on.
+    let mut wide = "{\"version\":2,\"width\":10,\"height\":2}\n[0,\"o\",\"中".as_bytes().to_vec();
+    wide.extend_from_slice(b"\xff\"]\n");
+    assert_eq!(decode(wide).unwrap_err(), "line 2, column 10: not UTF-8");
     // A truncated multibyte character, as a cut-off file ends.
     let mut cut = b"{\"version\":2,\"width\":10,\"height\":2}\n[0,\"o\",\"".to_vec();
     cut.extend_from_slice(&"中".as_bytes()[..2]);
-    assert_eq!(decode(&cut).unwrap_err(), "line 2, column 9: not UTF-8");
+    assert_eq!(decode(cut.clone()).unwrap_err(), "line 2, column 9: not UTF-8");
     let header = b"{\"version\":2,\"width\":10,\"height\":2,\"title\":\"\xc3\"}";
-    assert!(decode(header).unwrap_err().starts_with("line 1, column 45: not UTF-8"));
+    assert!(decode(header.to_vec()).unwrap_err().starts_with("line 1, column 45: not UTF-8"));
 }
 
 #[test]
@@ -218,7 +266,7 @@ fn truncated_casts_are_refused() {
     for end in 0..whole.len() {
         let cut = &whole[..end];
         let at_line_end = end == 0 || whole[end - 1] == b'\n' || whole[end] == b'\n';
-        match decode(cut) {
+        match decode(cut.to_vec()) {
             Ok(cast) => assert!(at_line_end && end > 0, "cut at {end} read: {:?}", cast.output),
             Err(_) => assert!(!(at_line_end && end > V2.find('\n').unwrap())),
         }
@@ -231,8 +279,9 @@ fn the_fixtures_replay_their_raw_log() {
     for (path, version) in [("tests/fixtures/asciicast-v2.cast", 2), ("tests/fixtures/asciicast-v3.cast", 3)] {
         let data = fs::read(path).unwrap();
         assert!(detect(&data), "{path}");
-        let cast = decode(&data).unwrap();
+        let cast = decode(data.clone()).unwrap();
         assert_eq!((cast.version, cast.final_size), (version, (24, 6)), "{path}");
         assert_eq!(cast.output, raw, "{path}");
     }
 }
+

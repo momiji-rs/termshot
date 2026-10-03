@@ -23,8 +23,8 @@
 //! `\uXXXX` and surrogate pairs (a lone surrogate is refused, as it has no
 //! UTF-8 form), no duplicate keys, no trailing commas, and nesting at most
 //! MAX_DEPTH deep. Times must be finite and not negative, and sizes whole
-//! numbers that fit in 64 bits. Anything else is refused with its line and
-//! column, never guessed at.
+//! numbers that fit in 64 bits. Anything else is refused with its line (and
+//! for bad JSON or UTF-8, its column), never guessed at.
 
 /// How deep arrays and objects may nest. A v3 header needs 3 (term.theme).
 pub const MAX_DEPTH: usize = 16;
@@ -165,6 +165,8 @@ impl<'a> Parser<'a> {
         self.nest(depth)?;
         self.i += 1;
         let mut members: Vec<(String, Value<'a>)> = Vec::new();
+        // Where each key starts, to report a duplicate.
+        let mut starts = Vec::new();
         self.skip_space();
         if self.peek() == Some(b'}') {
             self.i += 1;
@@ -175,11 +177,8 @@ impl<'a> Parser<'a> {
             if self.peek() != Some(b'"') {
                 return self.unexpected("a string key");
             }
-            let at = self.i;
+            starts.push(self.i);
             let key = self.string()?;
-            if members.iter().any(|(k, _)| *k == key) {
-                return Err(JsonError { at, reason: format!("the key {key:?} appears twice") });
-            }
             self.skip_space();
             self.expect(b':', "':'")?;
             let value = self.value(depth)?;
@@ -189,11 +188,20 @@ impl<'a> Parser<'a> {
                 Some(b',') => self.i += 1,
                 Some(b'}') => {
                     self.i += 1;
-                    return Ok(Value::Object(members));
+                    break;
                 }
                 _ => return self.unexpected("',' or '}'"),
             }
         }
+        // Sorted, so many keys cost n log n rather than n squared. The sort
+        // is stable: of two equal keys, the second in the file is reported.
+        let mut order: Vec<usize> = (0..members.len()).collect();
+        order.sort_by(|&a, &b| members[a].0.cmp(&members[b].0));
+        if let Some(pair) = order.windows(2).find(|pair| members[pair[0]].0 == members[pair[1]].0) {
+            let reason = format!("the key {:?} appears twice", members[pair[1]].0);
+            return Err(JsonError { at: starts[pair[1]], reason });
+        }
+        Ok(Value::Object(members))
     }
 
     /// Four hex digits after `\u`.
@@ -345,18 +353,16 @@ pub struct Cast {
     pub output: Vec<u8>,
 }
 
-/// The lines of a cast, numbered from 1, without their LF.
-fn lines(data: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
-    data.split(|&b| b == b'\n').enumerate().map(|(i, line)| (i + 1, line))
-}
-
-/// A line as UTF-8, or why not.
+/// A line as UTF-8, or why not. Columns count characters, as an editor
+/// shows them.
 fn line_text(n: usize, line: &[u8]) -> Result<&str, String> {
-    std::str::from_utf8(line).map_err(|e| format!("line {n}, column {}: not UTF-8", e.valid_up_to() + 1))
+    std::str::from_utf8(line).map_err(|e| {
+        let valid = std::str::from_utf8(&line[..e.valid_up_to()]).unwrap_or_default();
+        format!("line {n}, column {}: not UTF-8", valid.chars().count() + 1)
+    })
 }
 
 fn json_error(n: usize, line: &str, error: JsonError) -> String {
-    // Columns count characters, as an editor shows them.
     let column = line[..error.at.min(line.len())].chars().count() + 1;
     format!("line {n}, column {column}: {}", error.reason)
 }
@@ -429,46 +435,89 @@ fn header(n: usize, text: &str) -> Result<(u8, (u64, u64)), String> {
     Ok((version, size))
 }
 
-/// Read a cast: check every line, and collect the output.
-pub fn decode(data: &[u8]) -> Result<Cast, String> {
-    let mut lines = lines(data);
-    let (n, first) = lines.next().unwrap_or((1, b""));
-    let (version, size) = header(n, line_text(n, first)?)?;
-    let mut cast = Cast { version, size, final_size: size, resized: false, output: Vec::new() };
-    for (n, line) in lines {
-        let text = line_text(n, line)?;
-        if text.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\r')) || (version == 3 && text.starts_with('#')) {
-            continue;
-        }
-        let at = |reason: String| format!("line {n}: {reason}");
-        let event = parse(text).map_err(|e| json_error(n, text, e))?;
-        let Value::Array(mut fields) = event else {
-            return Err(at(format!("an event must be an array [time, code, data], not {}", event.kind())));
-        };
-        if fields.len() != 3 {
-            return Err(at(format!("an event must be [time, code, data], not {} items", fields.len())));
-        }
-        let data = fields.pop().unwrap_or(Value::Null);
-        let time = match &fields[0] {
-            Value::Number(t) => t.parse::<f64>().ok().filter(|t| t.is_finite() && *t >= 0.0),
-            _ => None,
-        };
-        let what = if version == 2 { "time" } else { "interval" };
-        if time.is_none() {
-            return Err(at(format!("an event's {what} must be a finite number of seconds, not below 0")));
-        }
-        match &fields[1] {
-            Value::String(code) if code == "o" => match data {
-                Value::String(output) => cast.output.extend_from_slice(output.as_bytes()),
-                other => return Err(at(format!("an output event's data must be a string, not {}", other.kind()))),
-            },
-            Value::String(code) if code == "r" => {
-                cast.final_size = resize(&data).map_err(at)?;
-                cast.resized = true;
-            }
-            Value::String(_) => {}
-            other => return Err(at(format!("an event's code must be a string, not {}", other.kind()))),
-        }
+/// What an event line does.
+enum Event {
+    Skip,
+    Output(String),
+    Resize((u64, u64)),
+}
+
+/// Whether a JSON number is below zero. Its text decides, not its value as
+/// a float: -1e-9999 rounds to -0.0, which is not below 0.
+fn negative(number: &str) -> bool {
+    let significand = number.split(['e', 'E']).next().unwrap_or_default();
+    number.starts_with('-') && significand.bytes().any(|b| matches!(b, b'1'..=b'9'))
+}
+
+fn event(n: usize, version: u8, text: &str) -> Result<Event, String> {
+    if text.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\r')) || (version == 3 && text.starts_with('#')) {
+        return Ok(Event::Skip);
     }
+    let at = |reason: String| format!("line {n}: {reason}");
+    let mut fields = match parse(text).map_err(|e| json_error(n, text, e))? {
+        Value::Array(fields) => fields,
+        other => return Err(at(format!("an event must be an array [time, code, data], not {}", other.kind()))),
+    };
+    if fields.len() != 3 {
+        return Err(at(format!("an event must be [time, code, data], not {} items", fields.len())));
+    }
+    let data = fields.pop().unwrap_or(Value::Null);
+    let time_ok = match &fields[0] {
+        Value::Number(t) => !negative(t) && t.parse::<f64>().map_or(false, f64::is_finite),
+        _ => false,
+    };
+    if !time_ok {
+        let what = if version == 2 { "time" } else { "interval" };
+        return Err(at(format!("an event's {what} must be a finite number of seconds, not below 0")));
+    }
+    match &fields[1] {
+        Value::String(code) if code == "o" => match data {
+            Value::String(output) => Ok(Event::Output(output)),
+            other => Err(at(format!("an output event's data must be a string, not {}", other.kind()))),
+        },
+        Value::String(code) if code == "r" => resize(&data).map(Event::Resize).map_err(at),
+        Value::String(_) => Ok(Event::Skip),
+        other => Err(at(format!("an event's code must be a string, not {}", other.kind()))),
+    }
+}
+
+/// Read a cast: check every line, and collect the output. The output is
+/// written over the recording as it is read, so a long one needs no second
+/// buffer. An event's data is never longer than the JSON it is decoded from,
+/// so it lands before the end of the line it came from, which is read.
+pub fn decode(mut data: Vec<u8>) -> Result<Cast, String> {
+    let mut cast: Option<Cast> = None;
+    let (mut start, mut n, mut written) = (0, 0, 0);
+    // The lines, numbered from 1, without their LF. What follows the last LF
+    // is a line too, empty when the file ends in one.
+    while start <= data.len() {
+        let end = data[start..].iter().position(|&b| b == b'\n').map_or(data.len(), |p| start + p);
+        n += 1;
+        let text = line_text(n, &data[start..end])?;
+        let output = match &mut cast {
+            None => {
+                let (version, size) = header(n, text)?;
+                cast = Some(Cast { version, size, final_size: size, resized: false, output: Vec::new() });
+                None
+            }
+            Some(cast) => match event(n, cast.version, text)? {
+                Event::Skip => None,
+                Event::Output(output) => Some(output),
+                Event::Resize(size) => {
+                    cast.final_size = size;
+                    cast.resized = true;
+                    None
+                }
+            },
+        };
+        if let Some(output) = output {
+            data[written..written + output.len()].copy_from_slice(output.as_bytes());
+            written += output.len();
+        }
+        start = end + 1;
+    }
+    let mut cast = cast.ok_or("line 1: the asciicast header is missing")?;
+    data.truncate(written);
+    cast.output = data;
     Ok(cast)
 }
