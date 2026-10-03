@@ -28,7 +28,7 @@ cross-platform reproducibility; it does not promise GPU-filter-identical output.
 
 Local validation passed on Linux x86-64:
 
-- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 129 unit tests passed; one existing
+- `RUSTUP_TOOLCHAIN=1.70.0 ./test.sh`: 131 unit tests passed; one existing
   benchmark helper is ignored. All CLI, pixel, codec and geometry checks passed.
 - `SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1 ./tests/run.sh`: passed, including
   the image decoder/compositor, codec round trips and concurrent render checks.
@@ -77,39 +77,38 @@ It has not been validated against captures of AgentAmp or yazi, or compared
 pixel-for-pixel with a live kitty terminal.
 
 
-## Partial scroll-region regression
+## Scroll margins and explicit IDs
 
-[Review finding](https://github.com/momiji-rs/termshot/pull/43#discussion_r4170723891)
-confirmed against `af189d8`: a picture crossing either scroll margin lost pixels
-outside the scrolled region. Each placement now retains disjoint visible slices
-sharing its original pixels and identity. Only the intersecting slices move;
-outside slices stay fixed, clipped pixels stay gone, and adjacent slices with
-the same source mapping are coalesced. Splitting does not multiply image storage
-or consume additional placement IDs/quota.
+[Protocol review](https://github.com/momiji-rs/termshot/pull/43#pullrequestreview-5398124081)
+was verified against the [kitty specification's terminal interactions](https://sw.kovidgoyal.net/kitty/graphics-protocol/#interaction-with-other-terminal-actions).
+A placement crossing either margin stays stationary as a whole. Only placements
+entirely inside the region scroll; clipping at an edge is permanent, including
+when scrolling reverses. Eligibility uses the remaining visible bounds.
 
-| Before the scroll fix | After |
+| Before (`5090104`): image split into bands | After: whole crossing image stays stationary |
 | --- | --- |
-| ![Lost outside pixels](kitty-scroll-before.png) | ![Outside pixels preserved](kitty-scroll-after.png) |
+| ![Torn crossing image](kitty-scroll-before.png) | ![Stationary whole image](kitty-scroll-after.png) |
 
 ```sh
 ./termshot --cursor none --size 12x8 --px 24 \
   tests/fixtures/kitty-scroll.pty /tmp/kitty-scroll.png
 ```
 
-The end-to-end raster oracle fails on `af189d8` with:
+The corrected unit tests fail on `5090104`: scrolling a placement spanning
+pixel rows 20–80 through a region starting at 40 incorrectly leaves only 20–40.
+The end-to-end oracle also rejects that binary. Fourteen full-raster comparisons
+cover crossing and contained placements, both directions, region clearing,
+IL/DL and IND/RI. Unit tests cover each margin separately, both margins together,
+exact-edge containment, reverse scrolling without resurrection, deletion and
+replacement at the quota limit, plus 2,000 modeled scroll operations. Only the
+`kitty-scroll` PNG golden changes; the other 25 PNG hashes and all text/JSON
+goldens remain unchanged.
 
-```text
-assertion `left == right` failed: scroll up at (11, 41)
-  left: [17, 24, 35, 255]
- right: [255, 0, 0, 255]
-```
-
-Seven pixel comparisons cover scrolling up/down, a completely cleared region,
-insert/delete line, index and reverse index. Three additional unit tests cover
-both margins, reverse scrolling without resurrection, deletion/replacement and
-quota semantics after splitting, and 2,000 partial scroll operations compared
-against an independent pixel-row model. The existing 25 golden hashes are
-unchanged; the new scroll fixture adds one hash.
+The [image-ID rule](https://sw.kovidgoyal.net/kitty/graphics-protocol/#querying-support-and-available-transmission-mediums)
+requires supplied IDs to be nonzero. Tests reject `i=0`, `i=000` and overflow,
+without placing an image, advancing the cursor or leaking payload into text;
+omission, `i=1` and `i=4294967295` remain valid. The zero-ID test fails on
+`5090104` before the parser fix.
 
 Remaining protocol work: Sixel is already tracked by #41; advanced kitty
 features now have a dedicated follow-up, #44.
@@ -129,5 +128,5 @@ as cells and cursor state across grid sizes, scroll margins, wrapping modes,
 alternate screens and run lengths up to 4,097 bytes. A separate check covers
 whole-region multiples and extreme counts in both directions. Three additional
 end-to-end pixel comparisons match ASCII autowrap against explicit scroll-up:
-a single row, multiple skipped regions, and a trailing partial row. The old
-binary fails these new pixel checks; all 26 existing golden hashes are unchanged.
+a single row, multiple skipped regions, and a trailing partial row. The contained-image fixture ensures these checks still exercise actual image
+movement under the scroll-margin rule.

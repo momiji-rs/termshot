@@ -46,7 +46,7 @@ pub struct ImageView {
 
 /// A visible vertical part of a placement. `y` is the translated origin of
 /// the full source image, preserving sampling after a partial-region scroll.
-/// Parts share the placement's pixels, identity and quota; they never overlap.
+/// Scrolling never splits a placement into independently moving parts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ImageSlice {
     y: i64,
@@ -70,17 +70,10 @@ impl Placement {
     }
 }
 
-// Coalesce adjacent parts with the same source mapping, so scrolling history
-// does not accumulate redundant metadata. Empty/clipped parts are discarded.
+// Empty/clipped placements have no visible part.
 fn append_slice(slices: &mut Vec<ImageSlice>, y: i64, top: i64, bottom: i64) {
     if top >= bottom {
         return;
-    }
-    if let Some(last) = slices.last_mut() {
-        if last.y == y && last.bottom == top {
-            last.bottom = bottom;
-            return;
-        }
     }
     slices.push(ImageSlice { y, top, bottom });
 }
@@ -143,7 +136,12 @@ impl Command {
                 b'v' => cmd.height = number(val)?,
                 b'c' => cmd.cols = number(val)?,
                 b'r' => cmd.rows = number(val)?,
-                b'i' => cmd.id = number(val)?,
+                b'i' => {
+                    cmd.id = number(val)?;
+                    if cmd.id == 0 {
+                        return None;
+                    }
+                }
                 b'p' => cmd.placement_id = number(val)?,
                 b'z' if number(val)? <= i32::MAX as u32 => cmd.z = number(val)?,
                 b'C' if val == b"0" || val == b"1" => cmd.no_move = val == b"1",
@@ -385,30 +383,22 @@ impl Graphics {
         }
     }
 
-    /// Move only pixels inside the scrolling region. Preserve stationary
-    /// parts above/below it, and discard pixels that scroll past its edges.
+    /// Scroll only placements wholly inside the region, as required by kitty.
+    /// Use the surviving visible bounds: clipping is permanent, so clipped
+    /// source pixels neither block later scrolling nor reappear on reversal.
     pub fn scroll(&mut self, top: usize, bottom: usize, delta: i64, cell_h: i32) {
         let ch = i64::from(cell_h);
         let (top, bottom, dy) = (top as i64 * ch, (bottom + 1) as i64 * ch, delta * ch);
         for p in &mut self.placements {
-            let old = std::mem::take(&mut p.slices);
-            let mut slices = Vec::with_capacity(old.len() + 2);
-            for part in old {
-                // The stationary parts keep their original sampling origin.
-                append_slice(&mut slices, part.y, part.top, part.bottom.min(top));
-                let lo = part.top.max(top);
-                let hi = part.bottom.min(bottom);
-                if lo < hi {
-                    append_slice(
-                        &mut slices,
-                        part.y + dy,
-                        (lo + dy).max(top),
-                        (hi + dy).min(bottom),
-                    );
-                }
-                append_slice(&mut slices, part.y, part.top.max(bottom), part.bottom);
+            if p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {
+                continue;
             }
-            p.slices = slices;
+            for part in &mut p.slices {
+                part.y += dy;
+                part.top = (part.top + dy).max(top);
+                part.bottom = (part.bottom + dy).min(bottom);
+            }
+            p.slices.retain(|s| s.top < s.bottom);
         }
         self.placements.retain(|p| !p.slices.is_empty());
     }

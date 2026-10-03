@@ -113,13 +113,13 @@ fn row_rotation_uses_logical_scroll_distance_for_images() {
         for n in [0, 1, 2, 3, 6, 7, usize::MAX] {
             let setup = || {
                 let mut s = Screen::new(5, 5, Lf::Index);
-                s.graphics.command(b"a=T,f=24,s=1,v=1,c=5,r=5,C=1;/wAA", 0, 0, s.cell_size, 5);
+                s.graphics.command(b"a=T,f=24,s=1,v=1,c=3,r=3,C=1;/wAA", 0, 1, s.cell_size, 5);
                 s
             };
             let (mut fast, mut reference) = (setup(), setup());
             fast.rotate_rows(1, 3, n, up);
-            // Once the region is exhausted, only the stationary outside
-            // portions remain. Rotating by a multiple of 3 must still clip.
+            // Exhausting the region removes the contained placement.
+            // Rotating by a multiple of 3 must still clip.
             for _ in 0..n.min(3) {
                 if up { reference.scroll_up(1, 3, 1); }
                 else { reference.scroll_down(1, 3, 1); }

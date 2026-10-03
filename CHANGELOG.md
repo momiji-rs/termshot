@@ -55,12 +55,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   writing (#43 review).
 
 - ASCII autowrap and skipped-row batching now scroll images alongside text;
-  whole-region skips discard image pixels even when row-storage rotation is
+  whole-region skips discard contained image pixels even when row-storage rotation is
   zero modulo the region height (#43 review).
 
-- Partial-region scrolling preserves image pixels outside the affected rows,
-  including images that cross either margin, insert/delete line and reverse
-  index (#43 review).
+- Kitty scrolling moves only placements wholly inside the affected region,
+  clipping them at its edges. Images crossing either margin remain stationary,
+  including insert/delete line and reverse index (#43 review).
+- Explicit kitty image ID `i=0` is rejected; omitting the ID remains valid.
 
 - U+2800 BRAILLE PATTERN BLANK, which TUIs such as btop use for empty graph
   dots, and the line and paragraph separators U+2028 and U+2029 drew as

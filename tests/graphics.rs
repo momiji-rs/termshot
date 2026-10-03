@@ -119,50 +119,65 @@ fn main() {
 // Compare the final PNG with an independent raster-row scroll oracle. The
 // initial image crosses both margins; this catches damage outside the region.
 fn scroll_regions(bin: &str) {
-    let initial = b"\x1b[2;2H\x1b_Ga=T,f=24,s=2,v=2,c=10,r=6,C=1;/wAAAP8AAAD///8A\x1b\\";
-    let (w, h, before) = render(bin, "scroll-source", initial, "24", 12, 8);
-    let ch = h / 8;
-    for (name, control, top, bottom, delta) in [
-        ("up", "\x1b[S", 2, 6, -1isize),
-        ("down", "\x1b[T", 2, 6, 1),
-        ("clear-region", "\x1b[99S", 2, 6, -4),
-        ("delete-line", "\x1b[4;1H\x1b[M", 3, 6, -1),
-        ("insert-line", "\x1b[4;1H\x1b[L", 3, 6, 1),
-        ("index", "\x1b[6;1H\x1bD", 2, 6, -1),
-        ("reverse-index", "\x1b[3;1H\x1bM", 2, 6, 1),
+    for (case, initial) in [
+        (
+            "crossing",
+            b"\x1b[2;2H\x1b_Ga=T,f=24,s=2,v=2,c=10,r=6,C=1;/wAAAP8AAAD///8A\x1b\\".as_slice(),
+        ),
+        (
+            "contained",
+            b"\x1b[4;2H\x1b_Ga=T,f=24,s=2,v=2,c=4,r=2,C=1;/wAAAP8AAAD///8A\x1b\\".as_slice(),
+        ),
     ] {
-        let mut log = initial.to_vec();
-        log.extend_from_slice(b"\x1b[3;6r");
-        log.extend_from_slice(control.as_bytes());
-        let (_, _, actual) = render(bin, &format!("scroll-{name}"), &log, "24", 12, 8);
-        let mut expected = before.clone();
-        for y in top * ch..bottom * ch {
-            let source = y as isize - delta * ch as isize;
-            for x in 0..w {
-                let at = (y * w + x) * 4;
-                if source >= (top * ch) as isize && source < (bottom * ch) as isize {
-                    let src = (source as usize * w + x) * 4;
-                    expected[at..at + 4].copy_from_slice(&before[src..src + 4]);
-                } else {
-                    expected[at..at + 4].copy_from_slice(&[BG[0], BG[1], BG[2], 255]);
+        let (w, h, before) = render(bin, "scroll-source", initial, "24", 12, 8);
+        let ch = h / 8;
+        for (name, control, top, bottom, delta) in [
+            ("up", "\x1b[S", 2, 6, -1isize),
+            ("down", "\x1b[T", 2, 6, 1),
+            ("clear-region", "\x1b[99S", 2, 6, -4),
+            ("delete-line", "\x1b[4;1H\x1b[M", 3, 6, -1),
+            ("insert-line", "\x1b[4;1H\x1b[L", 3, 6, 1),
+            ("index", "\x1b[6;1H\x1bD", 2, 6, -1),
+            ("reverse-index", "\x1b[3;1H\x1bM", 2, 6, 1),
+        ] {
+            let mut log = initial.to_vec();
+            log.extend_from_slice(b"\x1b[3;6r");
+            log.extend_from_slice(control.as_bytes());
+            let (_, _, actual) = render(bin, &format!("scroll-{case}-{name}"), &log, "24", 12, 8);
+            let mut expected = before.clone();
+            for y in top * ch..bottom * ch {
+                if case == "crossing" {
+                    continue;
+                }
+                let source = y as isize - delta * ch as isize;
+                for x in 0..w {
+                    let at = (y * w + x) * 4;
+                    if source >= (top * ch) as isize && source < (bottom * ch) as isize {
+                        let src = (source as usize * w + x) * 4;
+                        expected[at..at + 4].copy_from_slice(&before[src..src + 4]);
+                    } else {
+                        expected[at..at + 4].copy_from_slice(&[BG[0], BG[1], BG[2], 255]);
+                    }
                 }
             }
-        }
-        for (i, (got, want)) in actual
-            .chunks_exact(4)
-            .zip(expected.chunks_exact(4))
-            .enumerate()
-        {
-            assert_eq!(got, want, "scroll {name} at ({}, {})", i % w, i / w);
+            for (i, (got, want)) in actual
+                .chunks_exact(4)
+                .zip(expected.chunks_exact(4))
+                .enumerate()
+            {
+                assert_eq!(got, want, "scroll {name} at ({}, {})", i % w, i / w);
+            }
         }
     }
-    println!("ok, 7 scroll-region pixel oracles (both boundaries, both directions, IL/DL, IND/RI)");
+    println!(
+        "ok, 14 scroll-region pixel oracles (crossing/contained, both directions, IL/DL, IND/RI)"
+    );
 }
 
 fn ascii_scroll(bin: &str) {
     // Spaces have no foreground pixels, so an explicit SU command
     // is an independent rendering oracle for the equivalent autowrap scroll.
-    let image = b"\x1b[2;2H\x1b_Ga=T,f=24,s=2,v=2,c=10,r=6,C=1;/wAAAP8AAAD///8A\x1b\\";
+    let image = b"\x1b[4;2H\x1b_Ga=T,f=24,s=2,v=2,c=4,r=2,C=1;/wAAAP8AAAD///8A\x1b\\";
     for (name, count) in [
         ("one-row", 12),
         ("skip-whole-regions", 12 * 16),

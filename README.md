@@ -184,8 +184,9 @@ screen/scroll area's bottom and right edges.
 
 `a=d` deletes all placements; `d=i`/`d=I,i=...` deletes by image ID, optionally
 restricted with `p`. Retransmitting an ID replaces its image. Nonnegative `z`
-orders overlays. Images follow scrolling inside the affected region and retain their pixels outside it,
-and are cleared by full-screen erase/reset. Main and alternate screens keep
+orders overlays. Only images wholly inside a scrolling region move and clip
+at its edges; images crossing a margin stay stationary. Full-screen erase/reset
+clears images. Explicit image IDs must be nonzero; omitting `i` is valid. Main and alternate screens keep
 separate images. See [the regression evidence](docs/kitty-graphics.md).
 
 This is a subset, not full kitty emulation: Sixel, file/shared-memory transfer,

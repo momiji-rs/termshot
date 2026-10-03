@@ -342,63 +342,69 @@ fn base64_accepts_exact_payload_limit_and_rejects_one_byte_more() {
 }
 
 #[test]
-fn partial_scroll_preserves_pixels_above_and_below_both_margins() {
-    let mut g = Graphics::default();
-    g.command(
-        b"a=T,f=24,s=1,v=1,c=20,r=10,C=1,i=9,p=3;/wAA",
-        0,
-        0,
-        (10, 20),
-        10,
-    );
-    let original_pixels = g.placements[0].pixels.as_ptr();
-    g.scroll(2, 5, -1, 20);
-    assert_eq!(g.placements.len(), 1);
-    assert_eq!(
-        g.placements[0].slices,
-        [
-            ImageSlice {
-                y: 0,
-                top: 0,
-                bottom: 40
-            },
-            ImageSlice {
-                y: -20,
-                top: 40,
-                bottom: 100
-            },
-            ImageSlice {
-                y: 0,
-                top: 120,
-                bottom: 200
-            },
-        ]
-    );
-    assert_eq!(g.placements[0].pixels.as_ptr(), original_pixels);
-    // Reverse scroll leaves the removed source band absent.
-    g.scroll(2, 5, 1, 20);
-    assert_eq!(
-        g.placements[0].slices,
-        [
-            ImageSlice {
-                y: 0,
-                top: 0,
-                bottom: 40
-            },
-            ImageSlice {
-                y: 0,
-                top: 60,
-                bottom: 200
-            },
-        ]
-    );
-    // The slices still form one placement for ID-based deletion.
-    g.command(b"a=d,d=i,i=9,p=3", 0, 0, (10, 20), 10);
-    assert!(g.placements.is_empty());
+fn crossing_scroll_margins_keeps_the_whole_placement_stationary() {
+    // Cross upper, lower, or both margins, in both scroll directions.
+    for (row, rows) in [(1, 3), (4, 3), (1, 6)] {
+        for delta in [-4, -1, 1, 4] {
+            let mut g = Graphics::default();
+            g.command(
+                format!("a=T,f=24,s=1,v=1,c={},r={rows},C=1,i=9,p=3;/wAA", rows * 2).as_bytes(),
+                0,
+                row,
+                (10, 20),
+                10,
+            );
+            let before = g.placements[0].slices.clone();
+            let pixels = g.placements[0].pixels.as_ptr();
+            g.scroll(2, 5, delta, 20);
+            assert_eq!(
+                g.placements[0].slices, before,
+                "row={row} rows={rows} delta={delta}"
+            );
+            assert_eq!(g.placements[0].pixels.as_ptr(), pixels);
+            g.command(b"a=d,d=i,i=9,p=3", 0, 0, (10, 20), 10);
+            assert!(g.placements.is_empty());
+        }
+    }
 }
 
 #[test]
-fn fragmented_images_still_count_once_for_limits_and_replacement() {
+fn contained_placement_clips_at_both_margins_without_resurrection() {
+    for delta in [-1, 1] {
+        let mut g = Graphics::default();
+        g.command(b"a=T,f=24,s=1,v=1,c=8,r=4,C=1;/wAA", 0, 2, (10, 20), 10);
+        g.scroll(2, 5, delta, 20);
+        let (y, top, bottom) = if delta < 0 {
+            (20, 40, 100)
+        } else {
+            (60, 60, 120)
+        };
+        assert_eq!(g.placements[0].slices, [ImageSlice { y, top, bottom }]);
+        g.scroll(2, 5, -delta, 20);
+        let (top, bottom) = if delta < 0 { (60, 120) } else { (40, 100) };
+        assert_eq!(g.placements[0].slices, [ImageSlice { y: 40, top, bottom }]);
+        g.scroll(2, 5, delta * 4, 20);
+        assert!(g.placements.is_empty());
+    }
+}
+
+#[test]
+fn explicit_image_id_must_be_nonzero_but_omission_is_valid() {
+    for id in ["0", "000", "4294967296"] {
+        let g = replay(&red(&format!(",i={id}")));
+        assert!(g.images.is_empty(), "i={id}");
+        assert_eq!(g.cursor, Some((0, 0)));
+        assert!(g.cells.iter().all(|c| c.ch == b' ' as u32));
+    }
+    for extra in ["", ",i=1", ",i=4294967295"] {
+        let g = replay(&red(extra));
+        assert_eq!(g.images.len(), 1);
+        assert_eq!(g.cursor, Some((1, 2)));
+    }
+}
+
+#[test]
+fn stationary_images_preserve_limits_and_replacement() {
     let mut g = Graphics::default();
     for id in 1..=MAX_PLACEMENTS {
         g.command(
@@ -414,7 +420,7 @@ fn fragmented_images_still_count_once_for_limits_and_replacement() {
     assert!(g
         .placements
         .iter()
-        .all(|p| p.slices.len() == 3 && p.pixels.len() == 4));
+        .all(|p| p.slices.len() == 1 && p.pixels.len() == 4));
     g.command(b"a=T,f=24,s=1,v=1,C=1,i=1;AP8A", 0, 0, (10, 20), 10);
     assert_eq!(g.placements.len(), MAX_PLACEMENTS);
     assert_eq!(g.placements[0].pixels, [0, 255, 0, 255]);
@@ -435,7 +441,15 @@ fn repeated_partial_scrolls_match_independent_pixel_row_model() {
             let n = 1 + (seed as usize >> 24) % (bottom - top + 1);
             let delta = if seed & 1 == 0 { n as i64 } else { -(n as i64) };
             let old = expected.clone();
+            // A placement is eligible only if every surviving source row is
+            // inside the margins. Otherwise its entire raster stays fixed.
+            let contained = old.iter().enumerate().all(|(row, pixel)| {
+                pixel.is_none() || (row >= top * 20 && row < (bottom + 1) * 20)
+            });
             for row in top * 20..(bottom + 1) * 20 {
+                if !contained {
+                    continue;
+                }
                 let source = row as i64 - delta * 20;
                 expected[row] =
                     if source >= (top * 20) as i64 && source < ((bottom + 1) * 20) as i64 {
@@ -447,8 +461,8 @@ fn repeated_partial_scrolls_match_independent_pixel_row_model() {
             g.scroll(top, bottom, delta, 20);
             let mut actual = vec![None; 200];
             for p in &g.placements {
-                // Every slice is nonempty and adjacent equal mappings coalesce.
-                assert!(p.slices.len() <= 10);
+                // A placement remains one contiguous visible rectangle.
+                assert_eq!(p.slices.len(), 1);
                 for pair in p.slices.windows(2) {
                     assert!(pair[0].bottom <= pair[1].top);
                     assert!(pair[0].bottom != pair[1].top || pair[0].y != pair[1].y);
