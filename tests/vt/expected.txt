@@ -762,3 +762,15 @@ x
 
 
 cursor 1,0
+== shape-param-after-intermediate
+ab
+
+
+
+cursor 2,0 underline
+== shape-semicolon-after-intermediate
+ab
+
+
+
+cursor 2,0 bar

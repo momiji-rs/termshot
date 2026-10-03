@@ -141,3 +141,5 @@ shape-alt-exit	10x4	\033[?1049h\033[5 qx\033[?1049l
 shape-hidden	10x4	\033[5 q\033[?25lab
 shape-shown-again	10x4	\033[5 q\033[?25lab\033[?25h
 shape-ris	10x4	\033[5 qab\033cx
+shape-param-after-intermediate	10x4	\033[4 q\033[0 6qab
+shape-semicolon-after-intermediate	10x4	\033[5 q\033[ ;2qab

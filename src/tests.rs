@@ -372,6 +372,10 @@ fn decscusr_sets_the_cursor_shape() {
     for log in ["\x1b[5 q\x1b[7 q", "\x1b[5 q\x1b[99999 q", "\x1b[5 q\x1b[?2 q", "\x1b[5 q\x1b[2 !q", "\x1b[5 q\x1b[2 p"] {
         assert_eq!(shape(log), CursorShape::Bar, "{log:?}");
     }
+    // Parameter bytes after the intermediate make the sequence malformed.
+    for log in ["\x1b[5 q\x1b[0 2q", "\x1b[5 q\x1b[ ;2q", "\x1b[5 q\x1b[ ?2q", "\x1b[5 q\x1b[ 2q"] {
+        assert_eq!(shape(log), CursorShape::Bar, "{log:?}");
+    }
     // Only the first parameter counts; RIS resets it, DECSTR keeps it.
     assert_eq!(shape("\x1b[5;2 q"), CursorShape::Bar);
     assert_eq!(shape("\x1b[5 q\x1bc"), CursorShape::Block);

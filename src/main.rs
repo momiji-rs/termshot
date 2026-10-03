@@ -1337,6 +1337,8 @@ fn csi(screen: &mut Screen, params: &mut Params, data: &[u8], mut i: usize) -> u
     while i < data.len() {
         let c = data[i];
         match c {
+            // Parameter bytes come before intermediates, never after.
+            0x30..=0x3f if intermediate.is_some() => malformed = true,
             b'0'..=b'9' => {
                 // A u32 times ten plus a digit fits in u64; one clamp preserves
                 // saturating arithmetic without two overflow checks per digit.
