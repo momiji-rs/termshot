@@ -20,10 +20,11 @@ const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 const HEADER: &str = "# sha256 of decoded RGBA pixels, size, log, px. Rewrite with ./test.sh --update-goldens";
 const CJK: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
 const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
-// (log, px, cols, rows, font options). A log is examples/<log>.pty or
-// tests/fixtures/<log>.pty; with no font options it is drawn with FONT.
+// (log, px, cols, rows, font options). A log is examples/<log>.pty,
+// tests/fixtures/<log>.pty, or an asciinema recording tests/fixtures/<log>.cast;
+// with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 47] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 49] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -80,6 +81,10 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 47] = [
     ("sixel-hand", "24", 20, 8, &[]),
     ("sixel-magick", "24", 40, 4, &[]),
     ("sixel-magick-dither", "24", 40, 5, &[]),
+    // asciicast v2 and v3: the output of tests/fixtures/asciicast.pty in
+    // events, so the same pixels (test.sh compares them with the raw log).
+    ("asciicast-v2", "24", 24, 6, &[]),
+    ("asciicast-v3", "24", 24, 6, &[]),
 ];
 
 extern "C" {
@@ -164,10 +169,8 @@ const GRID_FORMATS: [(&str, &str); 2] = [("--text", "txt"), ("--json", "json")];
 fn render(log: &str, px: &str, cols: u32, rows: u32, fonts: &[&str]) -> Result<(String, Vec<String>), String> {
     let png = format!("{OUT}/{log}-{px}.png");
     let grids = GRID_FORMATS.map(|(_, ext)| format!("{OUT}/{log}-{px}.{ext}"));
-    let mut src = format!("examples/{log}.pty");
-    if fs::metadata(&src).is_err() {
-        src = format!("tests/fixtures/{log}.pty");
-    }
+    let candidates = [format!("examples/{log}.pty"), format!("tests/fixtures/{log}.pty"), format!("tests/fixtures/{log}.cast")];
+    let src = candidates.iter().find(|path| fs::metadata(path).is_ok()).unwrap_or(&candidates[1]).clone();
     let mut command = Command::new("./termshot");
     command.args(["--text", &grids[0], "--json", &grids[1]]);
     if fonts.is_empty() {

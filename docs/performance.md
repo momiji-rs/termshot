@@ -244,7 +244,7 @@ children**, and siblings at one level do not overlap.
 
 - `total_ms`: from the start of `main` to the last record, excluding process
   start-up, Rust's final teardown and the record itself.
-  - `input_read_ms`: reading the log.
+  - `input_read_ms`: reading the log, and for a `.cast`, decoding its events.
   - `font_load_ms`: deciding which fonts are needed and loading them. Each font
     (`font_*` for the built-in or `--font` font, `fallback_*` for `--fallback-font`)
     has the same four boundaries, in this order:
