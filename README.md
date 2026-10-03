@@ -139,7 +139,7 @@ that look alike, with the column each starts at (a wide character takes two):
 ]}
 ```
 
-`cursor` is null when the log hides it. `bold`, `underline`, `double_underline` and `strike`
+`cursor` is null when the log hides it. `bold`, `italic`, `underline`, `double_underline` and `strike`
 appear only when set. Blank cells that end a row are left out unless their background or a line
 shows. Colours are as drawn: reverse video and dim are already applied, and concealed text has
 `fg` equal to `bg`.

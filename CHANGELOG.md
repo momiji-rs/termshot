@@ -35,6 +35,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `{"col","row"}` or null. Like `--text`, it needs no PNG and no font.
   `tests/grids/` holds it for every golden fixture, and
   `tests/grids/check.py` checks that it parses and agrees with `--text`.
+- Italic (SGR 3, cleared by 23) is kept, and `--json` reports it as
+  `"italic": true` (#26).
 
 ### Changed
 
