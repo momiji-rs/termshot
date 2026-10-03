@@ -22,6 +22,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the same with the flag as without.
 - A hint on stderr when a log has line feeds but no CR and `--lf-newline`
   is not given. The image is still written and the exit status is 0.
+- A warning on stderr when a character is drawn as a box because a font maps
+  it to an empty glyph, as color bitmap fonts such as Apple Color Emoji do
+  (#38). It names the first such cell, the font (and whether it is a color
+  bitmap font), and what to pass instead. The image is still written and the
+  exit status is 0. A character no font has at all is drawn as a box
+  silently, as before.
 - The cursor is drawn where the log leaves it, as a block in reverse video
   (#33). On a wide character it covers both cells. With a wrap pending it
   stays on the last column, as terminals draw it.
@@ -64,6 +70,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A font with no `glyf` table is refused for what it has instead (#38). A
+  color bitmap font such as Noto Color Emoji (`CBDT` or `sbix`, no outlines)
+  is named as one, with a pointer to an outline font such as Noto Emoji,
+  instead of being called a CFF font.
 - Output collision checks follow dangling symlinks and compare existing file
   identities, rejecting hard-link aliases of outputs, logs or fonts before
   writing (#43 review).

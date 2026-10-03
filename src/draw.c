@@ -59,13 +59,14 @@ _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 
 /* Bounded per-render cache. Bold and colors reuse the same coverage bitmap.
    1024 slots avoid thrashing on mixed Unicode screens (800 distinct codepoints
-   in the benchmark), while keeping metadata to 48 KiB on 64-bit builds. */
+   in the benchmark), while keeping metadata to 56 KiB on 64-bit builds. */
 typedef struct {
     uint32_t cp;
     /* wide and italic are part of the key: a wide glyph is centered over two
        cells, an italic one is slanted. shift moves the glyph right within its
-       cell (or cells); missing means neither font has it. */
-    int valid, wide, italic, missing, shift, ix0, iy0, w, h;
+       cell (or cells); missing means neither font has it, and empty which
+       fonts (EMPTY_IN_*) map it to an empty glyph. */
+    int valid, wide, italic, missing, empty, shift, ix0, iy0, w, h;
     unsigned char *bitmap;
 } Glyph;
 #define GLYPH_CACHE_SIZE 1024
@@ -586,6 +587,18 @@ typedef struct {
     int64_t x, y, w, h, clip_top, clip_bottom;
 } ImageView;
 
+/* The cells drawn as a box because a font maps the character to an empty
+   glyph, as color bitmap fonts do: how many, and the first one, its
+   character, and which fonts did. The caller says so; draw.c stays quiet.
+   As EmptyGlyphs in src/main.rs. */
+#define EMPTY_IN_FONT 1
+#define EMPTY_IN_FALLBACK 2
+typedef struct {
+    uint32_t cp, fonts;
+    int32_t col, row;
+    size_t cells;
+} EmptyGlyphs;
+
 /* Rust validates dimensions and owns each RGBA buffer. Clip before looping,
    and use integer nearest-neighbor sampling for reproducible screenshots. */
 static void paint_images(Canvas *cv, const ImageView *images, size_t count) {
@@ -619,12 +632,14 @@ static void paint_images(Canvas *cv, const ImageView *images, size_t count) {
    and fallback_start, checked the same way, or NULL, supply the characters
    ttf lacks; characters neither has are drawn as an outlined box. The canvas and cache are local; timing hooks use
    thread-local state so concurrent renders remain independent.
-   verbose prints the cell and image size to stderr.
+   verbose prints the cell and image size to stderr. empty, if not NULL,
+   is filled in as EmptyGlyphs says.
    Returns 0; 1 for an unusable font; 2 when the image is too large or memory
    runs out; 3 when the PNG cannot be written. */
 int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *ttf, int ttf_start,
              const unsigned char *fallback_ttf, int fallback_start, double font_px, const char *out_path,
-             int verbose, const ImageView *images, size_t image_count) {
+             int verbose, const ImageView *images, size_t image_count, EmptyGlyphs *empty) {
+    if (empty) *empty = (EmptyGlyphs){0};
     profiling = getenv("TERMSHOT_PROFILE") != NULL;
     termshot_deflate_profile.enabled = profiling;
     double started = now_ms();
@@ -717,15 +732,22 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
                    CBDT) map characters to empty glyphs and draw them from
                    bitmaps, which stb_truetype cannot. */
                 int blank = is_blank(cp);
-                int glyph = stbtt_FindGlyphIndex(&font, (int)cp);
-                if (glyph != 0 && !blank && stbtt_IsGlyphEmpty(&font, glyph)) glyph = 0;
+                int glyph = stbtt_FindGlyphIndex(&font, (int)cp), hollow = 0;
+                if (glyph != 0 && !blank && stbtt_IsGlyphEmpty(&font, glyph)) {
+                    glyph = 0;
+                    hollow = EMPTY_IN_FONT;
+                }
                 if (glyph == 0 && fallback_ttf) {
                     face = &fallback;
                     s = fallback_scale;
                     glyph = stbtt_FindGlyphIndex(&fallback, (int)cp);
-                    if (glyph != 0 && !blank && stbtt_IsGlyphEmpty(&fallback, glyph)) glyph = 0;
+                    if (glyph != 0 && !blank && stbtt_IsGlyphEmpty(&fallback, glyph)) {
+                        glyph = 0;
+                        hollow |= EMPTY_IN_FALLBACK;
+                    }
                 }
                 entry->missing = glyph == 0;
+                entry->empty = hollow;
                 if (glyph != 0) {
                     /* The primary font's narrow glyphs sit where the font puts
                        them. Wide and fallback glyphs are centered, and a
@@ -774,6 +796,9 @@ int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *
             glyph_ms += now_ms() - tick;
             tick = now_ms();
             if (entry->missing && !is_blank(cp)) {
+                if (entry->empty && empty && empty->cells++ == 0) {
+                    *empty = (EmptyGlyphs){.cp = cp, .fonts = (uint32_t)entry->empty, .col = c, .row = r, .cells = 1};
+                }
                 paint_tofu(cv, c * cell_w, r * cell_h, span, cell_w, cell_h, cell->fr, cell->fg, cell->fb);
                 blend_ms += now_ms() - tick;
                 continue;
@@ -856,5 +881,5 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, in
              const unsigned char *fallback_ttf, int fallback_start, double font_px, const char *out_path,
              int verbose) {
     return draw_png_images(cells, cols, rows, ttf, ttf_start, fallback_ttf, fallback_start, font_px, out_path,
-                           verbose, NULL, 0);
+                           verbose, NULL, 0, NULL);
 }

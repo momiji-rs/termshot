@@ -161,7 +161,9 @@ shows. Colours are as drawn: reverse video and dim are already applied, and conc
 | `-h`, `--help`, `-V`, `--version` | |
 
 It prints nothing on success, except a hint on stderr when the log has line feeds but no CR,
-which means it was probably not captured through a PTY and needs `--lf-newline`. Exit status is 0 when done; 1 when a file can't be read or written,
+which means it was probably not captured through a PTY and needs `--lf-newline`, and a warning
+when a font maps a character to an empty glyph, so it was drawn as a box. The warning names the
+first such cell, the font, and what to pass instead. Exit status is 0 when done; 1 when a file can't be read or written,
 or the font is unusable; and 2 for bad arguments, including an image over 2^27 pixels. termshot
 won't write a PNG to a terminal, and only one output can be `-`. A failed run removes the output
 files it created.
@@ -170,7 +172,7 @@ The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, sti
 
 `M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces, the line and paragraph separators, and the blank Braille pattern U+2800. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both (on a one-column screen, where no row can hold two, they take the one cell); a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é) and is otherwise dropped. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
 
-The font must be TrueType, meaning it has `glyf` outlines; CFF-based `.otf` fonts are rejected. Color emoji fonts are bitmaps, not outlines, so emoji need a monochrome outline font such as Noto Emoji. A glyph with no outline counts as missing, so the emoji of a color font that has `glyf` (Apple Color Emoji) go on to `--fallback-font` or are drawn as boxes rather than left blank. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`). A damaged or hostile font is refused with a reason, and the run exits 1.
+The font must be TrueType, meaning it has `glyf` outlines; CFF-based `.otf` fonts are rejected. Color emoji fonts are bitmaps, not outlines, so emoji need a monochrome outline font such as Noto Emoji. A glyph with no outline counts as missing, so the emoji of a color font that has `glyf` (Apple Color Emoji) go on to `--fallback-font` or are drawn as boxes rather than left blank, with a warning. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`). A damaged or hostile font is refused with a reason, and the run exits 1.
 
 A font collection (`.ttc`) holds several faces, often one per script or region, and termshot
 draws with one. Pick it after a `#`: `FILE#3` by number, counting from 0 as

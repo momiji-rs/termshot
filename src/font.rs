@@ -350,7 +350,7 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
         }
     }
     if table(d, start, b"glyf")?.is_none() {
-        return Err("no glyf table; CFF (PostScript) outlines are not supported".into());
+        return Err(no_outlines(d, start)?);
     }
     let cmap = required(d, start, b"cmap")?;
     let head = required(d, start, b"head")?;
@@ -397,6 +397,35 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
     }
     check_composite_depth(&components)?;
     check_cmap(cmap, glyph_count)
+}
+
+/// Why a font without glyf can't be drawn, from the tables it has instead.
+fn no_outlines(d: &[u8], start: usize) -> Result<String, String> {
+    for tag in [b"CFF ", b"CFF2"] {
+        if table(d, start, tag)?.is_some() {
+            return Ok("no glyf table; CFF (PostScript) outlines are not supported".into());
+        }
+    }
+    if let Some(tag) = color_bitmap_at(d, start)? {
+        return Ok(format!("a color bitmap font ({tag}) with no outlines; use a monochrome outline font, such as Noto Emoji"));
+    }
+    Ok("no glyf table".into())
+}
+
+fn color_bitmap_at(d: &[u8], start: usize) -> Result<Option<&'static str>, String> {
+    for tag in ["CBDT", "CBLC", "sbix"] {
+        if table(d, start, tag.as_bytes().try_into().unwrap())?.is_some() {
+            return Ok(Some(tag));
+        }
+    }
+    Ok(None)
+}
+
+/// The color bitmap table of a checked face, if it has one: such a face
+/// draws its color glyphs from bitmaps stb_truetype can't read, and maps
+/// those characters to empty outlines.
+pub fn color_bitmap(font: &Font) -> Option<&'static str> {
+    color_bitmap_at(&font.data, font.start).ok()?
 }
 
 /// Check one glyph's outline the way stbtt__GetGlyphShapeTT reads it, and
