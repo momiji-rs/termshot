@@ -16,7 +16,8 @@
    - Buckets are fixed arrays of positions instead of per-bucket stretchy
      buffers; stb caps a bucket at 2*quality entries anyway.
    - Length/distance indexes are calculated directly and each token is emitted
-     in one operation. Independent Adler-32 reductions permit vectorization.
+     in one operation.
+   - Adler-32 keeps per-lane sums and applies the weights once per block.
    - Allocation failures return NULL, as stb's
      hash-table failure does, instead of asserting. */
 
@@ -169,23 +170,66 @@ static int countm(const unsigned char *a, const unsigned char *b, int limit) {
     return i;
 }
 
+/* Adler-32 in 16 lanes. Within a block of n 16-byte chunks, byte k of chunk c
+   is added to s2 (16 * (n - 1 - c) + 16 - k) times, so it is enough to keep,
+   per lane k, the byte sum a[k] and the sum of earlier byte sums p[k] (p += a
+   before each a += chunk): s2 += 16n * s1 + 16 * sum(p) + sum((16 - k) * a[k]).
+   The inner loop is then only widening adds, with no multiply, which plain
+   SSE2 and NEON both do well. A block of 5552 bytes (347 chunks) is the
+   largest whose sums cannot overflow 32 bits before the modulo, as in zlib.
+
+   GCC vectorizes the plain C loop at -O2; clang leaves it scalar, so clang
+   gets the same arithmetic in its generic vector types. Both give the value
+   of the scalar definition, which tests/deflate_diff.c checks against stb;
+   TERMSHOT_PORTABLE_ADLER forces the plain loop so it is tested on clang too. */
+#define ADLER_BLOCK 5552
+#if defined(__clang__) && defined(__has_builtin) && !defined(TERMSHOT_PORTABLE_ADLER)
+#if __has_builtin(__builtin_convertvector)
+#define ADLER_VECTOR 1
+#endif
+#endif
+
+#ifdef ADLER_VECTOR
+typedef unsigned char AdlerBytes __attribute__((vector_size(16)));
+typedef uint32_t AdlerLanes __attribute__((vector_size(64)));
+#endif
+
 static uint32_t adler32(const unsigned char *d, size_t len) {
     uint32_t s1 = 1, s2 = 0;
     while (len) {
-        size_t block = len < 5552 ? len : 5552; /* largest n with no 32-bit overflow */
+        size_t block = len < ADLER_BLOCK ? len : ADLER_BLOCK;
+        size_t chunks = block / 16;
         len -= block;
-        /* Independent reductions let the compiler vectorize the weighted
-           checksum; expanding s2's recurrence gives 32*s1 + sum((32-k)*d[k]). */
-        while (block >= 32) {
-            uint32_t sum = 0, weighted = 0;
-            for (unsigned k = 0; k < 32; k++) {
-                sum += d[k];
-                weighted += (32 - k) * d[k];
+        if (chunks) {
+#ifdef ADLER_VECTOR
+            AdlerLanes a = {0}, p = {0};
+            for (size_t c = 0; c < chunks; c++) {
+                AdlerBytes x;
+                memcpy(&x, d, 16);
+                p += a;
+                a += __builtin_convertvector(x, AdlerLanes);
+                d += 16;
             }
-            s2 += 32 * s1 + weighted;
+#else
+            uint32_t a[16] = {0}, p[16] = {0};
+            for (size_t c = 0; c < chunks; c++) {
+                for (unsigned k = 0; k < 16; k++) {
+                    p[k] += a[k];
+                    a[k] += d[k];
+                }
+                d += 16;
+            }
+#endif
+            uint32_t sum = 0, prefix = 0, weighted = 0;
+            for (unsigned k = 0; k < 16; k++) {
+                sum += a[k];
+                prefix += p[k];
+                weighted += (16 - k) * a[k];
+            }
+            /* No sum here exceeds the s2 the scalar loop would reach. */
+            s2 += (uint32_t)(chunks * 16) * s1 + 16 * prefix + weighted;
             s1 += sum;
-            d += 32;
-            block -= 32;
+            block -= chunks * 16;
         }
         while (block--) {
             s1 += *d++;
