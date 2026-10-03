@@ -330,3 +330,20 @@ fn draw_png_draws_marks_over_their_cells() {
     }
     assert!(draw("q\u{e31} x", Some(&fallback), "fallback") != draw("q x", Some(&fallback), "fallback-plain"));
 }
+
+/// The Hangul fillers are default ignorable, as joiners are, and draw
+/// nothing either, though they take cells of their own (U+3164 two).
+#[test]
+fn draw_png_draws_nothing_for_a_hangul_filler() {
+    let font = load(FONT);
+    let draw = |log: &str, name: &str| {
+        let cells = parse(log.as_bytes(), 5, 1);
+        let out = format!("target/test/draw-filler-{name}.png");
+        assert_eq!(render(&cells, 5, 1, &font, 24.0, &out), 0);
+        fs::read(out).unwrap()
+    };
+    let plain = draw("q   x", "plain");
+    for (log, name) in [("q\u{3164} x", "3164"), ("q\u{115f} x", "115f"), ("q\u{ffa0}  x", "ffa0")] {
+        assert!(draw(log, name) == plain, "U+{name}");
+    }
+}

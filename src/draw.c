@@ -915,7 +915,8 @@ static Glyph *find_glyph(Glyphs *g, uint32_t cp, int wide, int italic, int mark,
 
 /* Default_Ignorable_Code_Point, past U+00AD: joiners, direction marks,
    variation selectors, fillers and tags, which draw nothing even when a font
-   has a glyph for them. */
+   has a glyph for them. Most are zero width, and so marks; the Hangul fillers
+   U+115F, U+3164 and U+FFA0 take cells of their own. */
 static int is_ignorable(uint32_t cp) {
     return cp == 0x034f || cp == 0x061c || (cp >= 0x115f && cp <= 0x1160) || (cp >= 0x17b4 && cp <= 0x17b5) ||
            (cp >= 0x180b && cp <= 0x180f) || (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) ||
@@ -1058,7 +1059,8 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                marks: its cells, unless a glyph says otherwise. */
             int base_x = c * cell_w;
             float base_advance = (float)span;
-            if (cp != 0 && cp != ' ') {
+            /* A Hangul filler draws nothing, though its marks still do. */
+            if (cp != 0 && cp != ' ' && !is_ignorable(cp)) {
                 double tick = now_ms();
                 int geometry = paint_geometry(cv, c, r, cell_w, cell_h, cp, cell->attrs & ATTR_BOLD, cell->fr, cell->fg, cell->fb);
                 geometry_ms += now_ms() - tick;

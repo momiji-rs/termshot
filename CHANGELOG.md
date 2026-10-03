@@ -149,7 +149,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   line is edited or scrolled; one whose character was erased or overwritten
   is dropped. REP repeats a character with its marks. Emoji sequences (ZWJ,
   skin tones, VS16) are kept in the text but still drawn one code point per
-  cell.
+  cell. Joiners, variation selectors and the Hangul fillers (U+115F, U+3164,
+  U+FFA0) draw nothing; a filler used to be drawn as a box.
 
 ### Changed
 
