@@ -151,7 +151,7 @@ than 500×200 needs `--size` (exit 2). Timing is not used, so the replay doesn't
 The JSON is read strictly: UTF-8, with every escape including `\uXXXX` surrogate pairs, no
 duplicate keys, and nesting at most 16 deep. A lone surrogate, invalid UTF-8, a truncated line,
 a wrong type, a size that is not a whole number, or a negative or infinite time is refused
-with its line and column (exit 1), as for an unusable font. For a raw log, the size isn't
+with its line, and for bad JSON or UTF-8 its column (exit 1), as for an unusable font. For a raw log, the size isn't
 guessed from where the cursor went; give it with `--size`.
 
 To check what a screen shows rather than how it looks (in a test, or as an agent), write it as

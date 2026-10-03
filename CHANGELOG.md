@@ -13,7 +13,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or its last resize event's. A first line that is a JSON object with a
   `"version"` member marks a cast, and `--cast` reads one whatever it starts
   with. The JSON is read strictly; a malformed cast is refused with its line
-  and column (exit 1), and one larger than 500x200 needs `--size` (exit 2).
+  (exit 1), and one larger than 500x200 needs `--size` (exit 2).
 
 - Replay kitty inline graphics (`a=T,t=d`) in RGB, RGBA and PNG formats,
   including chunked uploads, alpha blending, cell-sized placements, native
