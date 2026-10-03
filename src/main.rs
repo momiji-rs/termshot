@@ -1232,6 +1232,35 @@ impl Params {
     }
 }
 
+/// Where the run of printable ASCII (0x20..=0x7e) from i ends. Most runs
+/// are short, so the first 16 bytes go one at a time; then eight at a time
+/// while they all are printable (#21), and the rest one at a time again.
+fn printable_end(data: &[u8], mut i: usize) -> usize {
+    const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+    const HIGH: u64 = u64::from_ne_bytes([0x80; 8]);
+    let short = data.len().min(i + 16);
+    while i < short {
+        if !(0x20..0x7f).contains(&data[i]) {
+            return i;
+        }
+        i += 1;
+    }
+    while let Some(chunk) = data.get(i..i + 8) {
+        let w = u64::from_ne_bytes(chunk.try_into().unwrap());
+        // A byte below 0x20, one with its high bit set, or 0x7f; the
+        // first and third are the bit trick for "has a byte below n".
+        let del = w ^ (ONES * 0x7f);
+        if (w.wrapping_sub(ONES * 0x20) & !w | w | del.wrapping_sub(ONES) & !del) & HIGH != 0 {
+            break;
+        }
+        i += 8;
+    }
+    while i < data.len() && (0x20..0x7f).contains(&data[i]) {
+        i += 1;
+    }
+    i
+}
+
 /// Skip a string sequence (OSC, DCS, APC, PM, SOS) starting at i, returning
 /// where parsing resumes. It ends at BEL or ST (ESC \). Any other ESC aborts
 /// it and starts the next sequence; CAN and SUB abort it.
@@ -1310,9 +1339,7 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
         let b = data[i];
         if (0x20..0x7f).contains(&b) {
             let start = i;
-            while i < data.len() && (0x20..0x7f).contains(&data[i]) {
-                i += 1;
-            }
+            i = printable_end(data, i + 1);
             screen.print_ascii(&data[start..i]);
             continue;
         }

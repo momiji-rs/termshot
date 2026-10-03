@@ -529,6 +529,27 @@ fn truncated_sequences_do_not_panic() {
 }
 
 #[test]
+fn printable_runs_end_at_the_first_other_byte() {
+    // Every byte value at every offset of a run long enough for the
+    // eight-byte steps, from every start.
+    let naive = |data: &[u8], mut i: usize| {
+        while i < data.len() && (0x20..0x7f).contains(&data[i]) {
+            i += 1;
+        }
+        i
+    };
+    for at in 0..40 {
+        for byte in 0..=255u8 {
+            let mut data = vec![b'x'; 40];
+            data[at] = byte;
+            for start in 0..data.len() {
+                assert_eq!(printable_end(&data, start), naive(&data, start), "byte {byte:#x} at {at}, from {start}");
+            }
+        }
+    }
+}
+
+#[test]
 fn pseudorandom_input_does_not_panic() {
     let pick = [
         0x1b, b'[', b']', b';', b':', b'0', b'2', b'5', b'9', b'3', b'8', b'H', b'A', b'B', b'C', b'D', b'K',
