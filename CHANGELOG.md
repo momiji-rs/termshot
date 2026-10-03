@@ -154,6 +154,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and Ryzen 7 8745HS, `22b77e8`) with its workloads, fonts, image sizes and
   statistic, links the versioned report, and keeps the 2026-10-01 Apple M3
   rounds and the "~20 ms" figure apart as history (#23).
+- PNG compression is faster and writes the same bytes (#20). Adler-32 no
+  longer needs a 32-bit vector multiply, which baseline x86-64 lacks, and
+  the match loop inlines its per-token helpers and reverses Huffman codes
+  by table, which helps GCC builds. On a Ryzen 7 8745HS a 2200×1440 render
+  takes 7.9 ms instead of 9.9 and a 5800×3840 one 27.6 instead of 40.5; on
+  an Apple M2 Max up to 9% less, most at high resolution.
+  `docs/performance.md` has the measurements.
 
 ### Fixed
 

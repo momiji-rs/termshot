@@ -92,6 +92,28 @@ int main(int argc, char **argv) {
         free(want);
         free(got);
     }
+    /* Adler-32 worst case: all 0xff makes every sum as large as it can be,
+       at lengths around its 16-byte lanes and 5552-byte blocks, from
+       unaligned starts. */
+    static const int adler_lens[] = {15, 16, 17, 31, 32, 33, 5551, 5552, 5553, 5568,
+                                     11103, 11104, 11105, 65536, 199000};
+    for (size_t l = 0; l < sizeof adler_lens / sizeof adler_lens[0]; l++) {
+        for (int offset = 0; offset < 4; offset++) {
+            int len = adler_lens[l] - offset;
+            memset(buf, 0xff, 200000);
+            int stb_len = 0, our_len = 0;
+            unsigned char *want = stbi_zlib_compress(buf + offset, len, &stb_len, 8);
+            unsigned char *got = termshot_zlib_compress(buf + offset, len, &our_len, 8);
+            if (!want || !got || stb_len != our_len || memcmp(want, got, (size_t)our_len) != 0) {
+                fprintf(stderr, "all-0xff: len %d offset %d: stb %d bytes, ours %d bytes\n",
+                        len, offset, stb_len, our_len);
+                fails++;
+            }
+            free(want);
+            free(got);
+            cases++;
+        }
+    }
     free(buf);
     if (fails) {
         printf("FAIL %d of %d cases differ from stb\n", fails, cases);
