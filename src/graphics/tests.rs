@@ -488,14 +488,41 @@ fn repeated_partial_scrolls_match_independent_pixel_row_model() {
 }
 
 #[test]
+fn a_numbered_image_id_stays_within_the_preflight_bound() {
+    // needs_cell_metrics assumes a numbered image's id is at most the count of
+    // named transmissions so far, whatever deletes came between.
+    let mut g = Graphics::default();
+    let mut named = 0;
+    let mut seed = 1u32;
+    for _ in 0..300 {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        let pick = (seed >> 16) % 8 + 1;
+        let cmd = match seed % 4 {
+            0 => format!("a=t,i={pick},{PIXEL}"),
+            1 => format!("a=t,I={pick},{PIXEL}"),
+            2 => format!("a=d,d=I,i={pick}"),
+            _ => format!("a=d,d=N,I={pick}"),
+        };
+        run(&mut g, (0, 0), &cmd);
+        if seed % 4 < 2 {
+            named += 1;
+        }
+        if seed % 4 == 1 {
+            let newest = g.images.iter().filter(|img| img.number == pick).max_by_key(|img| img.key).unwrap();
+            assert!(newest.id <= named, "{cmd}: id {} over {named}", newest.id);
+        }
+    }
+}
+
+#[test]
 fn font_metrics_are_needed_only_for_potential_cursor_movement() {
     assert!(needs_cell_metrics(&red("")));
     assert!(!needs_cell_metrics(&red(",C=1")));
     assert!(needs_cell_metrics(b"\x1b_Ga=T,f=24,s=2,v=1,m=1;/wAA\x1b\\"));
     let by_id = "\x1b_Ga=t,i=1,f=24,s=1,v=1;/wAA\x1b\\";
-    let by_number = "\x1b_Ga=t,I=7,f=24,s=1,v=1;/wAA\x1b\\";
-    // A numbered image gets the lowest free id, which the scan does not know,
-    // so after one any put by id counts.
+    let by_number = "\x1b_Ga=t,i=3,f=24,s=1,v=1;/wAA\x1b\\\x1b_Ga=t,I=7,f=24,s=1,v=1;/wAA\x1b\\";
+    // A numbered image gets the lowest free id, which the scan does not know
+    // but bounds by the named transmissions so far: here, at most 2.
     for (stored, put, needed) in [
         (by_id, "i=1", true),
         (by_id, "i=1,C=1", false),
@@ -504,8 +531,12 @@ fn font_metrics_are_needed_only_for_potential_cursor_movement() {
         (by_number, "I=7", true),
         (by_number, "I=7,C=1", false),
         (by_number, "I=4", false),
-        (by_number, "i=4", true),
-        (by_number, "i=4,C=1", false),
+        (by_number, "i=1", true),
+        (by_number, "i=2", true),
+        (by_number, "i=3", true),
+        (by_number, "i=4", false),
+        (by_number, "i=999", false),
+        (by_number, "i=2,C=1", false),
     ] {
         assert!(!needs_cell_metrics(stored.as_bytes()));
         let put = format!("\x1b_Ga=p,{put}\x1b\\");

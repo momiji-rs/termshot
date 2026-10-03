@@ -215,11 +215,13 @@ impl Command {
 /// nor does a put of an image no earlier transmission named, which replay
 /// ignores. Any earlier transmission counts, so the answer stays conservative.
 /// A numbered image takes the lowest free id, which the scan does not track,
-/// so after one every put by id counts.
+/// but that id is at most the count of named transmissions so far, so a put
+/// by any id up to that bound counts. Payloads are not decoded here: a failed
+/// transmission counts too, which only loads fonts that were not needed.
 pub fn needs_cell_metrics(data: &[u8]) -> bool {
     // (is a number, value) for every i or I a transmission named so far.
     let mut sent = std::collections::HashSet::new();
-    let mut numbered = false;
+    let (mut named, mut free_ids) = (0u32, 0u32);
     let mut i = 0;
     while i + 1 < data.len() {
         if data[i] == 0x1b && matches!(data[i + 1], b']' | b'P' | b'_' | b'^' | b'X') {
@@ -238,11 +240,14 @@ pub fn needs_cell_metrics(data: &[u8]) -> bool {
                         b't' | b'T' => {
                             if name.1 != 0 {
                                 sent.insert(name);
+                                named = named.saturating_add(1);
                             }
-                            numbered |= c.number != 0;
+                            if c.number != 0 {
+                                free_ids = named;
+                            }
                             c.action == b'T'
                         }
-                        b'p' => sent.contains(&name) || (numbered && c.id != 0),
+                        b'p' => sent.contains(&name) || (c.id != 0 && c.id <= free_ids),
                         _ => false,
                     };
                     if moves && !c.no_move {
