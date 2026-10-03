@@ -1,0 +1,4 @@
+$ magick bars.png -colors 16 sixel:-
+
+$
+

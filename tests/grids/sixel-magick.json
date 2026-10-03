@@ -1,0 +1,6 @@
+{"cols":40,"rows":4,"cursor":{"col":2,"row":2,"shape":"block"},"lines":[
+[{"col":0,"text":"$ magick bars.png -colors 16 sixel:-","fg":"#dbe7f7","bg":"#111823"}],
+[],
+[{"col":0,"text":"$","fg":"#dbe7f7","bg":"#111823"}],
+[]
+]}

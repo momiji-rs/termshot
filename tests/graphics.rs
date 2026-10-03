@@ -124,6 +124,7 @@ fn main() {
     stored_placements(&bin);
     crops_and_offsets(&bin);
     layers(&bin);
+    sixel(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes, plain and zlib-compressed; native clipping, text layering, transparency and deletion");
 }
 
@@ -486,4 +487,75 @@ fn layers(bin: &str) {
         }
     }
     println!("ok, {checked} kitty z-index layer pixel checks: below backgrounds, under text, over text; reverse video, shades and cursors at 3 sizes");
+}
+
+// Sixel images (DCS q), pixel by pixel. Every expectation comes from the
+// sixel text itself: its colours in percent, rounded half up to 8 bits, and
+// where its bands put them.
+fn sixel(bin: &str) {
+    let mut checked = 0;
+    // Four 4x6 quadrants, RGB, as an 8x12 image at row 2, column 3.
+    let quadrants = "\x1b[2;3H\x1bPq\"1;1;8;12#1;2;100;0;0#2;2;0;100;0#3;2;0;0;100#4;2;100;100;0\
+                     #1!4~#2!4~-#3!4~#4!4~\x1b\\";
+    for px in ["9", "24", "47.5", "128"] {
+        let (w, h, pixels) = render(bin, &format!("sixel-quadrants-{px}"), quadrants.as_bytes(), px, 6, 4);
+        let (cw, ch) = (w / 6, h / 4);
+        let (left, top) = (2 * cw, ch);
+        for y in 0..h {
+            for x in 0..w {
+                let inside = (left..left + 8).contains(&x) && (top..top + 12).contains(&y);
+                let want = if inside { COLORS[(y - top) / 6 * 2 + (x - left) / 4] } else { BG };
+                assert_eq!(&pixels[(y * w + x) * 4..][..3], &want, "sixel px={px} at ({x},{y})");
+                checked += 1;
+            }
+        }
+    }
+    // HLS (DEC hues: 0 blue, 120 red, 240 green) and the VT340's default
+    // registers 11 and 7 (33/60/33 % and 53 %); P2 0 paints the rest of the
+    // declared area with register 0, black.
+    let hls = b"\x1bPq\"1;1;6;1#1;1;0;50;100@#2;1;120;50;100@#3;1;240;50;100@#11@#7@\x1b\\";
+    let (w, _, pixels) = render(bin, "sixel-hls", hls, "24", 1, 1);
+    let want: [[u8; 3]; 6] = [[0, 0, 255], [255, 0, 0], [0, 255, 0], [84, 153, 84], [135, 135, 135], [0, 0, 0]];
+    for (x, want) in want.iter().enumerate() {
+        assert_eq!(&pixels[x * 4..][..3], want, "sixel colour {x}");
+    }
+    assert_eq!(&pixels[6 * 4..][..3], &BG);
+    assert_eq!(&pixels[w * 4..][..3], &BG);
+    // A transparent (P2 1) image with nothing set leaves the text exactly.
+    let text = b"\x1b[31mAB\x1b[H";
+    let mut log = text.to_vec();
+    log.extend_from_slice(b"\x1bP0;1q\"1;1;40;40\x1b\\");
+    let (_, _, actual) = render(bin, "sixel-transparent", &log, "24", 2, 2);
+    let (_, _, plain) = render(bin, "sixel-text", text, "24", 2, 2);
+    assert_eq!(actual, plain);
+    // An image passing the bottom scrolls first, like SU before the same
+    // image two rows higher; the cursor ends on its last row either way.
+    let image = format!("\x1bP0;1q#1;2;100;0;0{}\x1b\\", ["!30~"; 12].join("-"));
+    let setup = "line 1\r\nline 2\r\nline 3\r\nline 4";
+    let scrolled = format!("{setup}\x1b[4;3H{image}X");
+    let oracle = format!("{setup}\x1b[2S\x1b[2;3H{image}X");
+    let (_, _, actual) = render(bin, "sixel-scroll", scrolled.as_bytes(), "24", 8, 4);
+    let (_, _, expected) = render(bin, "sixel-scroll-oracle", oracle.as_bytes(), "24", 8, 4);
+    assert!(actual == expected, "a Sixel image past the bottom scrolls as SU does");
+    // ImageMagick's encoding of an image whose top 11 rows are four solid
+    // bars, 10 pixels each, in the registers it defines first.
+    let log = fs::read("tests/fixtures/sixel-magick.pty").unwrap();
+    let (w, h, pixels) = render(bin, "sixel-magick", &log, "24", 40, 4);
+    let top = h / 4;
+    let bars = [[252, 0, 3], [0, 199, 0], [3, 3, 252], [252, 252, 3]];
+    for y in top..top + 11 {
+        for x in 0..40 {
+            assert_eq!(&pixels[(y * w + x) * 4..][..3], &bars[x / 10], "magick bars at ({x},{y})");
+            checked += 1;
+        }
+    }
+    // Text and JSON need the cell height too: 30 pixels at px 24 are two rows.
+    let input = "target/test/graphics-sixel-grid.pty";
+    fs::write(input, b"\x1bPq!2~-!2~-!2~-!2~-!2~\x1b\\X").unwrap();
+    let json = "target/test/graphics-sixel-grid.json";
+    let ok = Command::new(bin).args(["--size", "6x4", "--px", "24", "--json", json, input]).status().unwrap();
+    assert!(ok.success());
+    let data = fs::read_to_string(json).unwrap();
+    assert!(data.contains("\"cursor\":{\"col\":1,\"row\":1,\"shape\":\"block\"}"), "{data}");
+    println!("ok, {checked} Sixel pixel checks: RGB over 4 sizes, HLS and VT340 colours, transparency, scrolling, ImageMagick output, grid metrics");
 }
