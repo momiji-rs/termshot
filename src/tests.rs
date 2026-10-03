@@ -505,6 +505,18 @@ fn osc_and_string_sequences_are_skipped() {
     assert_eq!(line(&g, 0), "abcd      ");
 }
 
+/// A Sixel image is drawn now, but its data never reaches the text: a
+/// pixel-tall image keeps the cursor on its row and column, so `d` lands
+/// where the image is, and DCS strings that are not Sixel are skipped.
+#[test]
+fn sixel_and_other_dcs_strings_leave_no_text() {
+    let log = b"ab\x1bP0;1q\"1;1;1;1#1;2;100;0;0@\x1b\\c\x1bP+q4d73\x1b\\\x1bP$q\"p\x1b\\d";
+    let g = replay(log, C, R, Lf::Index);
+    assert_eq!(line(&g.cells, 0), "abcd      ");
+    assert_eq!(g.images.len(), 1);
+    assert_eq!(*g.images[0].pixels, [255, 0, 0, 255]);
+}
+
 #[test]
 fn truncated_sequences_do_not_panic() {
     for s in [&b"\x1b"[..], b"\x1b[", b"\x1b[12;", b"\x1b]0;t", b"\x1bPq", b"\x1b]0;\x1b"] {
@@ -575,11 +587,18 @@ fn fuzz_sizes_and_wide_characters() {
     // vowel, ZWJ, VS16, skin tone), DEC graphics letters, and plain ASCII.
     let chars = ["界", "한", "Ｗ", "😀", "\u{301}", "\u{e31}", "\u{200d}", "\u{fe0f}", "🏽", "q", "x", " ", "é"];
     let finals = b"HfABCDEFGd`a@PXKJbrLMSTIZ";
-    let modes = ["?7h", "?7l", "?6h", "?6l", "?1049h", "?1049l", "?47h", "?47l", "4h", "4l"];
+    let modes = ["?7h", "?7l", "?6h", "?6l", "?1049h", "?1049l", "?47h", "?47l", "4h", "4l", "?80h", "?80l"];
     let escapes = ["\x1b7", "\x1b8", "\x1bD", "\x1bE", "\x1bM", "\x1bc", "\x1b#8", "\x1b(0", "\x1b(B", "\x0e", "\x0f"];
     // OSC and DCS ended by BEL or ST, with a wide character inside, and one
-    // left open so what follows lands in the string.
-    let strings = ["\x1b]0;界\x07", "\x1b]8;;http://x\x1b\\", "\x1bPq界\x1b\\", "\x1b]2;"];
+    // left open so what follows lands in the string. The Sixel image is 7
+    // rows tall in parse's 1x1 cells, so it scrolls, and DECSDM (?80) moves it.
+    let strings = [
+        "\x1b]0;界\x07",
+        "\x1b]8;;http://x\x1b\\",
+        "\x1bPq界\x1b\\",
+        "\x1b]2;",
+        "\x1bPq#1;2;100;0;0!3~-~\x1b\\",
+    ];
     for round in 0..rounds {
         let (cols, rows) = match next() % 64 {
             // At or near the CLI's limits; rare, as each is 100,000 cells.

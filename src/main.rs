@@ -10,6 +10,7 @@ use std::time::Instant;
 mod cff;
 mod font;
 mod graphics;
+mod sixel;
 mod unicode;
 #[rustfmt::skip]
 mod unicode_tables;
@@ -265,6 +266,9 @@ struct Screen {
     /// DECSCUSR. One setting for both screens; DECSC does not save it and
     /// DECSTR keeps it, as in tmux. RIS resets it, as in xterm.
     cursor_shape: CursorShape,
+    /// DECSDM (mode 80): Sixel images go to the top left corner and neither
+    /// scroll nor move the cursor.
+    sixel_display: bool,
     /// Not terminal state: RIS keeps it, as a reset keeps the tty's settings.
     lf: Lf,
 }
@@ -298,6 +302,7 @@ impl Screen {
             last_at: None,
             cursor_shown: true,
             cursor_shape: CursorShape::Block,
+            sixel_display: false,
             lf,
         }
     }
@@ -480,6 +485,7 @@ impl Screen {
                 self.home();
             }
             7 => self.autowrap = on,
+            80 => self.sixel_display = on,
             25 => self.cursor_shown = on,
             47 | 1047 => self.use_alternate(on, mode == 1047 && !on),
             1048 => {
@@ -507,6 +513,37 @@ impl Screen {
             }
             _ => {}
         }
+    }
+
+    /// Place a Sixel image at the cursor, as xterm with Sixel scrolling on:
+    /// the cursor goes to the last text row the image covers, in the same
+    /// column, and the scrolling region scrolls up for an image that would
+    /// pass its bottom margin. Rows scrolled above the top margin are cut off.
+    fn sixel(&mut self, mut image: sixel::Image) {
+        if self.sixel_display {
+            self.graphics.command(&sixel::kitty_command(&image), 0, 0, self.cell_size, self.rows);
+            return;
+        }
+        let (col, mut row) = (self.col, self.row);
+        let ch = self.cell_size.1.max(1) as usize;
+        let last = row + (image.height as usize + ch - 1) / ch - 1;
+        if self.in_margins() && last > self.bottom {
+            let scroll = last - self.bottom;
+            self.scroll_up(self.top, self.bottom, scroll);
+            if scroll > row - self.top {
+                let cut = (scroll - (row - self.top)) * ch;
+                image.rgba.drain(..cut * image.width as usize * 4);
+                image.height -= cut as u32;
+                row = self.top;
+            } else {
+                row -= scroll;
+            }
+            self.row = self.bottom;
+        } else {
+            self.row = last.min(self.rows - 1);
+        }
+        self.pending = false;
+        self.graphics.command(&sixel::kitty_command(&image), col, row, self.cell_size, self.rows);
     }
 
     /// Switch to the alternate screen or back. clear_first blanks the
@@ -1094,6 +1131,8 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
     screen.cell_size = cell_size;
     // Reuse the fixed parameter buffer across sequences; only len needs resetting.
     let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
+    // One budget for the whole log: a reset does not refill it.
+    let mut sixel_budget = sixel::Budget::default();
     let mut i = 0;
     while i < data.len() {
         let b = data[i];
@@ -1128,7 +1167,17 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
                     } else { screen.graphics.abort(); }
                     i = end;
                 }
-                b']' | b'P' | b'_' | b'^' | b'X' => i = skip_string(data, i),
+                b'P' => {
+                    let end = skip_string(data, i);
+                    // As for kitty graphics, only ST commits an image.
+                    if end >= i + 2 && data.get(end - 2..end) == Some(b"\x1b\\") {
+                        if let Some(image) = sixel::decode(&data[i..end - 2], &mut sixel_budget) {
+                            screen.sixel(image);
+                        }
+                    }
+                    i = end;
+                }
+                b']' | b'_' | b'^' | b'X' => i = skip_string(data, i),
                 // ESC ( B, ESC ) 0, ESC # 8: intermediates, then one final byte.
                 0x20..=0x2f => {
                     let first = i;
@@ -1867,7 +1916,8 @@ fn main() -> ExitCode {
     let mut font_timings = [font::LoadTimings::default(); 2];
     // Plain text/JSON logs need no fonts. Graphics also need cell metrics,
     // even without a PNG, because placement can move the text cursor.
-    let needs_fonts = options.out.is_some() || graphics::needs_cell_metrics(&data);
+    let needs_fonts =
+        options.out.is_some() || graphics::needs_cell_metrics(&data) || sixel::needs_cell_metrics(&data);
     let fonts = match needs_fonts.then(|| load_fonts(&options, &mut font_timings)).transpose() {
         Ok(fonts) => fonts,
         Err(error) => return cleanup(1, error),
