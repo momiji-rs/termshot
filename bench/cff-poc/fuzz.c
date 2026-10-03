@@ -138,10 +138,12 @@ static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 1
 
 /* The CFF table of face 0 of a plain sfnt. */
 static int find_cff(const uint8_t *d, size_t len, size_t *at, size_t *size) {
-    int n = d[4] << 8 | d[5];
-    for (int i = 0; i < n; i++) {
+    if (len < 12) return 0;
+    size_t n = (size_t)(d[4] << 8 | d[5]);
+    if (12 + 16 * n > len) return 0;
+    for (size_t i = 0; i < n; i++) {
         const uint8_t *r = d + 12 + 16 * i;
-        if (memcmp(r, "CFF ", 4) == 0 && be32(r + 8) + be32(r + 12) <= len) {
+        if (memcmp(r, "CFF ", 4) == 0 && (uint64_t)be32(r + 8) + be32(r + 12) <= len) {
             *at = be32(r + 8);
             *size = be32(r + 12);
             return 1;
