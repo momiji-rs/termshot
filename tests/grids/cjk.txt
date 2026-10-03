@@ -1,0 +1,4 @@
+CFF: 骨直角 東京 台灣 測試字型
+Italic 漢字 中文 Bold 繁體
+龍鬱鑿齉 簡體 永
+Not in the font: 日本語

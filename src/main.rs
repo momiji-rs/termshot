@@ -7,11 +7,14 @@ use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
+mod cff;
 mod font;
 mod graphics;
 mod unicode;
 #[rustfmt::skip]
 mod unicode_tables;
+#[cfg(test)]
+mod cff_tests;
 #[cfg(test)]
 mod draw_tests;
 #[cfg(test)]
@@ -120,25 +123,11 @@ impl Cell {
 
 extern "C" {
     fn draw_cell_size(font: *const u8, font_start: i32, px: f64, w: *mut i32, h: *mut i32) -> i32;
-    fn draw_png_images(cells: *const Cell, cols: i32, rows: i32, font: *const u8, font_start: i32,
-        fallback: *const u8, fallback_start: i32, font_size: f64, out_path: *const std::ffi::c_char,
+    // font is a face of a font that passed font::check; fallback is another,
+    // for the characters the first lacks, or null.
+    fn draw_png_images(cells: *const Cell, cols: i32, rows: i32, font: *const font::Face,
+        fallback: *const font::Face, font_size: f64, out_path: *const std::ffi::c_char,
         verbose: i32, images: *const graphics::ImageView, count: usize) -> i32;
-    #[cfg(test)]
-    fn draw_png(
-        cells: *const Cell,
-        cols: i32,
-        rows: i32,
-        // A font that passed font::check, followed by its zero padding.
-        font: *const u8,
-        // Where its face starts: font::Font::start.
-        font_start: i32,
-        // Another such font for the characters the first lacks, or null.
-        fallback: *const u8,
-        fallback_start: i32,
-        font_size: f64,
-        out_path: *const std::ffi::c_char,
-        verbose: i32,
-    ) -> i32;
 }
 
 /// What a bare LF does.
@@ -1337,9 +1326,10 @@ Render the final screen of a terminal log (raw PTY output) as a PNG.
 Use - as <log> to read stdin, and - as an output to write stdout.
 
 options:
-  -f, --font FILE   TrueType font (default: built-in JetBrains Mono)
+  -f, --font FILE   TrueType or OpenType (CFF) font (default: built-in
+                    JetBrains Mono)
       --fallback-font FILE
-                    TrueType font for the characters the first lacks, such
+                    a font for the characters the first lacks, such
                     as CJK or emoji; others are drawn as an empty box
   -p, --px N        font pixel height, above 0 and below 256 (default 48)
   -s, --size CxR    grid size in columns x rows, up to 500x200 (default 100x30)
@@ -1775,21 +1765,27 @@ fn main() -> ExitCode {
             let Ok(out) = std::ffi::CString::new(out) else {
                 return cleanup(2, "output path contains a nul byte".into());
             };
-            unsafe {
+            let draw = |font: &font::Face, fallback: Option<&font::Face>| unsafe {
                 draw_png_images(
                     cells.as_ptr(),
                     options.cols as i32,
                     options.rows as i32,
-                    font.data.as_ptr(),
-                    font.start as i32,
-                    fallback.as_ref().map_or(std::ptr::null(), |f| f.data.as_ptr()),
-                    fallback.as_ref().map_or(0, |f| f.start as i32),
+                    font,
+                    fallback.map_or(std::ptr::null(), |f| f as *const font::Face),
                     options.px,
                     out.as_ptr(),
                     i32::from(options.verbose),
                     image_views.as_ptr(),
                     image_views.len(),
                 )
+            };
+            let drawn = font.with_face(|font| match &fallback {
+                None => Ok(draw(font, None)),
+                Some(fallback) => fallback.with_face(|fallback| draw(font, Some(fallback))),
+            });
+            match drawn.and_then(|code| code) {
+                Ok(code) => code,
+                Err(message) => return cleanup(1, message),
             }
         }
         _ => 0,

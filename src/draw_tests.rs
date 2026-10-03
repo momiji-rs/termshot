@@ -1,17 +1,17 @@
-//! Font checking and draw.c tests. These call draw_png through FFI; run them
-//! with SANITIZE=1 ./test.sh to have ASan watch stb_truetype. Paths are
-//! relative to the repo root, where test.sh runs.
+//! Font checking and draw.c tests. These call draw_png_images through FFI;
+//! run them with SANITIZE=1 ./test.sh to have ASan watch stb_truetype.
+//! Paths are relative to the repo root, where test.sh runs.
 
 use super::*;
 use std::ffi::CString;
 
-const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
+pub(crate) const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 
-fn render(cells: &[Cell], cols: usize, rows: usize, font: &font::Font, px: f64, out: &str) -> i32 {
+pub(crate) fn render(cells: &[Cell], cols: usize, rows: usize, font: &font::Font, px: f64, out: &str) -> i32 {
     render_with(cells, cols, rows, font, None, px, out)
 }
 
-fn render_with(
+pub(crate) fn render_with(
     cells: &[Cell],
     cols: usize,
     rows: usize,
@@ -21,9 +21,15 @@ fn render_with(
     out: &str,
 ) -> i32 {
     let out = CString::new(out).unwrap();
-    let (data, start) = (font.data.as_ptr(), font.start as i32);
-    let (fallback, fallback_start) = fallback.map_or((std::ptr::null(), 0), |f| (f.data.as_ptr(), f.start as i32));
-    unsafe { draw_png(cells.as_ptr(), cols as i32, rows as i32, data, start, fallback, fallback_start, px, out.as_ptr(), 0) }
+    let draw = |font: &font::Face, fallback: *const font::Face| unsafe {
+        let none = std::ptr::null();
+        draw_png_images(cells.as_ptr(), cols as i32, rows as i32, font, fallback, px, out.as_ptr(), 0, none, 0)
+    };
+    font.with_face(|font| match fallback {
+        None => draw(font, std::ptr::null()),
+        Some(fallback) => fallback.with_face(|fallback| draw(font, fallback)).unwrap(),
+    })
+    .unwrap()
 }
 
 fn load(value: &str) -> font::Font {
@@ -32,7 +38,7 @@ fn load(value: &str) -> font::Font {
 
 /// The mutation tests/fontfuzz used to find stb_truetype crashes, ported
 /// exactly so its crashing seeds reproduce here.
-fn mutate(font: &mut [u8], seed: u64) {
+pub(crate) fn mutate(font: &mut [u8], seed: u64) {
     let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ seed.wrapping_mul(0x2545_f491_4f6c_dd1d);
     let mut next = || {
         x ^= x << 13;

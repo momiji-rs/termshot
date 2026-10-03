@@ -18,37 +18,42 @@ const GRIDS: &str = "tests/grids";
 const OUT: &str = "target/test";
 const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 const HEADER: &str = "# sha256 of decoded RGBA pixels, size, log, px. Rewrite with ./test.sh --update-goldens";
-// (log, px, cols, rows). A log is examples/<log>.pty or tests/fixtures/<log>.pty.
+const CJK: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
+// (log, px, cols, rows, font options). A log is examples/<log>.pty or
+// tests/fixtures/<log>.pty; with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32); 28] = [
-    ("reply-sent", "46", 100, 30),
-    ("reply-sent", "48", 100, 30),
-    ("draft-ready", "46", 100, 30),
-    ("draft-ready", "48", 100, 30),
-    ("kitty-scroll", "24", 12, 8),
-    ("kitty-rgb", "24", 6, 4),
-    ("kitty-rgb", "47.5", 6, 4),
-    ("kitty-rgba", "24", 6, 4),
-    ("kitty-png", "24", 6, 4),
-    ("kitty-png-alpha", "24", 6, 4),
-    ("blank", "24", 20, 8),
-    ("geometry", "1", 12, 2),
-    ("geometry", "9", 12, 2),
-    ("geometry", "24", 12, 2),
-    ("geometry", "47.5", 12, 2),
-    ("geometry", "128", 12, 2),
-    ("geometry", "255", 12, 2),
-    ("clipping", "48", 5, 2),
-    ("cache-collisions", "16", 120, 4),
-    ("cache-collisions-1024", "16", 120, 4),
-    ("geometry-offsets", "47.5", 200, 40),
-    ("missing-glyphs", "16", 100, 1),
-    ("csi", "20", 20, 5),
-    ("sgr", "24", 40, 2),
-    ("italic", "24", 30, 5),
-    ("italic", "46", 30, 5),
-    ("control-strings", "24", 20, 4),
-    ("random-colors", "20", 40, 12),
+const CASES: [(&str, &str, u32, u32, &[&str]); 30] = [
+    ("reply-sent", "46", 100, 30, &[]),
+    ("reply-sent", "48", 100, 30, &[]),
+    ("draft-ready", "46", 100, 30, &[]),
+    ("draft-ready", "48", 100, 30, &[]),
+    ("kitty-scroll", "24", 12, 8, &[]),
+    ("kitty-rgb", "24", 6, 4, &[]),
+    ("kitty-rgb", "47.5", 6, 4, &[]),
+    ("kitty-rgba", "24", 6, 4, &[]),
+    ("kitty-png", "24", 6, 4, &[]),
+    ("kitty-png-alpha", "24", 6, 4, &[]),
+    ("blank", "24", 20, 8, &[]),
+    ("geometry", "1", 12, 2, &[]),
+    ("geometry", "9", 12, 2, &[]),
+    ("geometry", "24", 12, 2, &[]),
+    ("geometry", "47.5", 12, 2, &[]),
+    ("geometry", "128", 12, 2, &[]),
+    ("geometry", "255", 12, 2, &[]),
+    ("clipping", "48", 5, 2, &[]),
+    ("cache-collisions", "16", 120, 4, &[]),
+    ("cache-collisions-1024", "16", 120, 4, &[]),
+    ("geometry-offsets", "47.5", 200, 40, &[]),
+    ("missing-glyphs", "16", 100, 1, &[]),
+    ("csi", "20", 20, 5, &[]),
+    ("sgr", "24", 40, 2, &[]),
+    ("italic", "24", 30, 5, &[]),
+    ("italic", "46", 30, 5, &[]),
+    ("control-strings", "24", 20, 4, &[]),
+    ("random-colors", "20", 40, 12, &[]),
+    // CFF outlines: as the fallback for CJK, and as the only font.
+    ("cjk", "24", 40, 4, &["--fallback-font", CJK]),
+    ("cjk", "46", 40, 4, &["--font", CJK]),
 ];
 
 extern "C" {
@@ -130,16 +135,21 @@ fn sha256(data: &[u8]) -> String {
 const GRID_FORMATS: [(&str, &str); 2] = [("--text", "txt"), ("--json", "json")];
 
 /// A case's golden line, and its grid outputs in GRID_FORMATS order.
-fn render(log: &str, px: &str, cols: u32, rows: u32) -> Result<(String, Vec<String>), String> {
+fn render(log: &str, px: &str, cols: u32, rows: u32, fonts: &[&str]) -> Result<(String, Vec<String>), String> {
     let png = format!("{OUT}/{log}-{px}.png");
     let grids = GRID_FORMATS.map(|(_, ext)| format!("{OUT}/{log}-{px}.{ext}"));
     let mut src = format!("examples/{log}.pty");
     if fs::metadata(&src).is_err() {
         src = format!("tests/fixtures/{log}.pty");
     }
-    let output = Command::new("./termshot")
-        .args(["--text", &grids[0], "--json", &grids[1]])
-        .args([&src, &png, FONT, px, &cols.to_string(), &rows.to_string()])
+    let mut command = Command::new("./termshot");
+    command.args(["--text", &grids[0], "--json", &grids[1]]);
+    if fonts.is_empty() {
+        command.args([&src, &png, FONT, px, &cols.to_string(), &rows.to_string()]);
+    } else {
+        command.args(fonts).args(["--px", px, "--size", &format!("{cols}x{rows}"), &src, &png]);
+    }
+    let output = command
         .env_remove("TERMSHOT_PROFILE")
         .output()
         .map_err(|error| format!("./termshot: {error}"))?;
@@ -187,8 +197,8 @@ fn main() -> ExitCode {
     let update = std::env::args().nth(1).as_deref() == Some("--update");
     let mut fresh = vec![HEADER.to_string()];
     let mut grids = Vec::new();
-    for (log, px, cols, rows) in CASES {
-        match render(log, px, cols, rows) {
+    for (log, px, cols, rows, fonts) in CASES {
+        match render(log, px, cols, rows, fonts) {
             Ok((line, outputs)) => {
                 fresh.push(line);
                 grids.push((log, outputs));
