@@ -31,7 +31,7 @@ Rebuild it after editing Rust without running the whole suite:
 
 Renders from the test run stay in `target/test/` for inspection. When a change is meant to move pixels, look at them first, then update the goldens.
 
-Other tools: `tests/vt/oracle.sh` compares `tests/vt/expected.txt` against tmux (not in CI); `tests/vt/record.sh` records real sessions; `tools/unicode-tables.sh` regenerates `src/unicode_tables.rs` from the UCD (don't edit that file by hand); `scripts/bench.py` benchmarks; `TERMSHOT_PROFILE=1` prints stage timings as JSON on stderr; `scripts/release.sh <platform>` builds a release archive.
+Other tools: `tests/vt/oracle.sh` compares `tests/vt/expected.txt` against tmux (not in CI); `tests/vt/record.sh` records real sessions; `tools/unicode-tables.sh` regenerates `src/unicode_tables.rs` from the UCD (don't edit that file by hand); `tools/rowcolumn-diacritics.sh` regenerates `src/rowcolumn_diacritics.rs`, kitty's Unicode placeholder diacritics, likewise; `scripts/bench.py` benchmarks; `TERMSHOT_PROFILE=1` prints stage timings as JSON on stderr; `scripts/release.sh <platform>` builds a release archive.
 
 ## Architecture
 

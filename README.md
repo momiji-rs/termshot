@@ -268,8 +268,8 @@ cells and the block cursor are opaque there, as in kitty. The underline and
 bar cursors are drawn with the text, as kitty draws them: over the images under
 it, under those of `z` 0 and up. Only images wholly inside a scrolling
 region move and clip at its edges; images crossing a margin stay stationary.
-Full-screen erase and reset remove every placement and free every stored image,
-as kitty does. A relative placement (`P` and `Q` name a parent image and
+Full-screen erase and reset remove every placement but the virtual ones and
+free every stored image left without one, as kitty does. A relative placement (`P` and `Q` name a parent image and
 placement) starts `H`, `V` cells from its parent's top left cell, follows the
 parent when it moves or scrolls, and goes when the parent goes; it never moves
 the cursor. A missing parent, a cycle, or a chain of more than 8 links refuses
@@ -277,8 +277,25 @@ the put. Explicit image ids and numbers must be nonzero; omitting `i` is
 valid. Main and alternate screens keep separate images. See
 [the regression evidence](docs/kitty-graphics.md).
 
-This is a subset, not full kitty emulation: file/shared-memory transfer,
-animation and Unicode placeholders are not supported. Unsupported or malformed commands are ignored
+Unicode placeholders work as in kitty (`kitten icat --unicode-placeholder`,
+tmux, editors): `U=1` makes a virtual placement of `c` x `r` cells, which
+draws nothing itself, and each U+10EEEE cell shows the part of the image
+under it. The cell's foreground colour is the image id (`38;5;n` is `n`,
+`38;2;r;g;b` is 0xRRGGBB, a third diacritic the high byte), its underline
+colour (`58`) the placement id, and its first two diacritics, from kitty's
+`rowcolumn-diacritics.txt`, the row and column; missing ones are inherited
+from the cell to the left. The image is fitted into the placement's cells
+keeping its aspect ratio, centered, at z-index -1, over the cell's
+background. The placeholders are ordinary text, so the image moves, scrolls
+and is erased with them. A placeholder whose image or placement does not
+exist draws nothing. `d=i`, `n` and `r` delete virtual placements; the
+other selectors, full-screen erase and reset leave them. A relative
+placement may name a virtual parent: it starts from the top row and the
+leftmost column the image shows in. Placeholder cells are drawn blank;
+`--text` and `--json` keep U+10EEEE and its diacritics.
+
+This is a subset, not full kitty emulation: file/shared-memory transfer
+and animation are not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain
 `tmux capture-pane` text capture cannot recover them. This does not make every

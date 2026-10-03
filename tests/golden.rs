@@ -25,7 +25,7 @@ const MARKS: &str = "third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf";
 // tests/fixtures/<log>.pty, or an asciinema recording tests/fixtures/<log>.cast;
 // with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 54] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 58] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -53,6 +53,14 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 54] = [
     // Relative placements: a chain that moves with its parent (#44).
     ("kitty-relative", "24", 12, 6, &[]),
     ("kitty-relative", "47.5", 12, 6, &[]),
+    // Unicode placeholders: inherited diacritics, a placement named by the
+    // underline colour, a 24-bit id with a high byte, a relative placement
+    // under a virtual one, a missing image (#44); and kitten icat 0.49.2's
+    // --unicode-placeholder output recorded through a PTY.
+    ("kitty-placeholders", "24", 16, 8, &[]),
+    ("kitty-placeholders", "47.5", 16, 8, &[]),
+    ("kitty-icat-placeholder", "24", 20, 6, &[]),
+    ("kitty-icat-placeholder", "47.5", 20, 6, &[]),
     ("blank", "24", 20, 8, &[]),
     ("geometry", "1", 12, 2, &[]),
     ("geometry", "9", 12, 2, &[]),
