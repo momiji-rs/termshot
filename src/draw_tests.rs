@@ -307,3 +307,26 @@ fn a_file_named_with_a_hash_is_that_file() {
         Ok(font::Spec { path: "target/test/absent.ttc".into(), face: Some("Noto Sans".into()) })
     );
 }
+
+const MARKS_FONT: &str = "third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf";
+
+/// Combining marks are drawn over their cell, from the font or else the
+/// fallback; a mark neither has and a joiner draw nothing, not a box.
+#[test]
+fn draw_png_draws_marks_over_their_cells() {
+    let font = load(FONT);
+    let fallback = load(MARKS_FONT);
+    let draw = |log: &str, fallback: Option<&font::Font>, name: &str| {
+        let g = replay(log.as_bytes(), 3, 1, Lf::Index);
+        let out = format!("target/test/draw-marks-{name}.png");
+        assert_eq!(render_marked(&g.cells, &g.marks, 3, 1, &font, fallback, 24.0, &out), 0);
+        fs::read(out).unwrap()
+    };
+    let plain = draw("q x", None, "plain");
+    assert!(draw("q\u{301} x", None, "acute") != plain);
+    assert!(draw("q \u{302}x", None, "on-a-space") != plain);
+    for (log, name) in [("q\u{200d} x", "joiner"), ("q\u{20dd} x", "in-no-font"), ("q\u{e31} x", "no-fallback")] {
+        assert!(draw(log, None, name) == plain, "{name}");
+    }
+    assert!(draw("q\u{e31} x", Some(&fallback), "fallback") != draw("q x", Some(&fallback), "fallback-plain"));
+}
