@@ -46,6 +46,49 @@ struct Cell {
 
 const _: () = assert!(std::mem::size_of::<Cell>() == 12);
 
+/// The most combining marks a cell keeps after its character (#14). A cell
+/// holds one code point, so a mark with no precomposed form goes in a side
+/// table instead. Four is enough for Thai (a vowel and a tone mark), Hebrew
+/// points, stacked Latin accents and the three diacritics of a kitty Unicode
+/// placeholder; marks after the fourth are dropped.
+const MAX_MARKS: usize = 4;
+
+/// A cell's marks in the order they arrived; the unused slots are 0, which
+/// no mark is.
+type Marks = [u32; MAX_MARKS];
+
+const NO_MARKS: Marks = [0; MAX_MARKS];
+
+/// One cell's combining marks, for --text, --json and draw.c: the cell's
+/// index in screen order (row * cols + col) and its marks. A list of them is
+/// sorted by cell, one per cell. As CellMarks in src/draw.c.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CellMarks {
+    cell: u32,
+    marks: Marks,
+}
+
+const _: () = assert!(std::mem::size_of::<CellMarks>() == 4 + 4 * MAX_MARKS);
+
+impl CellMarks {
+    /// The marks, without the unused slots.
+    fn code_points(&self) -> &[u32] {
+        &self.marks[..self.marks.iter().position(|&m| m == 0).unwrap_or(MAX_MARKS)]
+    }
+}
+
+/// The marks of the cell at index (row * cols + col) in a sorted list, or none.
+fn marks_of(marks: &[CellMarks], cell: usize) -> &[u32] {
+    if marks.is_empty() {
+        return &[];
+    }
+    match marks.binary_search_by_key(&cell, |m| m.cell as usize) {
+        Ok(k) => marks[k].code_points(),
+        Err(_) => &[],
+    }
+}
+
 const BOLD: u8 = 1;
 const UNDERLINE: u8 = 2;
 const DOUBLE_UNDERLINE: u8 = 4;
@@ -154,7 +197,9 @@ extern "C" {
     // font is a face of a font that passed font::check; fallback is another,
     // for the characters the first lacks, or null. empty, if not null, is
     // filled in as EmptyGlyphs says.
-    fn draw_png_images(cells: *const Cell, cols: i32, rows: i32, font: *const font::Face,
+    // marks lists the cells' combining marks, sorted by cell (CellMarks).
+    fn draw_png_images(cells: *const Cell, marks: *const CellMarks, mark_count: usize, cols: i32, rows: i32,
+        font: *const font::Face,
         fallback: *const font::Face, font_size: f64, out_path: *const std::ffi::c_char,
         verbose: i32, images: *const graphics::ImageView, count: usize,
         empty: *mut EmptyGlyphs) -> i32;
@@ -245,9 +290,15 @@ struct Screen {
     /// screen row, so scrolling rotates `map` instead of moving cells.
     cells: Vec<Cell>,
     map: Vec<usize>,
+    /// Combining marks with no precomposed form, a Marks per cell in the
+    /// same storage order as cells, so scrolling moves them too; every edit
+    /// that overwrites, erases or moves cells keeps it in step. Empty until
+    /// the screen's first mark, as most logs have none.
+    marks: Vec<Marks>,
     /// The other screen: the alternate one while on the main one, and back.
     other: Vec<Cell>,
     other_map: Vec<usize>,
+    other_marks: Vec<Marks>,
     on_alternate: bool,
     cols: usize,
     rows: usize,
@@ -267,9 +318,13 @@ struct Screen {
     /// G0 and G1. SO shifts to G1, SI back to G0.
     charsets: [Charset; 2],
     shifted: bool,
-    /// The last printed character, which REP repeats.
+    /// The last printed character, which REP repeats with the marks its
+    /// cell has (at last_at).
     last: Option<u32>,
-    /// Where it went (a storage index), for combining marks that follow.
+    /// Where it went (a storage index), for combining marks that follow:
+    /// a mark joins the last printed character wherever the cursor has gone
+    /// since, as in xterm. None once that cell is erased, overwritten or
+    /// moved, and then a mark is dropped.
     last_at: Option<usize>,
     /// DECTCEM (mode 25): whether the cursor is shown. One setting for both
     /// screens, and DECSC does not save it, as in xterm.
@@ -292,8 +347,10 @@ impl Screen {
             cell_size: (1, 1),
             cells: vec![Cell::blank(); cols * rows],
             map: (0..rows).collect(),
+            marks: Vec::new(),
             other: vec![Cell::blank(); cols * rows],
             other_map: (0..rows).collect(),
+            other_marks: Vec::new(),
             on_alternate: false,
             cols,
             rows,
@@ -397,11 +454,49 @@ impl Screen {
         (0..self.rows).flat_map(|r| self.cells[self.line(r)].iter().copied()).collect()
     }
 
+    /// The cells that have marks, in screen order, as CellMarks.
+    fn screen_marks(&self) -> Vec<CellMarks> {
+        if self.marks.is_empty() {
+            return Vec::new();
+        }
+        let line = |r: usize| self.marks[self.line(r)].iter().enumerate();
+        (0..self.rows)
+            .flat_map(|r| line(r).filter(|(_, m)| m[0] != 0).map(move |(c, &marks)| (r * self.cols + c, marks)))
+            .map(|(cell, marks)| CellMarks { cell: cell as u32, marks })
+            .collect()
+    }
+
+    /// Forget the marks of storage cells [from, to), which are being
+    /// overwritten or erased.
+    #[inline]
+    fn clear_marks(&mut self, from: usize, to: usize) {
+        if !self.marks.is_empty() {
+            self.marks[from..to].fill(NO_MARKS);
+        }
+    }
+
+    /// Before ICH or DCH moves storage cells [at, end) n to the right or
+    /// the left, as cells.copy_within does: move their marks too. The cells
+    /// it opens are erased after.
+    fn move_marks(&mut self, at: usize, end: usize, n: usize, right: bool) {
+        if matches!(self.last_at, Some(i) if (at..end).contains(&i)) {
+            self.last_at = None;
+        }
+        if !self.marks.is_empty() {
+            if right {
+                self.marks.copy_within(at..end - n, at + n);
+            } else {
+                self.marks.copy_within(at + n..end, at);
+            }
+        }
+    }
+
     /// ICH: shift the rest of the line right by n, blanking the gap.
     fn insert_chars(&mut self, n: usize) {
         let line = self.line(self.row);
         let at = line.start + self.col;
         let n = n.min(line.end - at);
+        self.move_marks(at, line.end, n, true);
         self.cells.copy_within(at..line.end - n, at + n);
         self.erase(at, at + n);
         self.mend_row(self.row);
@@ -412,6 +507,7 @@ impl Screen {
         let line = self.line(self.row);
         let at = line.start + self.col;
         let n = n.min(line.end - at);
+        self.move_marks(at, line.end, n, false);
         self.cells.copy_within(at + n..line.end, at);
         self.erase(line.end - n, line.end);
         self.mend_row(self.row);
@@ -614,6 +710,7 @@ impl Screen {
         std::mem::swap(&mut self.graphics, &mut self.other_graphics);
         std::mem::swap(&mut self.cells, &mut self.other);
         std::mem::swap(&mut self.map, &mut self.other_map);
+        std::mem::swap(&mut self.marks, &mut self.other_marks);
         self.on_alternate = on;
         self.last_at = None;
         self.pending = false;
@@ -654,8 +751,10 @@ impl Screen {
         }
         if width == 2 && self.col == self.last_col() {
             // No room for both halves. xterm leaves the last column as it is
-            // and wraps; without autowrap the character is dropped.
+            // and wraps; without autowrap the character is dropped, and so
+            // are the marks that follow it.
             if !self.autowrap {
+                self.last_at = None;
                 return;
             }
             self.col = 0;
@@ -671,6 +770,7 @@ impl Screen {
             self.cells[at + 1] = Cell { ch: 0, attrs: cell.attrs & !WIDE | TAIL, ..cell };
         }
         self.cells[at] = cell;
+        self.clear_marks(at, at + width);
         self.last_at = Some(at);
         self.clear_sixel(self.row, self.col, 1, width);
         if self.col + width <= self.last_col() {
@@ -681,14 +781,26 @@ impl Screen {
         }
     }
 
-    /// A zero-width character: compose it with the last printed character if
-    /// Unicode has a precomposed form (e + U+0301 is é); otherwise drop it.
-    /// A cell holds one code point, so other combinations can't be kept.
+    /// A zero-width character joins the last printed character: composed
+    /// with it when Unicode has a precomposed form (e + U+0301 is é) and the
+    /// cell has no marks yet, otherwise kept in the cell's marks, up to
+    /// MAX_MARKS. REP repeats the character as it then stands.
     fn combine(&mut self, mark: u32) {
-        if let Some(at) = self.last_at {
+        let Some(at) = self.last_at else {
+            return;
+        };
+        if self.marks.get(at).map_or(true, |m| m[0] == 0) {
             if let Some(composed) = unicode::compose(self.cells[at].ch, mark) {
                 self.cells[at].ch = composed;
+                self.last = Some(composed);
+                return;
             }
+        }
+        if self.marks.is_empty() {
+            self.marks = vec![NO_MARKS; self.cells.len()];
+        }
+        if let Some(slot) = self.marks[at].iter_mut().find(|m| **m == 0) {
+            *slot = mark;
         }
     }
 
@@ -708,6 +820,10 @@ impl Screen {
         let cell = &mut self.cells[i];
         cell.ch = ' ' as u32;
         cell.attrs &= !(WIDE | TAIL);
+        self.clear_marks(i, i + 1);
+        if self.last_at == Some(i) {
+            self.last_at = None;
+        }
     }
 
     /// After an edit that can cut a wide character in two (ICH, DCH, ECH,
@@ -766,6 +882,7 @@ impl Screen {
             let line = self.line(self.row);
             self.split_wide(&line, start);
             self.split_wide(&line, start + count - 1);
+            self.clear_marks(start, start + count);
             self.last_at = Some(start + count - 1);
             for (dest, byte) in self.cells[start..start + count].iter_mut().zip(text) {
                 cell.ch = u32::from(*byte);
@@ -786,6 +903,7 @@ impl Screen {
                         let line = self.line(self.row);
                         self.split_wide(&line, at);
                         self.cells[at] = cell;
+                        self.clear_marks(at, at + 1);
                         self.last_at = Some(at);
                         self.clear_sixel(self.row, self.col, 1, 1);
                     }
@@ -805,6 +923,10 @@ impl Screen {
             (blank.fr, blank.fg, blank.fb) = self.pen.fg;
             (blank.br, blank.bg, blank.bb) = self.pen.bg;
             self.cells[from..to].fill(blank);
+            self.clear_marks(from, to);
+            if matches!(self.last_at, Some(i) if (from..to).contains(&i)) {
+                self.last_at = None;
+            }
         }
     }
 
@@ -886,8 +1008,12 @@ impl Screen {
             // printing. Capped at a screenful.
             b'b' => {
                 if let Some(ch) = self.last {
+                    let marks = self.last_at.and_then(|at| self.marks.get(at).copied()).unwrap_or(NO_MARKS);
                     for _ in 0..count(0).min(self.cols * self.rows) {
                         self.print_mapped(ch);
+                        for &mark in marks.iter().take_while(|&&m| m != 0) {
+                            self.combine(mark);
+                        }
                     }
                 }
             }
@@ -1173,6 +1299,8 @@ fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
 struct Grid {
     images: Vec<graphics::Placement>,
     cells: Vec<Cell>,
+    /// The cells' combining marks, sorted by cell.
+    marks: Vec<CellMarks>,
     cursor: Option<(usize, usize)>,
     cursor_shape: CursorShape,
 }
@@ -1299,7 +1427,8 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
     let cursor = screen.cursor_shown.then_some((screen.row, screen.col));
     let images = std::mem::take(&mut screen.graphics.placements);
     let cursor_shape = screen.cursor_shape;
-    Grid { cells: screen.into_cells(), cursor, cursor_shape, images }
+    let marks = screen.screen_marks();
+    Grid { cells: screen.into_cells(), marks, cursor, cursor_shape, images }
 }
 
 /// Mark every background that is not the default colour OPAQUE, for draw.c.
@@ -1371,12 +1500,25 @@ fn cursor_mark(
     (rect, [r, g, b, 255])
 }
 
+/// A code point as a char; none of the grid's are invalid.
+fn to_char(cp: u32) -> char {
+    char::from_u32(cp).unwrap_or('\u{fffd}')
+}
+
 /// The screen as text, the way tmux capture-pane -p prints it: a line per row
-/// with its trailing spaces trimmed, and a wide character once.
-fn grid_text(cells: &[Cell], cols: usize) -> String {
+/// with its trailing spaces trimmed, a wide character once, and each
+/// character followed by its combining marks.
+fn grid_text(cells: &[Cell], marks: &[CellMarks], cols: usize) -> String {
     let mut text = String::with_capacity(cells.len() + cells.len() / cols);
-    for row in cells.chunks(cols) {
-        text.extend(row.iter().filter(|c| c.attrs & TAIL == 0).map(|c| char::from_u32(c.ch).unwrap_or('\u{fffd}')));
+    for (r, row) in cells.chunks(cols).enumerate() {
+        if marks.is_empty() {
+            text.extend(row.iter().filter(|c| c.attrs & TAIL == 0).map(|c| to_char(c.ch)));
+        } else {
+            for (c, cell) in row.iter().enumerate().filter(|(_, c)| c.attrs & TAIL == 0) {
+                text.push(to_char(cell.ch));
+                text.extend(marks_of(marks, r * cols + c).iter().map(|&m| to_char(m)));
+            }
+        }
         // The previous row's newline stops the trim.
         text.truncate(text.trim_end_matches(' ').len());
         text.push('\n');
@@ -1386,14 +1528,21 @@ fn grid_text(cells: &[Cell], cols: usize) -> String {
 
 /// The screen as JSON: the grid size; the cursor, or null when hidden; and a
 /// line per row of the runs of cells alike in colour and attributes, each with
-/// the column it starts at (a wide character takes two). Blank cells that end a
-/// row are left out, as in --text, unless their background or a line shows.
-fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, usize)>, shape: CursorShape) -> String {
+/// the column it starts at (a wide character takes two). A run's text has each
+/// character followed by its combining marks, as --text does. Blank cells that
+/// end a row are left out, as in --text, unless their background or a line shows.
+fn grid_json(
+    cells: &[Cell],
+    marks: &[CellMarks],
+    cols: usize,
+    rows: usize,
+    cursor: Option<(usize, usize)>,
+    shape: CursorShape,
+) -> String {
     use std::fmt::Write as _;
     const LINES: u8 = UNDERLINE | DOUBLE_UNDERLINE | STRIKE;
     const STYLE: u8 = BOLD | ITALIC | LINES;
     let style = |c: &Cell| ((c.fr, c.fg, c.fb), (c.br, c.bg, c.bb), c.attrs & STYLE);
-    let blank = |c: &Cell| c.ch == ' ' as u32 && (c.br, c.bg, c.bb) == DEFAULT_BG && c.attrs & LINES == 0;
     // Writing to a String cannot fail.
     let mut json = String::with_capacity(cells.len() * 2);
     let _ = write!(json, "{{\"cols\":{cols},\"rows\":{rows},\"cursor\":");
@@ -1404,7 +1553,13 @@ fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, us
     json.push_str(",\"lines\":[");
     for (r, row) in cells.chunks(cols).enumerate() {
         json.push_str(if r == 0 { "\n[" } else { ",\n[" });
-        let end = row.iter().rposition(|c| !blank(c)).map_or(0, |i| i + 1);
+        let marks_at = |c: usize| marks_of(marks, r * cols + c);
+        let blank = |c: usize| {
+            let cell = &row[c];
+            cell.ch == ' ' as u32 && (cell.br, cell.bg, cell.bb) == DEFAULT_BG && cell.attrs & LINES == 0
+                && marks_at(c).is_empty()
+        };
+        let end = (0..cols).rposition(|c| !blank(c)).map_or(0, |i| i + 1);
         let mut c = 0;
         while c < end {
             let start = c;
@@ -1413,13 +1568,15 @@ fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, us
             // A wide character's tail is part of the run its first half is in.
             while c < end && (style(&row[c]) == key || row[c].attrs & TAIL != 0) {
                 if row[c].attrs & TAIL == 0 {
-                    match char::from_u32(row[c].ch).unwrap_or('\u{fffd}') {
-                        '"' => json.push_str("\\\""),
-                        '\\' => json.push_str("\\\\"),
-                        ch if ch < ' ' || ch == '\u{7f}' => {
-                            let _ = write!(json, "\\u{:04x}", ch as u32);
+                    for &cp in std::iter::once(&row[c].ch).chain(marks_at(c)) {
+                        match to_char(cp) {
+                            '"' => json.push_str("\\\""),
+                            '\\' => json.push_str("\\\\"),
+                            ch if ch < ' ' || ch == '\u{7f}' => {
+                                let _ = write!(json, "\\u{:04x}", ch as u32);
+                            }
+                            ch => json.push(ch),
                         }
-                        ch => json.push(ch),
                     }
                 }
                 c += 1;
@@ -2082,7 +2239,7 @@ fn main() -> ExitCode {
             return cleanup(1, "font metrics unusable".into());
         }
     }
-    let Grid { mut cells, cursor, cursor_shape, images } =
+    let Grid { mut cells, marks, cursor, cursor_shape, images } =
         replay_sized(&data, cols, rows, options.lf, (cell_w, cell_h));
     let mut image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
     // Rendering needs only the final grid. Release potentially large logs before
@@ -2096,10 +2253,10 @@ fn main() -> ExitCode {
             .map_err(|error| format!("{}: {error}", if path == "-" { "stdout" } else { path }))
     };
     let written = (options.text.as_ref())
-        .map_or(Ok(()), |path| write(path, grid_text(&cells, cols)))
+        .map_or(Ok(()), |path| write(path, grid_text(&cells, &marks, cols)))
         .and_then(|()| {
             (options.json.as_ref())
-                .map_or(Ok(()), |path| write(path, grid_json(&cells, cols, rows, cursor, cursor_shape)))
+                .map_or(Ok(()), |path| write(path, grid_json(&cells, &marks, cols, rows, cursor, cursor_shape)))
         });
     if let Err(message) = written {
         return cleanup(1, message);
@@ -2133,6 +2290,8 @@ fn main() -> ExitCode {
                 face_ms = face_started.elapsed().as_secs_f64() * 1000.0;
                 draw_png_images(
                     cells.as_ptr(),
+                    marks.as_ptr(),
+                    marks.len(),
                     cols as i32,
                     rows as i32,
                     font,

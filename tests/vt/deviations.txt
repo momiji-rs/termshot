@@ -13,7 +13,11 @@ wide-ech: tmux keeps the orphaned second half as a padding cell, which capture-p
 wide-dch: the same orphaned-padding representation as wide-ech
 wide-ich: a wide character pushed half off the line is erased; tmux keeps it, cut in half
 combine: termshot composes e + U+0301 into é (a cell holds one code point); tmux stores the marks, so its text is decomposed; both draw é
-zwj: termshot drops the zero-width joiner; tmux stores it with the a; both draw ab
+combine-max: a cell keeps four combining marks and drops the rest; tmux keeps all five
+combine-rep: REP repeats the character with its marks; tmux repeats the last mark, adding it to the q again
+combine-move: a mark joins the last printed character, b, wherever the cursor has gone since, as in xterm; tmux puts it on the cell left of the cursor
+combine-crlf: the mark joins b, the last printed character, across CR LF, as in xterm; tmux drops a mark at column 0
+combine-erased: the mark is dropped, as the last printed character was erased; tmux puts it on the a left of the cursor
 wide-1col: each wide character takes a row of its own and wraps like a narrow one; tmux overwrites the one cell in place, so only b is left
 wide-1col-scroll: the wide characters wrap and scroll like narrow ones; tmux overwrites them in place
 wide-1col-rep: REP repeats the wide character, each on its own row; tmux overwrites in place

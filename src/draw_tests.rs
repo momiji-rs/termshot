@@ -20,11 +20,26 @@ pub(crate) fn render_with(
     px: f64,
     out: &str,
 ) -> i32 {
+    render_marked(cells, &[], cols, rows, font, fallback, px, out)
+}
+
+/// render_with, with the cells' combining marks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_marked(
+    cells: &[Cell],
+    marks: &[CellMarks],
+    cols: usize,
+    rows: usize,
+    font: &font::Font,
+    fallback: Option<&font::Font>,
+    px: f64,
+    out: &str,
+) -> i32 {
     let out = CString::new(out).unwrap();
     let draw = |font: &font::Face, fallback: *const font::Face| unsafe {
         let none = std::ptr::null();
-        draw_png_images(cells.as_ptr(), cols as i32, rows as i32, font, fallback, px, out.as_ptr(), 0, none, 0,
-            std::ptr::null_mut())
+        draw_png_images(cells.as_ptr(), marks.as_ptr(), marks.len(), cols as i32, rows as i32, font, fallback, px,
+            out.as_ptr(), 0, none, 0, std::ptr::null_mut())
     };
     font.with_face(|font| match fallback {
         None => draw(font, std::ptr::null()),
@@ -111,7 +126,7 @@ fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
         .with_face(|face| {
             let fallback = if fallback { face as *const font::Face } else { std::ptr::null() };
             unsafe {
-                draw_png_images(cells.as_ptr(), cols as i32, 2, face, fallback, 16.0, out.as_ptr(), 0,
+                draw_png_images(cells.as_ptr(), std::ptr::null(), 0, cols as i32, 2, face, fallback, 16.0, out.as_ptr(), 0,
                     std::ptr::null(), 0, &mut empty)
             }
         })
@@ -291,4 +306,44 @@ fn a_file_named_with_a_hash_is_that_file() {
         font::Spec::parse("target/test/absent.ttc#Noto Sans"),
         Ok(font::Spec { path: "target/test/absent.ttc".into(), face: Some("Noto Sans".into()) })
     );
+}
+
+const MARKS_FONT: &str = "third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf";
+
+/// Combining marks are drawn over their cell, from the font or else the
+/// fallback; a mark neither has and a joiner draw nothing, not a box.
+#[test]
+fn draw_png_draws_marks_over_their_cells() {
+    let font = load(FONT);
+    let fallback = load(MARKS_FONT);
+    let draw = |log: &str, fallback: Option<&font::Font>, name: &str| {
+        let g = replay(log.as_bytes(), 3, 1, Lf::Index);
+        let out = format!("target/test/draw-marks-{name}.png");
+        assert_eq!(render_marked(&g.cells, &g.marks, 3, 1, &font, fallback, 24.0, &out), 0);
+        fs::read(out).unwrap()
+    };
+    let plain = draw("q x", None, "plain");
+    assert!(draw("q\u{301} x", None, "acute") != plain);
+    assert!(draw("q \u{302}x", None, "on-a-space") != plain);
+    for (log, name) in [("q\u{200d} x", "joiner"), ("q\u{20dd} x", "in-no-font"), ("q\u{e31} x", "no-fallback")] {
+        assert!(draw(log, None, name) == plain, "{name}");
+    }
+    assert!(draw("q\u{e31} x", Some(&fallback), "fallback") != draw("q x", Some(&fallback), "fallback-plain"));
+}
+
+/// The Hangul fillers are default ignorable, as joiners are, and draw
+/// nothing either, though they take cells of their own (U+3164 two).
+#[test]
+fn draw_png_draws_nothing_for_a_hangul_filler() {
+    let font = load(FONT);
+    let draw = |log: &str, name: &str| {
+        let cells = parse(log.as_bytes(), 5, 1);
+        let out = format!("target/test/draw-filler-{name}.png");
+        assert_eq!(render(&cells, 5, 1, &font, 24.0, &out), 0);
+        fs::read(out).unwrap()
+    };
+    let plain = draw("q   x", "plain");
+    for (log, name) in [("q\u{3164} x", "3164"), ("q\u{115f} x", "115f"), ("q\u{ffa0}  x", "ffa0")] {
+        assert!(draw(log, name) == plain, "U+{name}");
+    }
 }
