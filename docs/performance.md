@@ -664,8 +664,8 @@ presents versioned, paired results with their measurement conditions instead.
 
 ## Published claims and their evidence (checked 2026-10-03)
 
-Each latency figure published outside this report, where it came from, and
-whether its evidence is in the repository. A figure is traceable only when its
+This section records each latency figure published outside this report, where
+it came from, and whether its evidence is in the repository. A figure is traceable only when its
 raw samples, revision, input, font, image size, machine, statistic and timing
 boundary are all recorded. The measurement rounds above, with their JSON files,
 meet that bar. The historical “~20 ms” notes above and the figures below do
