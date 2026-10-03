@@ -8,7 +8,9 @@ set -eu
 cd "$(dirname "$0")/../.."
 rounds=${1:-61}
 # The C the Rust was ported from. Later draw.c changes don't affect this run.
-rev=bd726a6
+# A full SHA, so CI can fetch just this commit into its shallow clone (ci.yml
+# reads it from this line).
+rev=bd726a6b53957c389722f018dbabb6b093ac90bb
 work=target/c-vs-rust
 rm -rf "$work"
 mkdir -p "$work/snapshot" "$work/cells"
