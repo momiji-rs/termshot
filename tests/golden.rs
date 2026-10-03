@@ -25,7 +25,7 @@ const MARKS: &str = "third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf";
 // tests/fixtures/<log>.pty, or an asciinema recording tests/fixtures/<log>.cast;
 // with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 51] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 53] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -50,6 +50,9 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 51] = [
     // The z-index layers: below backgrounds, under text, over text.
     ("kitty-layers", "24", 8, 4, &[]),
     ("kitty-layers", "47.5", 8, 4, &[]),
+    // Relative placements: a chain that moves with its parent (#44).
+    ("kitty-relative", "24", 12, 6, &[]),
+    ("kitty-relative", "47.5", 12, 6, &[]),
     ("blank", "24", 20, 8, &[]),
     ("geometry", "1", 12, 2, &[]),
     ("geometry", "9", 12, 2, &[]),

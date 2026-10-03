@@ -266,12 +266,16 @@ not the default colour, so they show only through default ones. Reverse-video
 cells and the block cursor are opaque there, as in kitty. Only images wholly inside a scrolling
 region move and clip at its edges; images crossing a margin stay stationary.
 Full-screen erase and reset remove every placement and free every stored image,
-as kitty does. Explicit image ids and numbers must be nonzero; omitting `i` is
+as kitty does. A relative placement (`P` and `Q` name a parent image and
+placement) starts `H`, `V` cells from its parent's top left cell, follows the
+parent when it moves or scrolls, and goes when the parent goes; it never moves
+the cursor. A missing parent, a cycle, or a chain of more than 8 links refuses
+the put. Explicit image ids and numbers must be nonzero; omitting `i` is
 valid. Main and alternate screens keep separate images. See
 [the regression evidence](docs/kitty-graphics.md).
 
 This is a subset, not full kitty emulation: file/shared-memory transfer,
-animation, relative placements and Unicode placeholders are not supported. Unsupported or malformed commands are ignored
+animation and Unicode placeholders are not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain
 `tmux capture-pane` text capture cannot recover them. This does not make every
