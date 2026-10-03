@@ -7,6 +7,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Read asciinema recordings (`.cast`, asciicast v2 and v3) as the log (#1).
+  The output events are replayed in order; input, markers and exit events are
+  ignored. Without `--size`, the grid takes the recording's size: its header's,
+  or its last resize event's. A first line that is a JSON object with a
+  `"version"` member marks a cast, and `--cast` reads one whatever it starts
+  with. The JSON is read strictly; a malformed cast is refused with its line
+  and column (exit 1), and one larger than 500x200 needs `--size` (exit 2).
+
 - Replay kitty inline graphics (`a=T,t=d`) in RGB, RGBA and PNG formats,
   including chunked uploads, alpha blending, cell-sized placements, native
   pixel sizing, image-ID replacement and deletion (#41). Images track scrolling
