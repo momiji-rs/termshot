@@ -21,6 +21,8 @@ static void check_inflate(void) {
     unsigned char hello[] = {0x78, 0x01, 1, 5, 0, 0xfa, 0xff, 'h', 'e', 'l', 'l', 'o', 0x06, 0x2c, 0x02, 0x15};
     unsigned char out[5];
     assert(inflates(hello, sizeof(hello), out, 5) && memcmp(out, "hello", 5) == 0);
+    // A stored block longer than the input left, cut right after its header.
+    assert(!inflates(hello, 7, out, 5));
     unsigned char header[][2] = {{0x88, 0x1c}, {0x78, 0x20}};
     for (int i = 0; i < 2; i++) {
         unsigned char bad[sizeof(hello)];
