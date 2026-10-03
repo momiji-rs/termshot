@@ -34,7 +34,7 @@ static Cell cell(uint32_t ch, int attrs) {
 /* The ink in cells [from, to) of a one-row render. */
 static Ink ink_in(const Cell *cells, int cols, double px, int from, int to) {
     Ink box = {0};
-    if (draw_png(cells, cols, 1, font, fallback_font, px, scratch, 0) != 0) {
+    if (draw_png(cells, cols, 1, font, 0, fallback_font, 0, px, scratch, 0) != 0) {
         fprintf(stderr, "draw_png failed at px %g\n", px);
         exit(1);
     }
@@ -99,12 +99,12 @@ static void expect_tofu(Ink got, int cells, double px, const char *what) {
 static unsigned char *with_empty_glyph(const unsigned char *ttf, long len, uint32_t cp) {
     unsigned char *copy = malloc((size_t)len);
     stbtt_fontinfo info;
-    if (!copy || !init_font(&info, ttf)) exit(1);
+    if (!copy || !init_font(&info, ttf, 0)) exit(1);
     memcpy(copy, ttf, (size_t)len);
     int g = stbtt_FindGlyphIndex(&info, (int)cp), size = info.indexToLocFormat ? 4 : 2;
     if (g == 0 || g + 1 >= info.numGlyphs) exit(1);
     memcpy(copy + info.loca + (g + 1) * size, ttf + info.loca + g * size, (size_t)size);
-    if (!init_font(&info, copy) || !stbtt_IsGlyphEmpty(&info, stbtt_FindGlyphIndex(&info, (int)cp))) exit(1);
+    if (!init_font(&info, copy, 0) || !stbtt_IsGlyphEmpty(&info, stbtt_FindGlyphIndex(&info, (int)cp))) exit(1);
     return copy;
 }
 
@@ -121,7 +121,7 @@ int main(int argc, char **argv) {
     font = data;
     scratch = argv[2];
     stbtt_fontinfo info;
-    if (!init_font(&info, font)) return 1;
+    if (!init_font(&info, font, 0)) return 1;
     /* The blank checks are about characters no font has. */
     const uint32_t lacked[] = {0x3000, 0x2800, 0x2028, 0x2029};
     for (size_t i = 0; i < sizeof lacked / sizeof lacked[0]; i++) {

@@ -146,8 +146,8 @@ shows. Colours are as drawn: reverse video and dim are already applied, and conc
 
 | option | |
 |---|---|
-| `-f`, `--font FILE` | TrueType font (default: built-in JetBrains Mono) |
-| `--fallback-font FILE` | TrueType font for characters the first lacks, such as CJK |
+| `-f`, `--font FILE` | TrueType font (default: built-in JetBrains Mono); `FILE#N` or `FILE#NAME` picks a face of a collection |
+| `--fallback-font FILE` | TrueType font for characters the first lacks, such as CJK; faces as for `--font` |
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
 | `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
@@ -168,6 +168,14 @@ The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, sti
 `M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces, the line and paragraph separators, and the blank Braille pattern U+2800. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both (on a one-column screen, where no row can hold two, they take the one cell); a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é) and is otherwise dropped. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
 
 The font must be TrueType, meaning it has `glyf` outlines; CFF-based `.otf` fonts are rejected. Color emoji fonts are bitmaps, not outlines, so emoji need a monochrome outline font such as Noto Emoji. A glyph with no outline counts as missing, so the emoji of a color font that has `glyf` (Apple Color Emoji) go on to `--fallback-font` or are drawn as boxes rather than left blank. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`). A damaged or hostile font is refused with a reason, and the run exits 1.
+
+A font collection (`.ttc`) holds several faces, often one per script or region, and termshot
+draws with one. Pick it after a `#`: `FILE#3` by number, counting from 0 as
+`fc-list : file index family` does, or `"FILE#Family Name"` by its full or family name, ignoring
+case. Without a `#`, the first face is used and a hint on stderr lists the others; `FILE#0`
+uses the first without the hint. A face that doesn't exist, or a name that two faces share, is
+refused with the list (exit 1), and `-v` prints the face used. If the file's own name has a
+`#` in it, it is read as that file.
 
 ## Samples
 

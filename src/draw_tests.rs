@@ -7,9 +7,10 @@ use std::ffi::CString;
 
 const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 
-fn render(cells: &[Cell], cols: usize, rows: usize, font: &[u8], px: f64, out: &str) -> i32 {
+fn render(cells: &[Cell], cols: usize, rows: usize, font: &font::Font, px: f64, out: &str) -> i32 {
     let out = CString::new(out).unwrap();
-    unsafe { draw_png(cells.as_ptr(), cols as i32, rows as i32, font.as_ptr(), std::ptr::null(), px, out.as_ptr(), 0) }
+    let (data, start) = (font.data.as_ptr(), font.start as i32);
+    unsafe { draw_png(cells.as_ptr(), cols as i32, rows as i32, data, start, std::ptr::null(), 0, px, out.as_ptr(), 0) }
 }
 
 /// The mutation tests/fontfuzz used to find stb_truetype crashes, ported
@@ -95,4 +96,30 @@ fn draw_png_is_reentrant() {
     for out in &outs[1..] {
         assert!(fs::read(out).unwrap() == first, "{out} differs from {}", outs[0]);
     }
+}
+
+/// Written for test.sh's CLI checks, which run after these tests.
+const COLLECTION: &str = "target/test/collection.ttc";
+
+#[test]
+fn draw_png_draws_the_chosen_face() {
+    fs::write(COLLECTION, font::tests::two_faces()).unwrap();
+    let cells = parse(b"Ag", 2, 1);
+    let draw = |spec: &str, out: &str| {
+        assert_eq!(render(&cells, 2, 1, &font::load(spec).unwrap(), 16.0, out), 0);
+        fs::read(out).unwrap()
+    };
+    let plain = draw(FONT, "target/test/face-plain.png");
+    assert!(draw(&format!("{COLLECTION}#0"), "target/test/face-0.png") == plain);
+    assert!(draw(&format!("{COLLECTION}#Face B"), "target/test/face-1.png") != plain);
+}
+
+#[test]
+fn a_file_named_with_a_hash_is_that_file() {
+    let odd = "target/test/odd#1.ttf";
+    fs::copy(FONT, odd).unwrap();
+    let font = font::load(odd).unwrap();
+    assert!(font.start == 0 && font.face.is_none());
+    assert_eq!(font::split(odd), (odd, None));
+    assert_eq!(font::split("target/test/absent.ttc#Noto Sans"), ("target/test/absent.ttc", Some("Noto Sans")));
 }

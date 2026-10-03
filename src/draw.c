@@ -481,9 +481,8 @@ static void blend(Canvas *cv, int dx, int dy, const unsigned char *bm, int gw, i
     }
 }
 
-static int init_font(stbtt_fontinfo *font, const unsigned char *ttf) {
-    int offset = stbtt_GetFontOffsetForIndex(ttf, 0);
-    return offset >= 0 && stbtt_InitFont(font, ttf, offset);
+static int init_font(stbtt_fontinfo *font, const unsigned char *ttf, int start) {
+    return start >= 0 && stbtt_InitFont(font, ttf, start);
 }
 
 /* Characters that draw nothing by design, so blank even when no font has
@@ -511,20 +510,22 @@ static void paint_tofu(Canvas *cv, int x, int y, int span, int cell_w, int cell_
 }
 
 /* Paint cells with the font in ttf (a TrueType file the caller has already
-   checked; see src/font.rs) and write a PNG. fallback_ttf, checked the same
-   way, or NULL, supplies the characters ttf lacks; characters neither has are
-   drawn as an outlined box. The canvas and cache are local; timing hooks use
+   checked; see src/font.rs) and write a PNG. ttf_start is where the face to
+   use starts: 0 for a single font, its offset in a collection. fallback_ttf
+   and fallback_start, checked the same way, or NULL, supply the characters
+   ttf lacks; characters neither has are drawn as an outlined box. The canvas and cache are local; timing hooks use
    thread-local state so concurrent renders remain independent.
    verbose prints the cell and image size to stderr.
    Returns 0; 1 for an unusable font; 2 when the image is too large or memory
    runs out; 3 when the PNG cannot be written. */
-int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
-             const unsigned char *fallback_ttf, double font_px, const char *out_path, int verbose) {
+int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, int ttf_start,
+             const unsigned char *fallback_ttf, int fallback_start, double font_px, const char *out_path,
+             int verbose) {
     profiling = getenv("TERMSHOT_PROFILE") != NULL;
     termshot_deflate_profile.enabled = profiling;
     double started = now_ms();
     stbtt_fontinfo font, fallback;
-    if (!init_font(&font, ttf) || (fallback_ttf && !init_font(&fallback, fallback_ttf))) {
+    if (!init_font(&font, ttf, ttf_start) || (fallback_ttf && !init_font(&fallback, fallback_ttf, fallback_start))) {
         fprintf(stderr, "termshot: font init failed\n");
         return 1;
     }

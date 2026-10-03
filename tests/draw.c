@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
     }
     const double sizes[] = {1, 9, 47.5, 255};
     for (int i = 0; i < 4; i++) {
-        int code = draw_png(cells, i == 3 ? 12 : 97, i == 3 ? 2 : 9, font, NULL, sizes[i], argv[2], 0);
+        int code = draw_png(cells, i == 3 ? 12 : 97, i == 3 ? 2 : 9, font, 0, NULL, 0, sizes[i], argv[2], 0);
         if (code) { free(font); return code; }
     }
     free(font);

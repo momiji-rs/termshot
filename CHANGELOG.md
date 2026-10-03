@@ -35,6 +35,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `{"col","row"}` or null. Like `--text`, it needs no PNG and no font.
   `tests/grids/` holds it for every golden fixture, and
   `tests/grids/check.py` checks that it parses and agrees with `--text`.
+- A face of a font collection (`.ttc`) can be picked for `--font` and
+  `--fallback-font` (part of #25): `FILE#N` by number from 0, or
+  `FILE#NAME` by its full or family name, ignoring case. A face that
+  doesn't exist, or a name that two faces share, is refused with the list
+  of faces (exit 1). A file whose name has a `#` in it is still read as
+  that file. `-v` prints the face used.
+- A hint on stderr when a collection of several faces is given without
+  picking one: which face was used (the first, as before) and the list of
+  the others. `FILE#0` uses the first without the hint.
 
 ### Changed
 
