@@ -205,3 +205,34 @@ beyond libc and libm.
   table; `font.rs` covers the rest of the sfnt.
 - The operator budget (20,000) is about 8× the busiest glyph seen. A font that needs more is
   refused glyph by glyph, not misdrawn.
+
+## CFF2: the default instance (#51)
+
+Added 2026-10-03. stb_truetype has no CFF2 reader (`stbtt_InitFont` refuses a face with
+neither `glyf` nor `CFF `), so `cff.rs` reads CFF2 too, with the same design: every structure
+checked at load, the charstrings run with the 20,000-operator budget, and stb only
+rasterizes. For a CFF2 face, `draw.c` does the part of `stbtt_InitFont` that doesn't touch
+outlines itself (`init_cff2`: metrics tables and the cmap subtable stb would pick).
+
+- **What differs from CFF**: a header with the Top DICT's length and no Name or String INDEX;
+  32-bit INDEX counts; a required FDArray, an optional FDSelect (and its format 4); no width,
+  `endchar` or `return`, as a charstring or a subroutine ends where its data does; `vsindex`
+  and `blend`, also in Private DICTs; a 513-deep argument stack.
+- **The default instance**: `blend` keeps its n default values and drops the n × k deltas
+  under them. k is the region count of the ItemVariationData that `vsindex` names, so the
+  variation store is read for its region counts, and its region list and data are checked to
+  lie inside it. No `fvar` or `avar` is read.
+- **Strict where CFF follows stb**: with no stb to match, a CFF2 charstring that breaks a CFF2
+  rule (a `vsindex` past the store, a `blend` short of operands, a stack past 513, `endchar`)
+  is an error for that glyph, which is drawn as the missing-glyph box. Everything else in the
+  charstring language is read as for CFF.
+- **Checked against HarfBuzz 14.4.0** (`hb-vector`, the default instance), outline for outline,
+  on starship: every mapped character of the full `NotoSansCJKtc-VF.otf` (65,535 glyphs, 44,798
+  compared), Source Serif 4 Variable Roman (6 font dicts, 8 regions; 906 compared) and Adobe's
+  variable font prototype (548 local subrs, 5 regions; 247 compared). None differed, and no glyph
+  of the three was refused. The repository keeps a 176-glyph subset of the Noto font and
+  `tools/cff2-outlines.sh`, which records HarfBuzz's outlines for `cff_tests.rs`.
+- **Hostile fonts and fuzz**: `cff_tests.rs` builds CFF2 fonts with one defect each (32-bit
+  counts past the table, a cut table, a Top DICT past it, `blend` outside a Private DICT or
+  short of operands, bad `vsindex`, a damaged store, FDSelect gaps and huge range counts,
+  subroutine bombs and recursion without `return`) and mutates the subset's CFF2 table.
