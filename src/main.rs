@@ -1598,6 +1598,21 @@ fn csi(screen: &mut Screen, params: &mut Params, data: &[u8], mut i: usize) -> u
     let start = i;
     while i < data.len() {
         let c = data[i];
+        // Digits, ':' and ';' first, with one test: they are most of every
+        // sequence (#21). After an intermediate they are malformed, below.
+        let offset = c.wrapping_sub(b'0');
+        if offset <= b';' - b'0' && intermediate.is_none() {
+            if offset < 10 {
+                let value = u64::from(current.value.unwrap_or(0)) * 10 + u64::from(offset);
+                current.value = Some(value.min(u64::from(u32::MAX)) as u32);
+            } else {
+                params.push(current);
+                current = Param { value: None, sub: c == b':' };
+            }
+            any = true;
+            i += 1;
+            continue;
+        }
         match c {
             // Parameter bytes come before intermediates, never after.
             0x30..=0x3f if intermediate.is_some() => malformed = true,
