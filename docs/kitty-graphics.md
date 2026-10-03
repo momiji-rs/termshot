@@ -247,8 +247,10 @@ layout" section and kitty's `handle_put_command`, `update_dest_rect`,
   default background (`cell_has_default_bg` compares colours), except for
   reverse video, the block cursor and selections, which kitty makes opaque.
   termshot marks reverse-video cells and the cells under the block cursor
-  with a new `Cell` bit, `ATTR_OPAQUE` (128, in both languages), and paints
-  the lowest layer only over pixels of the cells left clear. The block cursor
+  with a new `Cell` bit, `ATTR_OPAQUE` (128, in both languages). Before
+  drawing, `opaque_backgrounds` in `main.rs` sets it on every other
+  background not in the default colour, so `draw.c` needs no copy of
+  `DEFAULT_BG`; it paints the lowest layer only over the cells left clear. The block cursor
   is a background in kitty, so an image with a negative `z` above
   -1,073,741,824 covers it, and only the cursor's text colour stays on top.
 - **Shades.** U+2591–2593 now blend their colour over what is painted, not

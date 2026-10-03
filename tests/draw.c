@@ -27,8 +27,7 @@ static void images(void) {
 static void layered_images(void) {
     unsigned char pixels[4 * 4] = {255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255};
     unsigned char buffer[4 * 13];
-    Cell cells[2] = {{.ch = ' ', .br = DEFAULT_BG_R, .bg = DEFAULT_BG_G, .bb = DEFAULT_BG_B},
-                     {.ch = ' ', .br = 205}};
+    Cell cells[2] = {{.ch = ' ', .br = 17, .bg = 24, .bb = 35}, {.ch = ' ', .br = 205, .attrs = ATTR_OPAQUE}};
     Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = 4, .h = 4, .stride = 13};
     /* The bottom right source pixel, yellow, stretched over the canvas. */
     ImageView image = {.pixels = pixels, .width = 2, .height = 2, .x = 0, .y = 0, .w = 4, .h = 4,
@@ -54,11 +53,11 @@ static void layered_images(void) {
             }
         }
     }
-    /* Opaque cells hide it even in the default colour; other colours do too. */
+    /* Only ATTR_OPAQUE decides, whatever the colour or other attributes. */
     cells[0].attrs = ATTR_OPAQUE;
     assert(!clear_background(&cells[0]) && !clear_background(&cells[1]));
-    cells[0].attrs = ATTR_BOLD;
-    assert(clear_background(&cells[0]));
+    cells[1].attrs = ATTR_BOLD | ATTR_ITALIC;
+    assert(clear_background(&cells[1]));
     /* A crop of the top row, sampled across: red then green. */
     image = (ImageView){.pixels = pixels, .width = 2, .height = 2, .x = 0, .y = 0, .w = 4, .h = 1,
                         .clip_top = 0, .clip_bottom = 4, .src_x = 0, .src_y = 0, .src_w = 2, .src_h = 1};

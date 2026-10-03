@@ -929,6 +929,20 @@ fn sgr_reverse_swaps_the_cell_colours() {
 }
 
 #[test]
+fn only_default_backgrounds_stay_clear_for_draw_c() {
+    // Default, red, the default colour set explicitly, reverse video, and
+    // reverse video whose background is the default colour by value.
+    let mut g = grid(b"a\x1b[41mb\x1b[48;2;17;24;35mc\x1b[0;7md\x1b[0;7;38;2;17;24;35me");
+    opaque_backgrounds(&mut g);
+    let opaque: Vec<_> = (0..6).map(|c| at(&g, 0, c).attrs & OPAQUE != 0).collect();
+    assert_eq!(opaque, [false, true, false, true, true, false]);
+    // Other attributes are kept.
+    let mut g = grid(b"\x1b[1;3;41mx");
+    opaque_backgrounds(&mut g);
+    assert_eq!(at(&g, 0, 0).attrs, BOLD | ITALIC | OPAQUE);
+}
+
+#[test]
 fn sgr_dim_and_conceal() {
     let g = grid(b"\x1b[2ma\x1b[22mb\x1b[8mc\x1b[28md");
     // Two thirds of the way from the background to the text colour.

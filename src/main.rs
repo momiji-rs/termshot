@@ -52,9 +52,11 @@ const WIDE: u8 = 16;
 const TAIL: u8 = 32;
 /// draw.c slants the glyph; box drawing and blocks stay upright.
 const ITALIC: u8 = 64;
-/// The background is opaque even in the default colour: an image placed below
-/// the cell backgrounds (z < -2^30) does not show through it. Reverse video
-/// and the block cursor set it, as kitty treats those cells.
+/// The background hides an image placed below the cell backgrounds
+/// (z < -2^30). Reverse video and the block cursor set it as kitty treats
+/// those cells, even in the default colour; before drawing,
+/// `opaque_backgrounds` sets it on every other colour, so draw.c needs no
+/// copy of DEFAULT_BG.
 const OPAQUE: u8 = 128;
 
 /// The colours and attributes SGR sets, applied to each printed character.
@@ -1202,6 +1204,17 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
     Grid { cells: screen.into_cells(), cursor, cursor_shape, images }
 }
 
+/// Mark every background that is not the default colour OPAQUE, for draw.c.
+/// kitty compares the colour's value, so a background set to the default
+/// colour explicitly is a default one.
+fn opaque_backgrounds(cells: &mut [Cell]) {
+    for cell in cells {
+        if (cell.br, cell.bg, cell.bb) != DEFAULT_BG {
+            cell.attrs |= OPAQUE;
+        }
+    }
+}
+
 /// Draw the cursor as a block in reverse video over the cell at (row, col),
 /// or over both cells of the wide character it is on.
 fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
@@ -1938,6 +1951,7 @@ fn main() -> ExitCode {
                     image_views.push(graphics::ImageView::solid(&mark_pixel, x, y, w, h));
                 }
             }
+            opaque_backgrounds(&mut cells);
             let out = if out == "-" { "/dev/stdout" } else { out };
             let Ok(out) = std::ffi::CString::new(out) else {
                 return cleanup(2, "output path contains a nul byte".into());

@@ -50,15 +50,10 @@ _Static_assert(sizeof(Cell) == 12, "Cell ABI must match the Rust side");
 #define ATTR_WIDE 16 /* the first of a wide character's two cells */
 #define ATTR_TAIL 32 /* the second; ch is 0 */
 #define ATTR_ITALIC 64
-/* The background is opaque even where its colour is the default one: reverse
+/* The background hides an image placed below the cell backgrounds. main.rs
+   sets it on every background that is not the default colour, and on reverse
    video and the block cursor, as kitty treats them. */
 #define ATTR_OPAQUE 128
-
-/* The default background, as DEFAULT_BG in src/main.rs. A cell of this colour
-   without ATTR_OPAQUE shows an image placed below the cell backgrounds. */
-#define DEFAULT_BG_R 17
-#define DEFAULT_BG_G 24
-#define DEFAULT_BG_B 35
 
 /* The canvas is RGB: alpha would always be 255, and an opaque RGBA PNG is
    larger and blocks palette quantization in downstream optimizers. */
@@ -741,10 +736,7 @@ typedef struct {
 
 /* Whether the cell's background is the default one, which shows an image of
    LAYER_BELOW through it. */
-static int clear_background(const Cell *cell) {
-    return !(cell->attrs & ATTR_OPAQUE) && cell->br == DEFAULT_BG_R && cell->bg == DEFAULT_BG_G &&
-           cell->bb == DEFAULT_BG_B;
-}
+static int clear_background(const Cell *cell) { return !(cell->attrs & ATTR_OPAQUE); }
 
 /* Rust validates dimensions and owns each RGBA buffer. Clip before looping,
    and use integer nearest-neighbor sampling for reproducible screenshots.
