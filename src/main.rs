@@ -1649,10 +1649,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     if size.is_some() && legacy_cols.is_some() {
         return Err("the grid size is given twice".into());
     }
-    let (cols, rows) = match size {
+    let (mut cols, mut rows) = match size {
         Some((cols, rows)) => (Some(cols), Some(rows)),
         None => (legacy_cols, legacy_rows),
     };
+    // Under --raw no cast can give the size, so the defaults fill it now.
+    if cast == Some(false) {
+        cols = cols.or(Some(DEFAULT_COLS));
+        rows = rows.or(Some(DEFAULT_ROWS));
+    }
     // Refuse a bad --cursor before reading the log, which may be stdin. Its
     // bounds wait for the size when a cast may give it; a size too large to
     // reach checks only the form.

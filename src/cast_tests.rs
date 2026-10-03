@@ -312,4 +312,9 @@ fn a_bad_cursor_is_refused_before_the_log_is_read() {
     assert!(matches!(args(&["--size", "10x4", "--cursor", "10,4", "-", "out.png"]), Err(e) if e.contains("off the 10x4 grid")));
     // Without it, a cast may give the size: the bounds wait for it.
     assert!(matches!(args(&["--cursor", "300,100", "-", "out.png"]), Ok(Command::Render(_))));
+    // Under --raw no cast can, so the default size bounds it at once.
+    assert!(matches!(args(&["--raw", "--cursor", "300,100", "-", "out.png"]), Err(e) if e.contains("off the 100x30 grid")));
+    assert!(matches!(args(&["--raw", "--cursor", "99,29", "-", "out.png"]), Ok(Command::Render(_))));
+    let legacy = args(&["--raw", "--cursor", "41,29", "-", "out.png", "font.ttf", "48", "40"]);
+    assert!(matches!(legacy, Err(e) if e.contains("off the 40x30 grid")));
 }
