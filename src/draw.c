@@ -1104,17 +1104,42 @@ static void paint_image_rows(Canvas *cv, const ImageView *images, size_t count, 
         if (x1 > cv->w) x1 = cv->w;
         if (y1 > im->clip_bottom) y1 = im->clip_bottom;
         if (y1 > bottom) y1 = bottom;
+        if (x0 >= x1) continue;
+        /* The source column of x is src_x + (x - im->x) * src_w / w: its
+           quotient and remainder, stepped from x0 a column at a time. */
+        int64_t first = (x0 - im->x) * (int64_t)im->src_w, step = (int64_t)im->src_w / im->w,
+                carry = (int64_t)im->src_w % im->w;
         for (int64_t y = y0; y < y1; y++) {
             size_t sy = im->src_y + (size_t)((y - im->y) * im->src_h / im->h);
             const Cell *row = cells ? cells + (size_t)(y / cell_h) * (size_t)(cv->w / cell_w) : NULL;
-            for (int64_t x = x0; x < x1; x++) {
-                if (row && !clear_background(&row[x / cell_w])) continue;
-                size_t sx = im->src_x + (size_t)((x - im->x) * im->src_w / im->w);
-                const unsigned char *src = im->pixels + (sy * im->width + sx) * 4;
-                unsigned char *dst = cv->px + (size_t)y * cv->stride + (size_t)x * BPP;
-                unsigned a = src[3];
-                for (int c = 0; c < 3; c++)
-                    dst[c] = (unsigned char)((src[c] * a + dst[c] * (255 - a) + 127) / 255);
+            const unsigned char *line = im->pixels + (sy * im->width + im->src_x) * 4;
+            unsigned char *dst = cv->px + (size_t)y * cv->stride + (size_t)x0 * BPP;
+            int64_t sx = first / im->w, rem = first % im->w, col = x0 / cell_w, sub = x0 % cell_w;
+            for (int64_t x = x0; x < x1; x++, dst += BPP) {
+                if (!row || clear_background(&row[col])) {
+                    const unsigned char *src = line + (size_t)sx * 4;
+                    unsigned a = src[3];
+                    /* At 255 and 0 the blend below is the source and the
+                       destination exactly. */
+                    if (a == 255) {
+                        dst[0] = src[0];
+                        dst[1] = src[1];
+                        dst[2] = src[2];
+                    } else if (a) {
+                        for (int c = 0; c < 3; c++)
+                            dst[c] = (unsigned char)((src[c] * a + dst[c] * (255 - a) + 127) / 255);
+                    }
+                }
+                sx += step;
+                rem += carry;
+                if (rem >= im->w) {
+                    sx++;
+                    rem -= im->w;
+                }
+                if (++sub == cell_w) {
+                    sub = 0;
+                    col++;
+                }
             }
         }
     }
