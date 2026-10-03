@@ -187,6 +187,31 @@ Python's zlib, against the same expected pixels. Ten hand-made mutants of
 the checks all fail the tests.
 
 
+### Payload cap and early checks
+
+kitty sizes a direct upload's buffer at the decoded size plus 1,024 bytes
+for a compressed one (`initialize_load_data`) and refuses an RGB or RGBA
+payload that would overflow it (`load_image_data`, `EFBIG`); only PNG may
+grow. termshot applies the same cap to compressed RGB and RGBA, over all the
+chunks of an upload and checked as each arrives, so an oversized upload is
+dropped before it is fully buffered. A compressed PNG keeps the 16 MiB
+payload limit. Raw dimensions are checked against the decoded limits (8,192
+pixels per axis, 16 MiB of RGBA) before inflating, so a stream for an image
+that would be refused anyway is never inflated.
+
+`src/graphics/zlib_tests.rs` checks the cap at 1,024, 1,027, 1,028 and 1,029
+bytes, alone and chunked; a stream cut at every chunk size, for stored and
+Huffman-coded streams; interrupted uploads; that bytes after the trailer are
+ignored; the early dimension checks; and 100,000 or 16 MiB of zeros sent for
+smaller, near and exact images. `tests/image.c` inflates a hand-built
+104 KiB fixed-Huffman stream of 16,908,289 zeros into heap buffers of exactly
+12 bytes, 16 MiB, and the exact size and one either side under ASan, and
+inflates with the allocation quota spent. `kitty-rgb-z-chunks.pty` is
+`src/deflate.c`'s compression of `kitty-rgb`'s pixels, cut across three
+chunks inside the DEFLATE data. Goldens for it and the four `-z` fixtures hash
+the same as the uncompressed renders; the existing goldens are unchanged.
+
+
 ## ASCII autowrap regression
 
 [Copilot review](https://github.com/momiji-rs/termshot/pull/43#discussion_r4170788572)
