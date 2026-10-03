@@ -546,6 +546,32 @@ fn sixel(bin: &str) {
     let (_, _, actual) = render(bin, "sixel-scroll", scrolled.as_bytes(), "24", 8, 4);
     let (_, _, expected) = render(bin, "sixel-scroll-oracle", oracle.as_bytes(), "24", 8, 4);
     assert!(actual == expected, "a Sixel image past the bottom scrolls as SU does");
+    // Text written over a Sixel image shows instead of its pixels in those
+    // cells, as in xterm, and ED 0 and 1 clear the rows below and above the
+    // cursor's. The image covers the screen.
+    let red = format!("\x1bP0;1q#1;2;100;0;0{}\x1b\\", ["!400~"; 50].join("-"));
+    let text = "\x1b[2;2HAB";
+    let log = format!("{red}{text}\x1b[3;1H\x1b[J\x1b[2;1H\x1b[1J");
+    for px in ["9", "24", "47.5"] {
+        let (w, h, pixels) = render(bin, &format!("sixel-text-{px}"), log.as_bytes(), px, 6, 4);
+        let (_, _, plain) = render(bin, &format!("sixel-text-plain-{px}"), text.as_bytes(), px, 6, 4);
+        let (cw, ch) = (w / 6, h / 4);
+        for y in 0..h {
+            for x in 0..w {
+                let (row, col) = (y / ch, x / cw);
+                let at = (y * w + x) * 4;
+                let want = if row == 1 && (1..3).contains(&col) {
+                    [plain[at], plain[at + 1], plain[at + 2]]
+                } else if row == 0 || row == 3 {
+                    BG
+                } else {
+                    COLORS[0]
+                };
+                assert_eq!(&pixels[at..][..3], &want, "sixel text px={px} at ({x},{y})");
+                checked += 1;
+            }
+        }
+    }
     // ImageMagick's encoding of an image whose top 11 rows are four solid
     // bars, 10 pixels each, in the registers it defines first.
     let log = fs::read("tests/fixtures/sixel-magick.pty").unwrap();

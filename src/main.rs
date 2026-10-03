@@ -533,7 +533,7 @@ impl Screen {
     /// pass its bottom margin. Rows scrolled above the top margin are cut off.
     fn sixel(&mut self, mut image: sixel::Image) {
         if self.sixel_display {
-            self.graphics.command(&sixel::kitty_command(&image), 0, 0, self.cell_size, self.rows);
+            self.graphics.sixel(&sixel::kitty_command(&image), 0, 0, self.cell_size, self.rows);
             return;
         }
         let (col, mut row) = (self.col, self.row);
@@ -555,7 +555,20 @@ impl Screen {
             self.row = last.min(self.rows - 1);
         }
         self.pending = false;
-        self.graphics.command(&sixel::kitty_command(&image), col, row, self.cell_size, self.rows);
+        self.graphics.sixel(&sixel::kitty_command(&image), col, row, self.cell_size, self.rows);
+    }
+
+    /// Clear the Sixel pixels over rows x cols cells from (row, col), as xterm's
+    /// chararea_clear_displayed_graphics does: xterm keeps Sixel pixels with
+    /// the cells, so a cell written later, or erased below or above the
+    /// cursor, shows instead of them.
+    fn clear_sixel(&mut self, row: usize, col: usize, rows: usize, cols: usize) {
+        if rows == 0 || cols == 0 || self.graphics.placements.is_empty() {
+            return;
+        }
+        let (cw, ch) = (i64::from(self.cell_size.0), i64::from(self.cell_size.1));
+        let (x, y) = (col as i64 * cw, row as i64 * ch);
+        self.graphics.erase_sixel(x, y, x + cols as i64 * cw, y + rows as i64 * ch);
     }
 
     /// Move the cursor past a kitty placement of cols x rows cells, as kitty
@@ -660,6 +673,7 @@ impl Screen {
         }
         self.cells[at] = cell;
         self.last_at = Some(at);
+        self.clear_sixel(self.row, self.col, 1, width);
         if self.col + width <= self.last_col() {
             self.col += width;
         } else {
@@ -758,6 +772,7 @@ impl Screen {
                 cell.ch = u32::from(*byte);
                 *dest = cell;
             }
+            self.clear_sixel(self.row, self.col, 1, count);
             text = &text[count..];
             self.col += count;
             if self.col == self.cols {
@@ -773,6 +788,7 @@ impl Screen {
                         self.split_wide(&line, at);
                         self.cells[at] = cell;
                         self.last_at = Some(at);
+                        self.clear_sixel(self.row, self.col, 1, 1);
                     }
                     break;
                 }
@@ -883,13 +899,17 @@ impl Screen {
             b'J' => {
                 let (cursor, line) = (self.cursor_index(), self.line(self.row));
                 match p.get(0, 0) {
+                    // xterm erases Sixel pixels in the rows below or above the
+                    // cursor's, but not in its own (ClearBelow, ClearAbove).
                     0 => {
                         self.erase(cursor, line.end);
                         self.erase_rows(self.row + 1, self.rows);
+                        self.clear_sixel(self.row + 1, 0, self.rows - self.row - 1, self.cols);
                     }
                     1 => {
                         self.erase_rows(0, self.row);
                         self.erase(line.start, cursor + 1);
+                        self.clear_sixel(0, 0, self.row, self.cols);
                     }
                     2 => {
                         self.erase_rows(0, self.rows);

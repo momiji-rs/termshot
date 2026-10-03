@@ -24,7 +24,7 @@ const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
 // tests/fixtures/<log>.pty, or an asciinema recording tests/fixtures/<log>.cast;
 // with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 49] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 50] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -81,6 +81,9 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 49] = [
     ("sixel-hand", "24", 20, 8, &[]),
     ("sixel-magick", "24", 40, 4, &[]),
     ("sixel-magick-dither", "24", 40, 5, &[]),
+    // Text over a Sixel image, and ED 0 and 1, clear its pixels; a kitty
+    // image beside it keeps them.
+    ("sixel-text", "24", 20, 6, &[]),
     // asciicast v2 and v3: the output of tests/fixtures/asciicast.pty in
     // events, so the same pixels (test.sh compares them with the raw log).
     ("asciicast-v2", "24", 24, 6, &[]),

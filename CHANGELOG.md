@@ -35,7 +35,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of Sixel data, so a short log cannot demand unbounded work, overdrawing
   included. Text and
   JSON output load the font for a log with Sixel, since the cell height moves
-  the cursor.
+  the cursor. As in xterm, whose Sixel pixels belong to the cells, a
+  character written over the image later clears its pixels in the cells it
+  takes, and ED 0 and 1 clear them in the rows below or above the cursor's
+  (not in its own row); EL, ECH, ICH and DCH leave them, as xterm does.
+  Kitty images, a layer of their own, keep their pixels.
 
 - Kitty graphics store images apart from their placements (#44): `a=t`
   transmits without placing, `a=p` places a stored image again, `I` names

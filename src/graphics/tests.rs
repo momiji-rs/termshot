@@ -998,3 +998,43 @@ fn a_long_run_moves_an_image_below_the_screen_the_whole_way() {
         assert_eq!(a.images, b.images, "{rows} rows");
     }
 }
+
+/// A long run of text at the bottom row skips the rows it would scroll away.
+/// The Sixel pixels those rows would clear scroll away with them, or, for an
+/// image that does not scroll, are under the rows printed last: the run
+/// clears what row-by-row printing does.
+#[test]
+fn a_long_run_clears_sixel_pixels_as_row_by_row_printing() {
+    // A 12-row image from the top left (DECSDM), most of it below the screen,
+    // which scrolling brings up; in a region, it crosses a margin and stays.
+    let image = format!("\x1b[?80h\x1bP0;1q#1;2;100;0;0{}\x1b\\", ["!30~"; 12].join("-"));
+    for region in ["", "\x1b[2;4r"] {
+        for rows in [4, 5, 7, 9, 14] {
+            let text: Vec<u8> = (0..6 * rows).map(|i| b'a' + (i / 6) as u8).collect();
+            let mut batched = format!("{region}{image}\x1b[4;1H").into_bytes();
+            let mut split = batched.clone();
+            batched.extend_from_slice(&text);
+            for row in text.chunks(6) {
+                split.extend_from_slice(row);
+                split.extend_from_slice(b"\x1b[m");
+            }
+            // The pixel rows each shows on the screen, which is 24 pixels tall.
+            let shown = |log: &[u8]| {
+                let g = replay_sized(log, 6, 4, Lf::Index, (10, 6));
+                let mut rows = Vec::new();
+                for p in &g.images {
+                    for s in &p.slices {
+                        for y in s.top..s.bottom.min(24) {
+                            let at = (y - s.y) as usize * 30 * 4;
+                            rows.push((y, p.pixels[at..at + 30 * 4].to_vec()));
+                        }
+                    }
+                }
+                (rows, g.cells.iter().map(|c| c.ch).collect::<Vec<_>>())
+            };
+            let (a, b) = (shown(&batched), shown(&split));
+            assert_eq!(a.0, b.0, "{region:?} {rows} rows");
+            assert_eq!(a.1, b.1, "{region:?} {rows} rows");
+        }
+    }
+}

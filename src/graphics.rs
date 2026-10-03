@@ -66,6 +66,8 @@ pub struct Placement {
     cols: i64,
     row: i64,
     rows: i64,
+    /// A Sixel image, whose pixels later text and erasure clear.
+    pub sixel: bool,
 }
 
 /// Borrowed only for the duration of draw_png_images; pixels remain Rust-owned.
@@ -714,6 +716,7 @@ impl Graphics {
                 cols,
                 row: row as i64,
                 rows,
+                sixel: false,
             });
             // kitty's draw order: z-index, then image and placement creation.
             self.placements.sort_by_key(|p| (p.z, p.image, p.key));
@@ -838,6 +841,54 @@ impl Graphics {
         evict.sort_unstable();
         self.placements.retain(|p| evict.binary_search(&p.image).is_err());
         self.images.retain(|img| evict.binary_search(&img.key).is_err());
+    }
+
+    /// Place a Sixel image, given as the command `sixel::kitty_command` makes.
+    /// Its placement is marked as Sixel, for `erase_sixel`.
+    pub fn sixel(&mut self, bytes: &[u8], col: usize, row: usize, cell: (i32, i32), screen_rows: usize) {
+        let before = self.clock;
+        self.command(bytes, col, row, cell, screen_rows);
+        for p in self.placements.iter_mut().filter(|p| p.key > before) {
+            p.sixel = true;
+        }
+    }
+
+    /// Clear the Sixel pixels inside the screen rectangle from (x0, y0) to
+    /// (x1, y1), as xterm's erase_graphic does for the cells text is written
+    /// to and the rows ED erases: they become transparent. kitty images are a
+    /// layer of their own, which text and erasure leave alone.
+    pub fn erase_sixel(&mut self, x0: i64, y0: i64, x1: i64, y1: i64) {
+        for i in 0..self.placements.len() {
+            let p = &self.placements[i];
+            // Sixel images are drawn whole, a pixel per screen pixel.
+            let (w, h) = (i64::from(p.width), i64::from(p.height));
+            if !p.sixel || p.w != w || p.h != h || p.src != [0, 0, p.width, p.height] {
+                continue;
+            }
+            let (left, right) = (x0.max(p.x), x1.min(p.x + w));
+            let rows: Vec<_> = p.slices.iter().map(|s| (y0.max(s.y), y1.min(s.y + h), s.y)).collect();
+            if left >= right || rows.iter().all(|&(top, bottom, _)| top >= bottom) {
+                continue;
+            }
+            // The image store holds the other reference to the pixels. Drop it
+            // while writing, so they are not copied, and share them again after.
+            let (key, x) = (p.image, p.x);
+            let stored = self.images.iter_mut().find(|img| img.key == key);
+            if let Some(img) = stored {
+                img.pixels = Rc::new(Vec::new());
+            }
+            let pixels = Rc::make_mut(&mut self.placements[i].pixels);
+            for (top, bottom, origin) in rows {
+                for y in top..bottom {
+                    let start = ((y - origin) * w + left - x) as usize * 4;
+                    pixels[start..start + (right - left) as usize * 4].fill(0);
+                }
+            }
+            let shared = Rc::clone(&self.placements[i].pixels);
+            if let Some(img) = self.images.iter_mut().find(|img| img.key == key) {
+                img.pixels = shared;
+            }
+        }
     }
 
     /// Scroll only placements wholly inside the region, as required by kitty.

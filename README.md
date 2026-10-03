@@ -304,6 +304,10 @@ decoder (its `graphics_sixel.c`, patch 412) and the VT340 it emulates:
   corner, clipped at the bottom, without scrolling or moving the cursor.
 - The image joins the kitty image store as an unnamed image drawn above the
   text, so it shares the layering, scrolling, erase and storage limits above.
+  Unlike a kitty image, its pixels belong to the cells, as in xterm: a
+  character written there later clears them in the cells it takes, and
+  erasing below or above the cursor (ED 0 or 1) clears them in the rows
+  below or above the cursor's, though not in its own row.
   Only `ESC \` commits an image; BEL, CAN, SUB, another escape or the end of
   the log discard it, and C1 controls (such as the 8-bit ST) are not
   recognised. A DCS that is not Sixel (`DECRQSS`, `XTGETTCAP`, ...) is
@@ -315,9 +319,9 @@ decoder (its `graphics_sixel.c`, patch 412) and the VT340 it emulates:
   pixel a sixel sets, each time it sets it, and every pixel of each finished
   image; an image past that budget is refused.
 
-Text written later where an image is stays under it. Erasing below or above
-the cursor (ED 0 or 1) leaves images in place, where xterm erases their pixels.
-An image with no pixels moves nothing. Non-square pixels from `P1` or `Pan;Pad`
+EL, ECH, ICH and DCH leave the pixels, as in xterm; IL and DL move images as
+they move kitty's, where xterm leaves them. An image with no pixels moves
+nothing. Non-square pixels from `P1` or `Pan;Pad`
 (xterm ignores them too), DECSET 8452 (the cursor to the right of the image),
 shared colour registers (`CSI ? 1070 l`) and ReGIS are not supported.
 

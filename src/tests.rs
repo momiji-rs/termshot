@@ -509,14 +509,75 @@ fn osc_and_string_sequences_are_skipped() {
 }
 
 /// A Sixel image is drawn now, but its data never reaches the text: a
-/// pixel-tall image keeps the cursor on its row and column, so `d` lands
-/// where the image is, and DCS strings that are not Sixel are skipped.
+/// pixel-tall image keeps the cursor on its row and column, so `c` lands
+/// where the image is (and clears its pixel, as in xterm), and DCS strings
+/// that are not Sixel are skipped.
 #[test]
 fn sixel_and_other_dcs_strings_leave_no_text() {
     let log = b"ab\x1bP0;1q\"1;1;1;1#1;2;100;0;0@\x1b\\c\x1bP+q4d73\x1b\\\x1bP$q\"p\x1b\\d";
     let g = replay(log, C, R, Lf::Index);
     assert_eq!(line(&g.cells, 0), "abcd      ");
     assert_eq!(g.images.len(), 1);
+    assert_eq!(*g.images[0].pixels, [0, 0, 0, 0]);
+    let g = replay(b"ab\x1bP0;1q\"1;1;1;1#1;2;100;0;0@\x1b\\\r\n", C, R, Lf::Index);
+    assert_eq!(*g.images[0].pixels, [255, 0, 0, 255]);
+}
+
+/// Which 10x6 cells of a red 30x18 Sixel image at the top left still have
+/// pixels, after `then`, a row of three per text row. Cells are 10x6 pixels,
+/// so the image covers 3x3 cells.
+fn sixel_cells_left(then: &[u8]) -> [[bool; 3]; 3] {
+    let mut log = b"\x1bP0;1q#1;2;100;0;0!30~-!30~-!30~\x1b\\\x1b[H".to_vec();
+    log.extend_from_slice(then);
+    let g = replay_sized(&log, 6, 4, Lf::Index, (10, 6));
+    let sixel: Vec<_> = g.images.iter().filter(|p| p.sixel).collect();
+    assert_eq!(sixel.len(), 1, "{}", String::from_utf8_lossy(then));
+    let pixels = &sixel[0].pixels;
+    let mut left = [[false; 3]; 3];
+    for (r, row) in left.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
+            let alpha = |x: usize, y: usize| pixels[(y * 30 + x) * 4 + 3];
+            let set: Vec<bool> = (0..6).flat_map(|y| (0..10).map(move |x| (x, y))).map(|(x, y)| alpha(c * 10 + x, r * 6 + y) != 0).collect();
+            // A cell is cleared whole or not at all.
+            assert!(set.iter().all(|&s| s == set[0]), "cell {r},{c} after {}", String::from_utf8_lossy(then));
+            *cell = set[0];
+        }
+    }
+    left
+}
+
+/// xterm keeps Sixel pixels with the cells (graphics.c, erase_graphic): a
+/// cell written later clears the pixels under it, and so do ED 0 and 1 for
+/// the rows below and above the cursor's, not for the cursor's own row.
+#[test]
+fn text_and_erasure_clear_sixel_pixels() {
+    const ALL: [bool; 3] = [true; 3];
+    assert_eq!(sixel_cells_left(b""), [ALL; 3]);
+    assert_eq!(sixel_cells_left(b"\x1b[1;2HX"), [[true, false, true], ALL, ALL]);
+    // A wide character clears both its cells; REP and print runs too.
+    assert_eq!(sixel_cells_left("\x1b[2;2H\u{6771}".as_bytes()), [ALL, [true, false, false], ALL]);
+    assert_eq!(sixel_cells_left(b"\x1b[3;1Ha\x1b[b"), [ALL, ALL, [false, false, true]]);
+    assert_eq!(sixel_cells_left(b"abc"), [[false; 3], ALL, ALL]);
+    // A space is written like any character.
+    assert_eq!(sixel_cells_left(b"\x1b[2;3H "), [ALL, [true, true, false], ALL]);
+    // ED 0 and 1 clear the other rows whole, but not the cursor's.
+    assert_eq!(sixel_cells_left(b"\x1b[2;2H\x1b[J"), [ALL, ALL, [false; 3]]);
+    assert_eq!(sixel_cells_left(b"\x1b[2;2H\x1b[1J"), [[false; 3], ALL, ALL]);
+    // EL, ECH, DCH and ICH leave them, as in xterm.
+    for edit in ["\x1b[K", "\x1b[1K", "\x1b[2K", "\x1b[2X", "\x1b[P", "\x1b[@"] {
+        assert_eq!(sixel_cells_left(format!("\x1b[2;2H{edit}").as_bytes()), [ALL; 3], "{edit:?}");
+    }
+    // Cursor movement and controls write nothing.
+    assert_eq!(sixel_cells_left(b"\x1b[3;3H\r\n\t\x08"), [ALL; 3]);
+}
+
+/// kitty images are a layer of their own: text and erasure leave them.
+#[test]
+fn text_and_erasure_leave_kitty_images() {
+    let log = b"\x1b_Ga=T,f=24,s=1,v=1,c=3,r=3,C=1;/wAA\x1b\\abc\x1b[2;1H\x1b[J\x1b[1J";
+    let g = replay_sized(log, 6, 4, Lf::Index, (10, 6));
+    assert_eq!(g.images.len(), 1);
+    assert!(!g.images[0].sixel);
     assert_eq!(*g.images[0].pixels, [255, 0, 0, 255]);
 }
 
