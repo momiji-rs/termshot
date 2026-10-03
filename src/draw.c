@@ -1091,19 +1091,19 @@ static int clear_background(const Cell *cell) { return !(cell->attrs & ATTR_OPAQ
    and use integer nearest-neighbor sampling for reproducible screenshots.
    Paints the images of one layer, in their order. With cells, of cell_w x
    cell_h pixels and cv->w / cell_w to a row, only over clear backgrounds. */
-static void paint_images(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
-                         int cell_w, int cell_h) {
+static void paint_image_rows(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
+                             int cell_w, int cell_h, int64_t top, int64_t bottom) {
     for (size_t i = 0; i < count; i++) {
         const ImageView *im = &images[i];
         if (image_layer(im->z) != layer) continue;
         int64_t x0 = im->x > 0 ? im->x : 0;
         int64_t y0 = im->y > im->clip_top ? im->y : im->clip_top;
-        if (y0 < 0) y0 = 0;
+        if (y0 < top) y0 = top;
         int64_t x1 = im->x + im->w;
         int64_t y1 = im->y + im->h;
         if (x1 > cv->w) x1 = cv->w;
         if (y1 > im->clip_bottom) y1 = im->clip_bottom;
-        if (y1 > cv->h) y1 = cv->h;
+        if (y1 > bottom) y1 = bottom;
         for (int64_t y = y0; y < y1; y++) {
             size_t sy = im->src_y + (size_t)((y - im->y) * im->src_h / im->h);
             const Cell *row = cells ? cells + (size_t)(y / cell_h) * (size_t)(cv->w / cell_w) : NULL;
@@ -1118,6 +1118,51 @@ static void paint_images(Canvas *cv, const ImageView *images, size_t count, int 
             }
         }
     }
+}
+
+static void paint_images(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
+                         int cell_w, int cell_h) {
+    paint_image_rows(cv, images, count, layer, cells, cell_w, cell_h, 0, cv->h);
+}
+
+/* What is painted under the text, a row of cells at a time, so that the text
+   is painted while its rows are still in the cache: the cell backgrounds,
+   then the images below them, which show only through the default ones, and
+   those over every background. A row is painted before anything over it
+   (the row's own cells, or a glyph or mark reaching down into it), so each
+   pixel is painted in the same order as if every row were painted first. */
+typedef struct {
+    const Cell *cells;
+    int cols, rows, cell_w, cell_h, done; /* rows painted */
+    const ImageView *images;
+    size_t image_count;
+    double ms;
+} Backdrop;
+
+/* Paint the backdrop of every row of cells above pixel row y. */
+static void backdrop_through(Canvas *cv, Backdrop *bd, int64_t y) {
+    if (bd->done >= bd->rows || y <= (int64_t)bd->done * bd->cell_h) return;
+    double tick = now_ms();
+    int64_t last = (y + bd->cell_h - 1) / bd->cell_h;
+    if (last > bd->rows) last = bd->rows;
+    for (int r = bd->done; r < last; r++) {
+        int top = r * bd->cell_h;
+        uint8_t *scanline = cv->filtered + (size_t)top * cv->stride;
+        scanline[0] = 0;
+        for (int c = 0; c < bd->cols; c++) {
+            const Cell *cell = &bd->cells[(size_t)r * bd->cols + c];
+            fill_rect(cv, c * bd->cell_w, top, (c + 1) * bd->cell_w, top + 1, cell->br, cell->bg, cell->bb);
+        }
+        for (int dy = 1; dy < bd->cell_h; dy++) {
+            memcpy(cv->filtered + (size_t)(top + dy) * cv->stride, scanline, cv->stride);
+        }
+        paint_image_rows(cv, bd->images, bd->image_count, LAYER_BELOW, bd->cells, bd->cell_w, bd->cell_h, top,
+                         top + bd->cell_h);
+        paint_image_rows(cv, bd->images, bd->image_count, LAYER_UNDER_TEXT, NULL, bd->cell_w, bd->cell_h, top,
+                         top + bd->cell_h);
+    }
+    bd->done = (int)last;
+    bd->ms += now_ms() - tick;
 }
 
 /* Free what the glyph pass holds when memory runs out in it; returns 2. */
@@ -1270,7 +1315,7 @@ static int is_ignorable(uint32_t cp) {
    character instead. y is the baseline. Adds the time spent finding glyphs
    and blending them to glyph_ms and blend_ms. Returns 0, or 2 when memory
    runs out. */
-static int paint_marks(Canvas *cv, Glyphs *g, const CellMarks *marks, const Cell *cell, int base_x,
+static int paint_marks(Canvas *cv, Backdrop *backdrop, Glyphs *g, const CellMarks *marks, const Cell *cell, int base_x,
                        float base_advance, int y, double *glyph_ms, double *blend_ms) {
     int italic = (cell->attrs & ATTR_ITALIC) != 0;
     for (int k = 0; k < MAX_MARKS && marks->marks[k]; k++) {
@@ -1281,6 +1326,7 @@ static int paint_marks(Canvas *cv, Glyphs *g, const CellMarks *marks, const Cell
         *glyph_ms += now_ms() - tick;
         if (!mark) return 2;
         if (!mark->bitmap) continue;
+        backdrop_through(cv, backdrop, (int64_t)y + mark->iy0 + mark->h);
         tick = now_ms();
         int dx = 2 * mark->ix0 + mark->w < 0 ? base_x + (int)floorf(base_advance + 0.5f) + mark->ix0
                                              : base_x + (int)floorf((base_advance - (float)mark->w) / 2 + 0.5f);
@@ -1355,23 +1401,10 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
 
     cv->px = cv->filtered + 1;
     double allocated = now_ms();
-    for (int r = 0; r < rows; r++) {
-        int y = r * cell_h;
-        uint8_t *scanline = cv->filtered + (size_t)y * cv->stride;
-        scanline[0] = 0;
-        for (int c = 0; c < cols; c++) {
-            const Cell *cell = &cells[r * cols + c];
-            fill_rect(cv, c * cell_w, y, (c + 1) * cell_w, y + 1, cell->br, cell->bg, cell->bb);
-        }
-        for (int dy = 1; dy < cell_h; dy++) {
-            memcpy(cv->filtered + (size_t)(y + dy) * cv->stride, scanline, cv->stride);
-        }
-    }
-
-    /* Images under the text: those below the backgrounds show only through
-       the default ones, then those over every background. */
-    paint_images(cv, images, image_count, LAYER_BELOW, cells, cell_w, cell_h);
-    paint_images(cv, images, image_count, LAYER_UNDER_TEXT, NULL, cell_w, cell_h);
+    /* The backgrounds and the images under the text are painted a row of
+       cells ahead of the text over them (backdrop_through); background_ms
+       is their time, and foreground_ms the rest. */
+    Backdrop backdrop = {cells, cols, rows, cell_w, cell_h, 0, images, image_count, 0};
     double background = now_ms();
     double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
     Glyph cache[GLYPH_CACHE_SIZE] = {0};
@@ -1380,6 +1413,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                 italic_pivot, cache, &scratch, 0, 0, 0, 0, 0, 0};
     size_t next_mark = 0;
     for (int r = 0; r < rows; r++) {
+        backdrop_through(cv, &backdrop, (int64_t)(r + 1) * cell_h);
         for (int c = 0; c < cols; c++) {
             size_t index = (size_t)r * (size_t)cols + (size_t)c;
             const Cell *cell = &cells[index];
@@ -1406,6 +1440,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                     if (!entry) return glyphs_failed(cv, cache, &scratch);
                     glyph_ms += now_ms() - tick;
                     tick = now_ms();
+                    double ahead = backdrop.ms;
                     if (entry->missing && !is_blank(cp)) {
                         if (entry->empty && empty && empty->cells++ == 0) {
                             *empty = (EmptyGlyphs){.cp = cp, .fonts = (uint32_t)entry->empty, .col = c, .row = r, .cells = 1};
@@ -1416,6 +1451,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                         int gw = entry->w, gh = entry->h;
                         int dx = c * cell_w + entry->shift + entry->ix0;
                         int dy = r * cell_h + baseline + entry->iy0;
+                        backdrop_through(cv, &backdrop, (int64_t)dy + gh);
                         blend(cv, dx, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
                         if (cell->attrs & ATTR_BOLD) blend(cv, dx + 1, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
                     }
@@ -1423,16 +1459,17 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                         base_x += entry->shift;
                         base_advance = entry->advance;
                     }
-                    blend_ms += now_ms() - tick;
+                    blend_ms += now_ms() - tick - (backdrop.ms - ahead);
                 }
             }
             if (cell_marks &&
-                paint_marks(cv, &g, cell_marks, cell, base_x, base_advance, r * cell_h + baseline, &glyph_ms,
+                paint_marks(cv, &backdrop, &g, cell_marks, cell, base_x, base_advance, r * cell_h + baseline, &glyph_ms,
                             &blend_ms) != 0)
                 return glyphs_failed(cv, cache, &scratch);
         }
     }
 
+    backdrop_through(cv, &backdrop, (int64_t)rows * cell_h);
     /* Underlines and strike-through, over the glyphs, as thick as box-drawing
        strokes and kept inside the cell. */
     int line_t = cell_w / 12 < 1 ? 1 : cell_w / 12;
@@ -1484,7 +1521,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
             termshot_deflate_profile.allocate_ms, termshot_deflate_profile.match_emit_ms,
             termshot_deflate_profile.finalize_ms, termshot_deflate_profile.checksum_ms,
             font_setup - started, allocated - font_setup,
-            background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
+            background - allocated + backdrop.ms, foreground - background - backdrop.ms, geometry_ms, glyph_ms, blend_ms,
             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
             encoded - foreground, written - encoded, now_ms() - written, stamps.hits, stamps.misses, stamps.uncached, stamps.bytes, g.glyphs, g.cache_hits, g.evictions, g.missing, g.fallback_lookups, g.fallback_glyphs, png_len, (size_t)(width * height * BPP));
     }

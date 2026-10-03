@@ -25,7 +25,7 @@ const MARKS: &str = "third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf";
 // tests/fixtures/<log>.pty, or an asciinema recording tests/fixtures/<log>.cast;
 // with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 53] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 55] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -82,6 +82,12 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 53] = [
     // Devanagari (approximate: no shaping) from the fallback.
     ("marks", "24", 40, 6, &["--fallback-font", MARKS]),
     ("marks", "46", 40, 6, &["--fallback-font", MARKS]),
+    // Glyphs and marks reaching into the rows above and below (the bracket
+    // pieces, by a pixel), over backgrounds and images below and under the
+    // text: painting a row of backgrounds at a time must draw them as
+    // painting every background first did (#22).
+    ("row-overlap", "24", 30, 6, &["--fallback-font", MARKS]),
+    ("row-overlap", "46", 30, 6, &["--fallback-font", MARKS]),
     ("cursor-underline", "24", 8, 2, &[]),
     ("cursor-bar", "24", 8, 2, &[]),
     // Sixel: hand-made images (HLS, P2 0 and 1, $ and -, the VT340 palette,
