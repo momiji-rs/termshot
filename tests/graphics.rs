@@ -125,6 +125,7 @@ fn main() {
     crops_and_offsets(&bin);
     layers(&bin);
     sixel(&bin);
+    relative(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes, plain and zlib-compressed; native clipping, text layering, transparency and deletion");
 }
 
@@ -558,4 +559,84 @@ fn sixel(bin: &str) {
     let data = fs::read_to_string(json).unwrap();
     assert!(data.contains("\"cursor\":{\"col\":1,\"row\":1,\"shape\":\"block\"}"), "{data}");
     println!("ok, {checked} Sixel pixel checks: RGB over 4 sizes, HLS and VT340 colours, transparency, scrolling, ImageMagick output, grid metrics");
+}
+
+// Relative placements (P, Q, H, V), pixel by pixel at three sizes. Each image
+// is one pixel of colour fitted to c x r cells: a square as large as the
+// rectangle allows, centred in it. From the spec: a child is placed H, V
+// cells from its parent's top left cell, follows its parent when it moves or
+// scrolls, and goes when it is deleted; the cursor does not move, so a put
+// after the children lands in the parent's cell.
+fn relative(bin: &str) {
+    const WHITE: [u8; 3] = [255, 255, 255];
+    let put = |keys: &str, c: [u8; 3]| format!("\x1b_Ga=T,f=24,s=1,v=1,{keys};{}\x1b\\", base64(&c));
+    let scene = [
+        format!("\x1b[3;2H{}", put("i=1,p=1,c=1,r=1,C=1", COLORS[0])),
+        put("i=2,p=1,P=1,Q=1,H=2,V=1,c=1,r=1", COLORS[1]),
+        put("i=3,P=2,Q=1,H=-3,V=1,c=1,r=1", COLORS[2]),
+        // Up and left of the screen's corner, cut off by it.
+        put("i=4,P=1,H=-2,V=-3,c=2,r=2", COLORS[3]),
+        put("i=5,c=1,r=1,C=1", WHITE),
+    ]
+    .concat();
+    // (variant, what follows, then (col, row, cells, colour) expected, in
+    // draw order).
+    type Shown = &'static [(isize, isize, isize, [u8; 3])];
+    let variants: [(&str, &str, Shown); 5] = [
+        (
+            "still",
+            "",
+            &[
+                (1, 2, 1, COLORS[0]),
+                (3, 3, 1, COLORS[1]),
+                (0, 4, 1, COLORS[2]),
+                (-1, -1, 2, COLORS[3]),
+                (1, 2, 1, WHITE),
+            ],
+        ),
+        // The parent put again at (4, 0): its group moves, yellow off screen.
+        (
+            "moved",
+            "\x1b[1;5H\x1b_Ga=p,i=1,p=1,c=1,r=1,C=1\x1b\\",
+            &[(4, 0, 1, COLORS[0]), (6, 1, 1, COLORS[1]), (3, 2, 1, COLORS[2]), (1, 2, 1, WHITE)],
+        ),
+        (
+            "scrolled",
+            "\x1b[S",
+            &[(1, 1, 1, COLORS[0]), (3, 2, 1, COLORS[1]), (0, 3, 1, COLORS[2]), (1, 1, 1, WHITE)],
+        ),
+        // Deleting the child deletes its child too.
+        (
+            "child-deleted",
+            "\x1b_Ga=d,d=i,i=2\x1b\\",
+            &[(1, 2, 1, COLORS[0]), (-1, -1, 2, COLORS[3]), (1, 2, 1, WHITE)],
+        ),
+        ("parent-deleted", "\x1b_Ga=d,d=I,i=1\x1b\\", &[(1, 2, 1, WHITE)]),
+    ];
+    let mut checked = 0;
+    for px in ["9", "24", "47.5"] {
+        for (name, then, shown) in variants {
+            let log = format!("{scene}{then}");
+            let name = format!("relative-{name}-{px}");
+            let (w, h, pixels) = render(bin, &name, log.as_bytes(), px, 8, 6);
+            let (cw, ch) = ((w / 8) as isize, (h / 6) as isize);
+            for y in 0..h as isize {
+                for x in 0..w as isize {
+                    let mut want = BG;
+                    for &(col, row, cells, colour) in shown {
+                        let (bw, bh) = (cells * cw, cells * ch);
+                        let side = bw.min(bh);
+                        let (left, top) = (col * cw + (bw - side) / 2, row * ch + (bh - side) / 2);
+                        if (left..left + side).contains(&x) && (top..top + side).contains(&y) {
+                            want = colour;
+                        }
+                    }
+                    let at = (y as usize * w + x as usize) * 4;
+                    assert_eq!(&pixels[at..][..3], &want, "{name} at ({x},{y})");
+                    checked += 1;
+                }
+            }
+        }
+    }
+    println!("ok, {checked} relative placement pixel checks at 3 sizes: offsets, a chain, moving, scrolling, clipping, deletion");
 }
