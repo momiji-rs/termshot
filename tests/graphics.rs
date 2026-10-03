@@ -60,6 +60,11 @@ fn main() {
             ("rgba", 128),
             ("png", 255),
             ("png-alpha", 128),
+            // The same pixels compressed (o=z): RGB in three chunks that cut
+            // the zlib stream, RGBA, and the alpha PNG.
+            ("zlib-rgb", 255),
+            ("zlib-rgba", 128),
+            ("zlib-png", 128),
         ] {
             let log = fs::read(format!("tests/fixtures/kitty-{kind}.pty")).unwrap();
             let (w, h, pixels) = render(&bin, &format!("{kind}-{px}"), &log, px, 6, 4);
@@ -115,7 +120,7 @@ fn main() {
     grid_outputs(&bin);
     cursor_shapes(&bin);
     stored_placements(&bin);
-    println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes; native clipping, text layering, transparency and deletion");
+    println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks, plain and zlib-compressed, over 5 sizes; native clipping, text layering, transparency and deletion");
 }
 
 // Images stored once (a=t) and put (a=p) in several cells: each placement is

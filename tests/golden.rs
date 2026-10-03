@@ -22,7 +22,7 @@ const CJK: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
 // (log, px, cols, rows, font options). A log is examples/<log>.pty or
 // tests/fixtures/<log>.pty; with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 32] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 36] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -33,6 +33,11 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 32] = [
     ("kitty-rgba", "24", 6, 4, &[]),
     ("kitty-png", "24", 6, 4, &[]),
     ("kitty-png-alpha", "24", 6, 4, &[]),
+    // Compressed (o=z): the same pixels as kitty-rgb, kitty-rgba and kitty-png-alpha.
+    ("kitty-zlib-rgb", "24", 6, 4, &[]),
+    ("kitty-zlib-rgb", "47.5", 6, 4, &[]),
+    ("kitty-zlib-rgba", "24", 6, 4, &[]),
+    ("kitty-zlib-png", "24", 6, 4, &[]),
     ("blank", "24", 20, 8, &[]),
     ("geometry", "1", 12, 2, &[]),
     ("geometry", "9", 12, 2, &[]),
