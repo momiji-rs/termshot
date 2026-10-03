@@ -23,14 +23,9 @@ Two binaries per host, built on that host from the same sources:
 - **branch**: `d83c8fd` plus this round's profiling change (`22b77e8`): no change
   to parsing, drawing or encoding, only timers and counters.
 
-Every case produced **byte-identical PNGs** from both binaries, in all four
-batches, and **the same PNG on macOS arm64 and Linux x86-64** for all 25 cases.
-The timed batches compared each binary's last PNG per case. Two later
-verification batches ([macOS](performance-2026-10-03-macos-verify.json),
-[Linux](performance-2026-10-03-linux-verify.json); 1 warmup, 5 rounds, 1 RSS
-run, and on Linux 2 cold runs of two cases) hashed every run's PNG. They found
-one PNG per case across every run of both binaries, and it matched the timed
-batches' PNG on both platforms. Their timings are not used below.
+Every run's PNG was hashed. Each case produced **one PNG across every warmup,
+plain, profiled, RSS and cold run of both binaries** in every batch, and
+**the same PNG on macOS arm64 and Linux x86-64** for all 25 cases.
 
 | | macOS arm64 | Linux x86-64 |
 | --- | --- | --- |
@@ -40,12 +35,13 @@ batches' PNG on both platforms. Their timings are not used below.
 | main binary sha256 | `530aafcfad36…` | `fefda4d0612d…` |
 | branch binary sha256 | `b4e4c365fe97…` | `6a58fd112552…` |
 | storage | APFS (internal SSD); outputs in `$TMPDIR` | btrfs on NVMe; outputs on the same disk (`TMPDIR`), not tmpfs |
-| load average (1 min) | 5.2-7.6: a shared desktop with other sessions running | 0.9-1.9 |
+| load average (1 min) | 3.7-5.0: a shared desktop with other sessions running | 0.5-1.8 |
 
 Flags are those of `build.sh`: C `-O2`, plus `-ffp-contract=off` for `draw.c`;
 Rust `--edition 2021 -C opt-level=2`. Each JSON records the full binary hashes,
-the source revision (`b335aa4`, clean) and a hash of every build input, the
-toolchain, font hashes, input hashes and dimensions.
+the harness revision (`e3a8f67`, clean; the binary's build inputs have not
+changed since `22b77e8`) with a hash of every build input, the toolchain, font
+hashes, input hashes and dimensions.
 
 Raw results: macOS [batch A](performance-2026-10-03-macos-a.json) and
 [batch B](performance-2026-10-03-macos-b.json); Linux
@@ -57,8 +53,10 @@ medians, nearest-rank p95, min and max. No sample was discarded.
 
 **Method.** Batches A and B use the same binaries and seeds 17 and 29. Per
 case and binary: 5 warmups, then 40 rounds; every round runs each binary once
-plain and once with `TERMSHOT_PROFILE=1`, the four runs shuffled. Then 5
-separate peak-RSS runs (`/usr/bin/time -l` / `-v`). Nothing else from this
+plain and once with `TERMSHOT_PROFILE=1`, the four runs shuffled. Both kinds
+are spawned the same way (stdout discarded, stderr piped), and profile records
+are parsed after the clock stops. Then 5 separate peak-RSS runs
+(`/usr/bin/time -l` / `-v`). Nothing else from this
 work ran on either host during a batch; other users' work did on the Mac.
 Paired speedups are the median of per-round ratios with a 95% percentile
 bootstrap (2,000 resamples of whole rounds, seed 42). They describe these
@@ -123,55 +121,55 @@ median child user+system ms, RSS the median peak MiB.
 
 | case | macOS wall | macOS CPU | macOS RSS | Linux wall | Linux CPU | Linux RSS | PNG bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `font-builtin` | 9.94 / 11.02 | 8.17 | 14.12 | 9.66 / 10.81 | 9.42 | 15.22 | 205,915 |
-| `font-file` | 10.07 / 11.22 | 8.29 | 13.89 | 9.73 / 10.41 | 9.53 | 14.99 | 205,915 |
-| `cjk-none` | 5.37 / 5.88 | 3.99 | 6.97 | 4.87 / 5.37 | 4.73 | 7.95 | 45,725 |
-| `cjk-subset` | 10.25 / 10.77 | 8.65 | 8.47 | 10.78 / 11.78 | 10.57 | 9.35 | 296,925 |
-| `cjk-cff-primary` | 9.84 / 10.90 | 8.31 | 7.27 | 9.86 / 10.81 | 9.63 | 8.19 | 293,397 |
-| `mixed-subset` | 8.11 / 8.56 | 6.63 | 8.67 | 8.15 / 9.15 | 7.97 | 9.26 | 141,953 |
-| `glyph-overflow` | 17.04 / 21.46 | 15.49 | 8.28 | 16.46 / 18.33 | 16.19 | 8.50 | 365,425 |
-| `cjk-full` | 13.46 / 14.14 | 11.53 | 27.03 | 14.64 / 15.69 | 14.38 | 29.31 | 296,925 |
-| `mixed-full` | 11.58 / 12.12 | 9.83 | 27.20 | 12.75 / 13.66 | 12.48 | 27.94 | 152,792 |
-| `cjk-overflow-full` | 27.31 / 28.76 | 25.45 | 28.30 | 28.62 / 30.71 | 28.26 | 29.78 | 506,727 |
-| `reply-sent` | 9.60 / 10.59 | 8.14 | 13.88 | 9.82 / 11.23 | 9.61 | 14.95 | 205,915 |
-| `draft-ready` | 9.77 / 10.35 | 8.17 | 13.89 | 9.62 / 10.90 | 9.41 | 15.00 | 201,182 |
-| `reply-24px` | 6.15 / 7.21 | 4.78 | 6.94 | 5.51 / 6.15 | 5.37 | 7.90 | 79,424 |
-| `reply-128px` | 32.76 / 37.67 | 30.07 | 69.44 | 38.10 / 40.12 | 37.73 | 70.47 | 955,025 |
-| `real-shell` | 7.15 / 9.59 | 5.69 | 10.42 | 6.65 / 7.41 | 6.47 | 11.43 | 110,584 |
-| `real-less` | 6.57 / 6.89 | 5.10 | 10.28 | 6.32 / 6.92 | 5.92 | 11.34 | 85,844 |
-| `real-vi` | 8.86 / 9.44 | 7.38 | 10.55 | 8.59 / 9.01 | 8.39 | 11.62 | 187,905 |
-| `blank` | 7.35 / 12.44 | 5.61 | 12.72 | 6.25 / 6.93 | 5.98 | 13.77 | 95,475 |
-| `color-grid` | 19.16 / 32.90 | 17.38 | 7.70 | 19.46 / 20.42 | 19.20 | 8.37 | 649,294 |
-| `ascii-overflow` | 7.78 / 8.76 | 6.36 | 8.27 | 7.85 / 8.45 | 7.66 | 8.20 | 34,814 |
-| `rounded-boxes` | 16.28 / 16.61 | 14.70 | 12.86 | 15.68 / 17.00 | 15.41 | 14.00 | 141,158 |
-| `dense` | 13.15 / 13.70 | 11.44 | 13.88 | 13.34 / 14.18 | 13.09 | 14.86 | 361,314 |
-| `ansi-replay` | 21.25 / 24.07 | 19.49 | 18.38 | 19.63 / 20.86 | 19.35 | 14.74 | 205,915 |
-| `large` | 43.65 / 50.92 | 40.98 | 65.50 | 48.85 / 53.55 | 48.39 | 65.46 | 1,362,320 |
-| `unicode` | 8.30 / 8.70 | 6.95 | 7.14 | 8.07 / 8.74 | 7.90 | 8.05 | 157,189 |
+| `font-builtin` | 9.27 / 10.41 | 7.70 | 14.11 | 9.64 / 10.39 | 9.45 | 15.30 | 205,915 |
+| `font-file` | 9.32 / 9.69 | 7.77 | 13.91 | 9.85 / 11.00 | 9.64 | 15.03 | 205,915 |
+| `cjk-none` | 5.17 / 6.71 | 3.82 | 6.94 | 4.90 / 5.66 | 4.75 | 8.07 | 45,725 |
+| `cjk-subset` | 9.75 / 10.42 | 8.22 | 8.47 | 11.03 / 12.13 | 10.84 | 9.43 | 296,925 |
+| `cjk-cff-primary` | 9.17 / 9.92 | 7.84 | 7.45 | 9.88 / 11.20 | 9.65 | 8.11 | 293,397 |
+| `mixed-subset` | 7.97 / 8.41 | 6.43 | 8.70 | 8.18 / 8.93 | 8.01 | 9.40 | 141,953 |
+| `glyph-overflow` | 17.20 / 17.68 | 15.23 | 7.95 | 16.37 / 18.14 | 16.10 | 8.53 | 365,425 |
+| `cjk-full` | 12.67 / 13.17 | 10.96 | 27.03 | 14.85 / 16.06 | 14.59 | 29.19 | 296,925 |
+| `mixed-full` | 11.18 / 11.64 | 9.47 | 27.23 | 12.98 / 13.87 | 12.71 | 29.46 | 152,792 |
+| `cjk-overflow-full` | 26.92 / 27.79 | 24.91 | 27.91 | 28.66 / 29.79 | 28.36 | 28.52 | 506,727 |
+| `reply-sent` | 9.17 / 9.83 | 7.68 | 13.86 | 9.71 / 10.42 | 9.50 | 15.06 | 205,915 |
+| `draft-ready` | 9.13 / 9.64 | 7.72 | 13.88 | 9.84 / 11.20 | 9.61 | 15.03 | 201,182 |
+| `reply-24px` | 5.83 / 6.30 | 4.48 | 6.97 | 5.63 / 6.15 | 5.48 | 7.98 | 79,424 |
+| `reply-128px` | 31.56 / 33.00 | 28.86 | 70.38 | 38.06 / 42.02 | 37.64 | 70.42 | 955,025 |
+| `real-shell` | 6.79 / 7.30 | 5.36 | 10.42 | 6.84 / 7.43 | 6.65 | 11.31 | 110,584 |
+| `real-less` | 6.30 / 6.88 | 4.87 | 10.30 | 6.50 / 6.89 | 6.10 | 11.35 | 85,844 |
+| `real-vi` | 8.22 / 11.89 | 6.81 | 10.55 | 8.59 / 9.37 | 8.41 | 11.73 | 187,905 |
+| `blank` | 6.31 / 6.63 | 4.97 | 12.69 | 6.18 / 6.76 | 5.87 | 13.74 | 95,475 |
+| `color-grid` | 18.04 / 19.72 | 16.43 | 7.58 | 19.22 / 20.47 | 18.95 | 8.35 | 649,294 |
+| `ascii-overflow` | 7.46 / 7.71 | 6.10 | 8.27 | 7.89 / 9.00 | 7.71 | 8.36 | 34,814 |
+| `rounded-boxes` | 15.83 / 16.27 | 14.21 | 12.89 | 15.73 / 16.49 | 15.48 | 13.85 | 141,158 |
+| `dense` | 12.15 / 12.53 | 10.65 | 13.88 | 13.12 / 14.46 | 12.88 | 15.10 | 361,314 |
+| `ansi-replay` | 20.80 / 22.03 | 18.97 | 18.58 | 19.69 / 20.86 | 19.43 | 14.96 | 205,915 |
+| `large` | 41.91 / 45.05 | 39.21 | 65.48 | 49.24 / 53.02 | 48.80 | 65.21 | 1,362,320 |
+| `unicode` | 8.24 / 8.74 | 6.73 | 7.33 | 7.89 / 8.64 | 7.71 | 8.04 | 157,189 |
 
-Medians differ by less than 20% between the machines. Linux spends more time
+Medians differ by at most about 21% between the machines. Linux spends more time
 inside termshot (`total_ms`) and macOS more outside it (start-up, below), so
 small cases tend to be faster on Linux and the largest images on macOS. At
-128 px Linux's Adler-32 (`deflate_checksum`) costs about twice macOS's (13.7
-vs 6.4 ms).
+128 px Linux's Adler-32 (`deflate_checksum`) costs about twice macOS's (13.6
+vs 6.2 ms).
 
 What the font paths cost, from these medians:
 
 - **Built-in vs file**: no measurable difference. Copying the embedded font
-  (`font_read_ms` 0.046 ms macOS, 0.139 Linux) costs the same as reading the file
-  (0.059, 0.137); the paired `font-builtin`/`font-file` gap is inside run-to-run noise.
+  (`font_read_ms` 0.046 ms macOS, 0.137 Linux) costs about the same as reading the
+  file (0.047, 0.151); the paired `font-builtin`/`font-file` gap is inside run-to-run noise.
 - **A fallback font is cheap until it is big.** Loading the subset takes
-  0.13 ms on macOS and 0.37 ms on Linux, mostly padding. Between `cjk-none` and
+  0.12 ms on macOS and 0.36 ms on Linux, mostly padding. Between `cjk-none` and
   `cjk-subset` most of the difference is compressing a busier image
-  (`deflate_match_emit` 0.9 → 4.3 ms on macOS), not the fallback lookups.
-  With the real 19 MB collection `font_load` is **3.0 ms (macOS) and 4.7 ms
+  (`deflate_match_emit` 0.9 → 4.2 ms on macOS), not the fallback lookups.
+  With the real 19 MB collection `font_load` is **2.8 ms (macOS) and 4.8 ms
   (Linux)**, against 0.4 and 1.0 ms with the subset. Almost all of it is
-  `fallback_read_ms` (2.5 / 3.7 ms); checking face 3 takes 0.09 ms and padding
-  0.12 / 0.34 ms. It also adds about 19 MiB of peak RSS.
+  `fallback_read_ms` (2.4 / 3.7 ms); checking face 3 takes 0.09 / 0.08 ms and
+  padding 0.11 / 0.36 ms. It also adds about 19 MiB of peak RSS.
 - **Overflowing the glyph cache** costs rasterization, not lookup. With 1,116
-  distinct glyphs, 1,225 evictions make `glyph_ms` 4.8 ms (macOS) / 4.3 ms (Linux),
+  distinct glyphs, 1,225 evictions make `glyph_ms` 4.7 ms (macOS) / 4.1 ms (Linux),
   against 0.8 ms (macOS) for the 800-codepoint `unicode` case. With 1,500 distinct CJK
-  fallback glyphs `glyph_ms` is 9.7 / 9.4 ms, the largest stage of that case.
+  fallback glyphs `glyph_ms` is 9.5 / 9.4 ms, the largest stage of that case.
 
 ### Where the time goes, per case (input for #20, #21, #22)
 
@@ -181,21 +179,21 @@ holds every font timer). `total` is the Rust `total_ms`.
 
 | case | macOS total: top stages | Linux total: top stages |
 | --- | --- | --- |
-| `font-builtin` | 6.40: deflate_match_emit 2.80, background 0.93, deflate_checksum 0.88 | 8.74: deflate_match_emit 3.85, deflate_checksum 1.93, background 0.78 |
-| `cjk-none` | 2.39: deflate_match_emit 0.90, output_write 0.26, background 0.25 | 4.20: deflate_match_emit 1.28, background 0.81, font_load 0.68 |
-| `cjk-subset` | 6.96: deflate_match_emit 4.25, blend 0.54, output_write 0.42 | 9.98: deflate_match_emit 5.36, font_load 1.04, background 0.80 |
-| `cjk-cff-primary` | 6.50: deflate_match_emit 4.10, blend 0.53, output_write 0.33 | 9.33: deflate_match_emit 5.17, background 0.89, blend 0.75 |
-| `mixed-subset` | 4.89: deflate_match_emit 2.35, glyph 0.70, font_load 0.37 | 7.22: deflate_match_emit 2.96, font_load 1.06, background 0.82 |
-| `glyph-overflow` | 13.74: deflate_match_emit 6.09, glyph 4.81, blend 0.95 | 15.82: deflate_match_emit 7.05, glyph 4.29, blend 1.09 |
-| `cjk-full` | 9.82: deflate_match_emit 4.25, font_load 3.00, output_write 0.56 | 13.52: deflate_match_emit 5.21, font_load 4.74, background 0.81 |
-| `mixed-full` | 7.98: font_load 3.00, deflate_match_emit 2.46, glyph 0.92 | 11.23: font_load 4.72, deflate_match_emit 3.12, glyph 0.81 |
-| `cjk-overflow-full` | 23.59: glyph 9.71, deflate_match_emit 8.06, font_load 3.05 | 27.29: glyph 9.41, deflate_match_emit 9.16, font_load 4.65 |
-| `reply-128px` | 28.15: deflate_match_emit 10.62, deflate_checksum 6.36, background 5.57 | 37.15: deflate_checksum 13.68, deflate_match_emit 13.39, background 3.73 |
-| `color-grid` | 15.70: deflate_match_emit 12.20, output_write 0.66, blend 0.50 | 18.80: deflate_match_emit 13.75, background 0.82, blend 0.70 |
-| `rounded-boxes` | 12.82: geometry 6.30, deflate_match_emit 3.77, background 0.90 | 14.67: geometry 6.43, deflate_match_emit 3.94, deflate_checksum 1.94 |
-| `ascii-overflow` | 4.82: parse 1.78, input_read 0.51, blend 0.46 | 6.97: parse 1.86, input_read 1.03, background 0.69 |
-| `ansi-replay` | 17.69: parse 10.30, deflate_match_emit 2.84, background 0.93 | 18.96: parse 9.02, deflate_match_emit 3.59, deflate_checksum 1.95 |
-| `large` | 39.70: deflate_match_emit 18.39, deflate_checksum 5.85, background 5.74 | 49.24: deflate_match_emit 20.95, deflate_checksum 12.38, blend 7.16 |
+| `font-builtin` | 5.94: deflate_match_emit 2.73, background 0.92, deflate_checksum 0.87 | 8.59: deflate_match_emit 3.67, deflate_checksum 1.97, background 0.78 |
+| `cjk-none` | 2.22: deflate_match_emit 0.88, background 0.25, font_load 0.24 | 4.26: deflate_match_emit 1.33, background 0.80, font_load 0.69 |
+| `cjk-subset` | 6.57: deflate_match_emit 4.18, blend 0.53, font_load 0.36 | 9.96: deflate_match_emit 5.29, font_load 0.99, background 0.82 |
+| `cjk-cff-primary` | 6.30: deflate_match_emit 4.02, blend 0.51, glyph 0.30 | 9.30: deflate_match_emit 5.16, background 0.92, blend 0.74 |
+| `mixed-subset` | 4.93: deflate_match_emit 2.29, glyph 0.68, output_write 0.46 | 7.14: deflate_match_emit 2.96, font_load 0.99, background 0.81 |
+| `glyph-overflow` | 14.02: deflate_match_emit 6.06, glyph 4.68, blend 0.93 | 15.82: deflate_match_emit 7.19, glyph 4.14, blend 1.06 |
+| `cjk-full` | 9.09: deflate_match_emit 4.14, font_load 2.83, blend 0.53 | 13.70: deflate_match_emit 5.17, font_load 4.84, background 0.79 |
+| `mixed-full` | 7.56: font_load 2.85, deflate_match_emit 2.41, glyph 0.89 | 11.55: font_load 4.81, deflate_match_emit 3.16, glyph 0.82 |
+| `cjk-overflow-full` | 23.09: glyph 9.49, deflate_match_emit 7.95, font_load 2.92 | 27.65: glyph 9.37, deflate_match_emit 9.16, font_load 4.80 |
+| `reply-128px` | 26.82: deflate_match_emit 10.32, deflate_checksum 6.17, background 5.72 | 37.17: deflate_checksum 13.63, deflate_match_emit 13.31, background 3.77 |
+| `color-grid` | 14.90: deflate_match_emit 11.90, blend 0.48, png_pack 0.38 | 18.94: deflate_match_emit 13.99, background 0.79, blend 0.68 |
+| `rounded-boxes` | 12.46: geometry 6.14, deflate_match_emit 3.67, deflate_checksum 0.88 | 14.63: geometry 6.36, deflate_match_emit 3.93, deflate_checksum 1.94 |
+| `ascii-overflow` | 4.63: parse 1.76, input_read 0.48, blend 0.45 | 7.07: parse 2.01, input_read 1.03, background 0.69 |
+| `ansi-replay` | 17.19: parse 10.09, deflate_match_emit 2.77, background 0.92 | 18.49: parse 9.06, deflate_match_emit 3.55, deflate_checksum 1.93 |
+| `large` | 38.13: deflate_match_emit 17.89, deflate_checksum 5.67, background 5.65 | 49.45: deflate_match_emit 21.01, deflate_checksum 12.38, blend 7.24 |
 
 `bench-report.py` prints this table, with the rest of the cases, from any result file.
 
@@ -210,7 +208,7 @@ holds every font timer). `total` is the Rust `total_ms`.
   `cjk-overflow-full`); box/arc geometry dominates `rounded-boxes`; background
   and blending scale with image size.
 - **Outside `total_ms`**: process start-up, dynamic loading, exit and the
-  harness's spawn take a median **3.3-5.0 ms on macOS but 1.0-1.5 ms on Linux**
+  harness's spawn take a median **3.0-5.0 ms on macOS but 1.0-1.5 ms on Linux**
   (profiled wall minus `total_ms`), the largest single cost of the small macOS
   cases. No timer inside termshot can see it.
 
@@ -223,12 +221,12 @@ runs per binary, then compared with the same file's 5 warm runs:
 
 | case | cold median / p95 (main) | cold median / p95 (branch) | warm median (branch) |
 | --- | ---: | ---: | ---: |
-| `font-builtin` | 16.33 / 17.10 | 16.42 / 19.56 | 9.95 |
-| `font-file` | 17.16 / 19.95 | 17.34 / 19.53 | 10.11 |
-| `cjk-subset` | 18.18 / 19.85 | 17.99 / 19.56 | 11.17 |
-| `cjk-full` | 26.54 / 29.66 | 26.38 / 28.57 | 14.69 |
+| `font-builtin` | 16.61 / 17.30 | 17.01 / 18.19 | 10.15 |
+| `font-file` | 18.06 / 18.87 | 18.07 / 20.34 | 9.85 |
+| `cjk-subset` | 18.66 / 21.03 | 19.00 / 19.88 | 11.12 |
+| `cjk-full` | 27.18 / 28.90 | 27.18 / 31.23 | 14.81 |
 
-A cold start adds 6.5-7.2 ms to the three small-font cases, and 11.7 ms with
+A cold start adds 6.9-8.2 ms to the three small-font cases, and 12.4 ms with
 the 19 MB collection. macOS has no unprivileged way to drop its cache (`purge` needs root,
 which this host's account does not have), so no macOS cold result is claimed.
 
@@ -286,9 +284,9 @@ draws fallback glyphs, and that profiling does not change the PNG.
 Two separate questions, both measured in the same interleaved rounds:
 
 - **Does the new instrumentation slow ordinary runs?** main/branch paired wall
-  ratios, both batches, are inside **0.98-1.03 on every case on macOS** and on
-  Linux too, except `ascii-overflow` on Linux, 0.903 [0.877, 0.935] and
-  0.900 [0.864, 0.926]. That one is **code placement, not the timers**: the
+  ratios, both batches, are inside **0.98-1.02 on every case on macOS** and
+  0.97-1.03 on Linux, except `ascii-overflow` on Linux, 0.897 [0.873, 0.942]
+  and 0.900 [0.885, 0.937]. That one is **code placement, not the timers**: the
   `replay_sized` function it spends its parse time in is unchanged, but it moved
   from an address 48 bytes past a 64-byte boundary to one on it. Building both
   revisions with `-C llvm-args=-align-loops=64` puts their parse times within
@@ -296,20 +294,20 @@ Two separate questions, both measured in the same interleaved rounds:
   are 1.087 vs 1.857 ms; moving only `main.rs`/`font.rs` reproduces it and
   restoring `fs::read` does not remove it. (These diagnostic builds were
   separate, ad-hoc profiled runs; only their medians are recorded here.)
-  macOS shows no such shift (1.009 and 1.012). So on Zen 4 the ASCII parse loop
+  macOS shows no such shift (1.001 and 1.015). So on Zen 4 the ASCII parse loop
   alone can swing ~0.7 ms on an unrelated change. #21 should compare aligned
   builds, or several layouts, before claiming a parser gain or loss.
 - **What does `TERMSHOT_PROFILE` itself cost?** The profiled/plain paired wall
-  ratio (batch A, branch binary) is 1.00-1.07 on macOS and 0.98-1.08 on Linux. It is largest where
-  many cells each read the clock several times relative to little other work
-  (`cjk-none` 1.067 / 1.082, `ascii-overflow` 1.07 / 1.06) and near 1.00 for
+  ratio (batch A, branch binary) is 1.00-1.05 on macOS and 0.99-1.08 on
+  Linux. It is largest where many cells each read the clock several times relative to little other work
+  (`cjk-none` 1.049 / 1.079, `ascii-overflow` 1.050 / 1.037) and near 1.00 for
   large images. Stage medians therefore slightly overstate per-cell stages; the
   plain runs, not the profiled ones, give the end-to-end numbers above.
 
 ### Remaining limits
 
 - Each host ran two warm batches; the Mac is a shared desktop with a load
-  average of 5-7 during them, so its p95 values in particular are noisy. No
+  average of 3.7-5.0 during them, so its p95 values in particular are noisy. No
   wall-clock threshold belongs in CI; the pixel and codec checks stay portable.
 - Cold-cache results are Linux only, 15 runs per binary and case.
 - The full Noto CJK collection comes from the system, not the repository; its
@@ -337,21 +335,13 @@ python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
 `--suite legacy` or `--suite fonts` runs one half; `--case` and `--cold-case`
 are repeatable. A path check whose counter is missing fails the batch;
 `--unchecked main` exempts a binary that predates the counters, as `d83c8fd`
-does. The timed batches above ran before that option and the per-run PNG
-hashing existed; then, a missing counter was skipped, so only the branch
-binary's counters were checked, as now.
+does, so only the branch binary's counters were checked.
 
 ## Historical: third optimization round (2026-10-01, `c44d83c`, Apple M3)
 
 The section below is unchanged from that round, except for its heading level.
 Its harness ran plain and profiled runs in separate loops, and its timers
 charged the built-in font's preparation to `font_check_ms`.
-
-Third optimization round, remeasured on 2026-10-01 against **main at `c44d83c`**
-(the merge of PR #11). Both builds include the current CLI, complete box/block
-geometry, wide and combining characters, and fallback-font support. The tests
-now use native C/Rust harnesses. All comparisons below measure the additional
-optimizations in this PR; earlier reports remain in Git history.
 
 ### Method and limits
 
