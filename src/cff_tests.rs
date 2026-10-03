@@ -249,6 +249,8 @@ fn hand_made_cff2_fonts_draw_the_square() {
         ("deltas dropped", craft::cff2_blended()),
         ("blend in the Private DICT", craft::cff2_private_blend()),
         ("vsindex in the Private DICT", craft::cff2_private_vsindex_1()),
+        ("two vsindex in the Private DICT", craft::cff2_private_vsindex_twice()),
+        ("8000 offsets to one ItemVariationData", craft::cff2_shared_store_data()),
         ("vsindex in the charstring", craft::cff2_charstring_vsindex()),
         ("local and global subrs", craft::cff2_subrs()),
         ("FDSelect format 0", craft::cff2_fdselect(0)),
@@ -732,6 +734,27 @@ pub(crate) mod craft {
     pub fn cff2_private_vsindex_1() -> Vec<u8> {
         let dicts = vec![FontDict2 { private: [dint(1), vec![22]].concat(), subrs: Vec::new() }];
         sfnt2(&Cff2 { dicts, vstore: store(3, &[1, 3]), ..Cff2::new(vec![square2(), blended_square(3)]) })
+    }
+
+    /// vsindex 0, then 1: the last is the one the charstrings start with.
+    pub fn cff2_private_vsindex_twice() -> Vec<u8> {
+        let dicts = vec![FontDict2 { private: [dint(0), vec![22], dint(1), vec![22]].concat(), subrs: Vec::new() }];
+        sfnt2(&Cff2 { dicts, vstore: store(3, &[1, 3]), ..Cff2::new(vec![square2(), blended_square(3)]) })
+    }
+
+    /// 8000 ItemVariationData offsets, all to one of 8000 region indexes:
+    /// checked once, not 8000 times (64 million region checks).
+    pub fn cff2_shared_store_data() -> Vec<u8> {
+        let be16 = |v: &[u16]| v.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>();
+        let n = 8000usize;
+        let list_at = 8 + 4 * n;
+        let list = be16(&[1, 1, 0, 0x4000, 0x4000]);
+        let data = (list_at + list.len()) as u32;
+        let ivd = [be16(&[0, 0, n as u16]), vec![0; 2 * n]].concat();
+        let offsets = data.to_be_bytes().repeat(n);
+        let body = [be16(&[1]), (list_at as u32).to_be_bytes().to_vec(), be16(&[n as u16]), offsets, list, ivd].concat();
+        let vstore = [be16(&[body.len() as u16]), body].concat();
+        sfnt2(&Cff2 { vstore, ..Cff2::new(vec![square2(), square2()]) })
     }
 
     /// The same chosen by the charstring.

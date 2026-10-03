@@ -12,6 +12,8 @@
 //! the region counts are used, because they say how many operands each
 //! `blend` takes.
 
+use std::collections::HashMap;
+
 /// stb_truetype's vertex kinds.
 pub const MOVE: u8 = 1;
 pub const LINE: u8 = 2;
@@ -291,10 +293,13 @@ impl From<f32> for Count {
 /// The region count of each ItemVariationData of the CFF2 variation store
 /// at `at`: how many deltas `blend` takes per value. The deltas are dropped
 /// for the default instance, so the rest of the store is only checked to
-/// lie inside it.
+/// lie inside it. Sizes are worked out in u64, which the 16- and 32-bit
+/// fields can't overflow, and each ItemVariationData is checked once however
+/// many offsets name it, so a store's checking costs at most its size.
 fn read_store(cff: &[u8], at: usize) -> Result<Vec<usize>, String> {
     let length = u16_at(cff, at)?;
     let store = cff.get(at + 2..at + 2 + length).ok_or("runs past the table")?;
+    let fits = |end: u64| end <= store.len() as u64;
     let format = u16_at(store, 0)?;
     if format != 1 {
         return Err(format!("format {format}"));
@@ -302,17 +307,25 @@ fn read_store(cff: &[u8], at: usize) -> Result<Vec<usize>, String> {
     let list = u32_at(store, 2)?;
     let count = u16_at(store, 6)?;
     let (axes, regions) = (u16_at(store, list)?, u16_at(store, list + 2)?);
-    if list + 4 + regions * axes * 6 > store.len() {
+    if !fits(list as u64 + 4 + regions as u64 * axes as u64 * 6) {
         return Err("the region list runs past the store".into());
     }
+    let mut checked: HashMap<usize, usize> = HashMap::new();
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let data = u32_at(store, 8 + 4 * i)?;
+        if let Some(&n) = checked.get(&data) {
+            out.push(n);
+            continue;
+        }
         let (items, words, n) = (u16_at(store, data)?, u16_at(store, data + 2)?, u16_at(store, data + 4)?);
         // The high bit of the word count makes words 32 bits and the rest 16.
         let (long, words) = (words & 0x8000 != 0, words & 0x7fff);
         if words > n {
             return Err(format!("ItemVariationData {i} has {words} word deltas of {n}"));
+        }
+        if !fits(data as u64 + 6 + 2 * n as u64) {
+            return Err(format!("ItemVariationData {i} runs past the store"));
         }
         for j in 0..n {
             let region = u16_at(store, data + 6 + 2 * j)?;
@@ -320,10 +333,12 @@ fn read_store(cff: &[u8], at: usize) -> Result<Vec<usize>, String> {
                 return Err(format!("ItemVariationData {i} names region {region} of {regions}"));
             }
         }
-        let row = if long { 4 * words + 2 * (n - words) } else { 2 * words + (n - words) };
-        if data + 6 + 2 * n + items * row > store.len() {
+        let (words, rest) = (words as u64, (n - words) as u64);
+        let row = if long { 4 * words + 2 * rest } else { 2 * words + rest };
+        if !fits(data as u64 + 6 + 2 * n as u64 + items as u64 * row) {
             return Err(format!("ItemVariationData {i} runs past the store"));
         }
+        checked.insert(data, n);
         out.push(n);
     }
     Ok(out)
@@ -352,7 +367,9 @@ fn read_private2<'a>(cff: &'a [u8], dict: &[u8], regions: &[usize]) -> Result<(I
     }
     let private = offset.checked_add(size).and_then(|end| cff.get(offset..end)).ok_or("Private DICT runs past the table")?;
     let private = dict2(private, Some(regions))?;
-    let [vsindex] = ints::<1>(find(&private, 22), 22)?;
+    // The last vsindex is the one in force when the charstrings start.
+    let last = private.iter().rev().find(|(op, _)| *op == 22).map_or(&[][..], |(_, operands)| operands);
+    let [vsindex] = ints::<1>(last, 22)?;
     let [local] = ints::<1>(find(&private, 19), 19)?;
     if local == 0 {
         return Ok((Index { cff, ..Index::default() }, vsindex));
