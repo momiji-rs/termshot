@@ -20,11 +20,26 @@ pub(crate) fn render_with(
     px: f64,
     out: &str,
 ) -> i32 {
+    render_marked(cells, &[], cols, rows, font, fallback, px, out)
+}
+
+/// render_with, with the cells' combining marks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_marked(
+    cells: &[Cell],
+    marks: &[CellMarks],
+    cols: usize,
+    rows: usize,
+    font: &font::Font,
+    fallback: Option<&font::Font>,
+    px: f64,
+    out: &str,
+) -> i32 {
     let out = CString::new(out).unwrap();
     let draw = |font: &font::Face, fallback: *const font::Face| unsafe {
         let none = std::ptr::null();
-        draw_png_images(cells.as_ptr(), cols as i32, rows as i32, font, fallback, px, out.as_ptr(), 0, none, 0,
-            std::ptr::null_mut())
+        draw_png_images(cells.as_ptr(), marks.as_ptr(), marks.len(), cols as i32, rows as i32, font, fallback, px,
+            out.as_ptr(), 0, none, 0, std::ptr::null_mut())
     };
     font.with_face(|font| match fallback {
         None => draw(font, std::ptr::null()),
@@ -111,7 +126,7 @@ fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
         .with_face(|face| {
             let fallback = if fallback { face as *const font::Face } else { std::ptr::null() };
             unsafe {
-                draw_png_images(cells.as_ptr(), cols as i32, 2, face, fallback, 16.0, out.as_ptr(), 0,
+                draw_png_images(cells.as_ptr(), std::ptr::null(), 0, cols as i32, 2, face, fallback, 16.0, out.as_ptr(), 0,
                     std::ptr::null(), 0, &mut empty)
             }
         })

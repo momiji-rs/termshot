@@ -129,6 +129,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   outline is slanted 12 degrees before it is rasterized, so it is as smooth
   as upright text with any font. Box drawing, block elements and the box
   for a missing glyph stay upright.
+- Combining marks with no precomposed form are kept and drawn (#14): Thai
+  vowel and tone marks, Hebrew points, stacked or uncommon Latin accents
+  (q + U+0301), and, approximately, Indic vowel signs and viramas. A cell
+  keeps up to four marks after its character, in a side table beside the
+  cells, and each is drawn over the character in its colours, from the font
+  or else `--fallback-font`, where its font puts it (there is no shaping).
+  `--text` and `--json` write a cell's marks after its character, as
+  `tmux capture-pane -p` does. Marks join the last printed character,
+  wherever the cursor has gone since, as in xterm, and go with it when the
+  line is edited or scrolled; one whose character was erased or overwritten
+  is dropped. REP repeats a character with its marks. Emoji sequences (ZWJ,
+  skin tones, VS16) are kept in the text but still drawn one code point per
+  cell.
 
 ### Changed
 

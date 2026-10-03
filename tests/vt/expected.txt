@@ -539,11 +539,141 @@ cursor 4,0
 
 cursor 3,0
 == zwj
-ab
+a‍b
 
 
 
 cursor 2,0
+== combine-stack
+q́̂x
+
+
+
+cursor 2,0
+== combine-thai
+กั่x
+
+
+
+cursor 2,0
+== combine-hebrew
+שּx
+
+
+
+cursor 2,0
+== combine-wide
+界́x
+
+
+
+cursor 3,0
+== combine-pending
+abcdefghij́
+
+
+
+cursor 9,0
+== combine-overwrite
+x
+
+
+
+cursor 1,0
+== combine-wide-tail
+ x
+
+
+
+cursor 2,0
+== combine-ech
+ x
+
+
+
+cursor 0,0
+== combine-ich
+ q́x
+
+
+
+cursor 0,0
+== combine-dch
+q́x
+
+
+
+cursor 0,0
+== combine-il
+
+
+q́
+
+cursor 0,0
+== combine-scroll
+q́
+
+cursor 1,1
+== combine-region
+
+q́
+
+
+cursor 1,2
+== combine-ri
+
+
+q́
+
+cursor 1,1
+== combine-alt
+q́
+
+
+
+cursor 1,0
+== combine-alt-screen
+q́
+
+
+
+cursor 1,0
+== combine-ris
+x
+
+
+
+cursor 1,0
+== combine-max
+q́̂̃̄
+
+
+
+cursor 1,0
+== combine-rep
+q́q́q́
+
+
+
+cursor 3,0
+== combine-move
+ab́
+
+
+
+cursor 5,0
+== combine-crlf
+ab́
+x
+
+
+cursor 1,1
+== combine-erased
+a
+
+
+
+cursor 1,0
 == wide-1x1
 界
 cursor 0,0

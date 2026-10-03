@@ -9,14 +9,23 @@ import sys
 import unicodedata
 
 
+def zero_width(ch):
+    """A combining mark or format character, kept with the character before
+    it (src/unicode.rs and tools/unicode-tables.rs say which)."""
+    return (unicodedata.category(ch) in ("Mn", "Me", "Cf") and ch != "­") or \
+        "ᅠ" <= ch <= "ᇿ" or "ힰ" <= ch <= "퟿"
+
+
 def width(text):
     """The fewest and the most cells text can take. Python's Unicode version
     may be older than termshot's tables, so a code point it has unassigned
-    could be either width; every other one is wide when it is W or F."""
+    could be any width; every other one takes none when it is a mark, and
+    is wide when it is W or F."""
     unknown = sum(unicodedata.category(ch) == "Cn" for ch in text)
-    wide = sum(unicodedata.east_asian_width(ch) in "WF" for ch in text if unicodedata.category(ch) != "Cn")
-    least = len(text) + wide
-    return least, least + unknown
+    known = [ch for ch in text if unicodedata.category(ch) != "Cn"]
+    wide = sum(unicodedata.east_asian_width(ch) in "WF" for ch in known)
+    least = len(known) - sum(map(zero_width, known)) + wide
+    return least, least + 2 * unknown
 
 
 def check(json_path):
