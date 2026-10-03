@@ -23,7 +23,7 @@ const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
 // (log, px, cols, rows, font options). A log is examples/<log>.pty or
 // tests/fixtures/<log>.pty; with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 40] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 43] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -68,6 +68,12 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 40] = [
     ("cff2", "46", 40, 4, &["--font", CJK_VF]),
     ("cursor-underline", "24", 8, 2, &[]),
     ("cursor-bar", "24", 8, 2, &[]),
+    // Sixel: hand-made images (HLS, P2 0 and 1, $ and -, the VT340 palette,
+    // scrolling), and ImageMagick 7.1.2-31's output for two generated images
+    // (`magick in.png -colors 16 sixel:-`, and 64 dithered colours).
+    ("sixel-hand", "24", 20, 8, &[]),
+    ("sixel-magick", "24", 40, 4, &[]),
+    ("sixel-magick-dither", "24", 40, 5, &[]),
 ];
 
 extern "C" {
