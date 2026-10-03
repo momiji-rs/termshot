@@ -1,7 +1,8 @@
 //! Replay the self-contained subset of kitty graphics: directly transmitted
-//! images, stored (a=t) and placed (a=p, a=T), at the cursor or relative to
-//! another placement, and deleted as kitty does.
-//! All coordinates are pixels computed from the same font metrics as draw.c.
+//! images, stored (a=t) and placed (a=p, a=T), at the cursor, relative to
+//! another placement, or in Unicode placeholder cells, and deleted as kitty
+//! does. All coordinates are pixels computed from the same font metrics as
+//! draw.c.
 
 use std::rc::Rc;
 
@@ -18,6 +19,31 @@ const MAX_DEPTH: usize = 8;
 /// Where a relative placement's cell may be, in cells either way: far past
 /// any screen, and small enough that pixel positions cannot overflow.
 const MAX_CELL: i64 = 1 << 24;
+
+/// U+10EEEE, kitty's Unicode placeholder: a cell that shows part of the
+/// image its foreground colour names, through a virtual placement.
+pub const PLACEHOLDER: u32 = 0x10EEEE;
+
+/// A placeholder cell on the final screen, as the screen gives it to
+/// `Graphics::finish`.
+pub struct PlaceholderCell {
+    pub row: usize,
+    pub col: usize,
+    /// kitty's `color_to_id` of the cell's foreground and underline colours:
+    /// 0 for the default, n for palette colour n (SGR 30-37 and 90-97 too),
+    /// and 0xRRGGBB for a 24-bit colour.
+    pub image: u32,
+    pub placement: u32,
+    /// The cell's first three combining marks, 0 where it has fewer.
+    pub marks: [u32; 3],
+}
+
+/// The number a row or column diacritic stands for, plus one; 0 for any
+/// other character, which leaves the value to be inherited (kitty's
+/// `diacritic_to_num`).
+fn diacritic(mark: u32) -> u32 {
+    crate::rowcolumn_diacritics::DIACRITICS.binary_search(&mark).map_or(0, |i| i as u32 + 1)
+}
 
 extern "C" {
     fn image_png_size(data: *const u8, len: i32, w: *mut i32, h: *mut i32) -> i32;
@@ -63,6 +89,9 @@ pub struct Placement {
     pub w: i64,
     pub h: i64,
     slices: Vec<ImageSlice>,
+    /// Where it is drawn across, in pixels: a placeholder run's cells. Other
+    /// placements are not cut.
+    clip_x: (i64, i64),
     /// The image's key, and a copy of its id, which never changes while the
     /// image has placements.
     image: u64,
@@ -88,6 +117,14 @@ pub struct Placement {
     parent_at: usize,
     /// Where the image starts in its first cell, in pixels.
     inner: (i64, i64),
+    /// A virtual placement (U=1): never drawn itself, but shown by the
+    /// placeholder cells that name it. It has no cells: `cols` and `rows`
+    /// are the c and r it was put with, 0 for the image's own size.
+    is_virtual: bool,
+    /// A relative placement whose chain ends at a virtual placement: that
+    /// placement's key and the offset in cells from it. It has no position
+    /// until the final screen's placeholders give the virtual one theirs.
+    virtual_root: Option<(u64, i64, i64)>,
 }
 
 /// Borrowed only for the duration of draw_png_images; pixels remain Rust-owned.
@@ -102,6 +139,8 @@ pub struct ImageView {
     h: i64,
     clip_top: i64,
     clip_bottom: i64,
+    clip_left: i64,
+    clip_right: i64,
     /// The source rectangle sampled, inside width x height; never empty.
     src_x: u32,
     src_y: u32,
@@ -135,6 +174,8 @@ impl Placement {
             h: self.h,
             clip_top: slice.top,
             clip_bottom: slice.bottom,
+            clip_left: self.clip_x.0,
+            clip_right: self.clip_x.1,
             src_x: self.src[0],
             src_y: self.src[1],
             src_w: self.src[2],
@@ -158,6 +199,8 @@ impl ImageView {
             h,
             clip_top: y,
             clip_bottom: y + h,
+            clip_left: x,
+            clip_right: x + w,
             src_x: 0,
             src_y: 0,
             src_w: 1,
@@ -205,6 +248,8 @@ struct Command {
     compressed: bool,
     /// S: the size of the PNG data inside a compressed payload.
     size: u32,
+    /// U=1 (any nonzero U, as kitty reads it): a virtual placement.
+    virtual_put: bool,
     no_move: bool,
     more: bool,
     delete: u8,
@@ -292,8 +337,8 @@ impl Command {
                 b'm' if val == b"0" || val == b"1" => cmd.more = val == b"1",
                 b'q' if number(val)? <= 2 => {}
                 b'd' if val.len() == 1 => cmd.delete = val[0],
-                // These defaults are harmless. Reject features we cannot replay.
-                b'U' if val == b"0" => {}
+                b'U' => cmd.virtual_put = number(val)? != 0,
+                // Reject features we cannot replay.
                 _ => return None,
             }
         }
@@ -341,8 +386,8 @@ pub fn needs_cell_metrics(data: &[u8]) -> bool {
                         b'p' => sent.contains(&name) || (c.id != 0 && c.id <= free_ids),
                         _ => false,
                     };
-                    // A relative placement never moves the cursor.
-                    if moves && !c.no_move && c.parent_id == 0 {
+                    // Neither a relative nor a virtual placement moves the cursor.
+                    if moves && !c.no_move && c.parent_id == 0 && !c.virtual_put {
                         return true;
                     }
                 }
@@ -554,11 +599,18 @@ impl Graphics {
         self.pending = None;
     }
 
-    /// ED 2, as kitty's grman_clear: remove every placement and free every
-    /// image left without one, stored images included. An upload continues.
+    /// ED 2, RIS and the alternate screen, as kitty's grman_clear: remove
+    /// every placement but the virtual ones, which have no place on the
+    /// screen, and free every image left without one, stored images
+    /// included. An upload continues.
     pub fn clear(&mut self) {
-        self.placements.clear();
-        self.images.clear();
+        self.placements.retain(|p| p.is_virtual);
+        self.free_unplaced(|_| true);
+    }
+
+    /// Whether a virtual placement exists, for placeholder cells to show.
+    pub fn has_virtual(&self) -> bool {
+        self.placements.iter().any(|p| p.is_virtual)
     }
 
     fn tick(&mut self) -> u64 {
@@ -718,6 +770,10 @@ impl Graphics {
         let image = &self.images[index];
         let (image_key, id, width, height) = (image.key, image.id, image.width, image.height);
         let pixels = Rc::clone(&image.pixels);
+        // A virtual placement cannot be a relative one (kitty's EINVAL).
+        if cmd.virtual_put && cmd.parent_id != 0 {
+            return None;
+        }
         // A parent that does not exist refuses the put (kitty's ENOPARENT).
         let parent = match cmd.parent_id {
             0 => None,
@@ -745,8 +801,9 @@ impl Graphics {
             }
         }
         // An empty crop shows nothing: its put still moves the cursor, and
-        // replaces the placement it names, but leaves nothing to draw.
-        let visible = w > 0 && h > 0;
+        // replaces the placement it names, but leaves nothing to draw. A
+        // virtual placement draws the whole image whatever its crop.
+        let visible = cmd.virtual_put || (w > 0 && h > 0);
         if visible && existing.is_none() && self.placements.len() >= MAX_PLACEMENTS {
             return None;
         }
@@ -759,9 +816,13 @@ impl Graphics {
             let (ch, y) = (i64::from(cell.1), row as i64 * i64::from(cell.1) + y);
             let mut slices = Vec::new();
             // A relative placement is laid out from its parent by relayout.
-            if parent.is_none() {
+            if parent.is_none() && !cmd.virtual_put {
                 append_slice(&mut slices, y, y, (y + h).min(screen_rows as i64 * ch));
             }
+            let (cols, rows) = match cmd.virtual_put {
+                true => (i64::from(cmd.cols), i64::from(cmd.rows)),
+                false => (cols, rows),
+            };
             self.placements.push(Placement {
                 pixels,
                 width,
@@ -771,6 +832,7 @@ impl Graphics {
                 w,
                 h,
                 slices,
+                clip_x: (i64::MIN, i64::MAX),
                 image: image_key,
                 id,
                 key,
@@ -785,12 +847,15 @@ impl Graphics {
                 offset: (i64::from(cmd.parent_x), i64::from(cmd.parent_y)),
                 parent_at: usize::MAX,
                 inner: (x, y - row as i64 * ch),
+                is_virtual: cmd.virtual_put,
+                virtual_root: None,
             });
             // kitty's draw order: z-index, then image and placement creation.
             self.placements.sort_by_key(|p| (p.z, p.image, p.key));
         }
-        // A relative placement never moves the cursor, whatever C says.
-        if cmd.no_move || parent.is_some() {
+        // Neither a relative nor a virtual placement moves the cursor,
+        // whatever C says.
+        if cmd.no_move || parent.is_some() || cmd.virtual_put {
             None
         } else {
             Some((cols as usize, rows as usize))
@@ -870,8 +935,9 @@ impl Graphics {
             /// On the walk being resolved: met again, it closes a cycle.
             Walking,
             Broken,
-            /// The cell it is placed at, and the links up to its root.
-            At(i64, i64, usize),
+            /// The cell it is placed at, the links up to its root, and the
+            /// root. Under a virtual root the cell is the offset from it.
+            At(i64, i64, usize, usize),
         }
         let mut cells = vec![Resolved::Unknown; n];
         let mut path = Vec::new();
@@ -891,8 +957,10 @@ impl Graphics {
                     _ => break,
                 }
                 let p = &self.placements[at];
-                if p.parent.is_none() {
-                    cells[at] = Resolved::At(p.col, p.anchor, 0);
+                if p.is_virtual {
+                    cells[at] = Resolved::At(0, 0, 0, at);
+                } else if p.parent.is_none() {
+                    cells[at] = Resolved::At(p.col, p.anchor, 0, at);
                 } else if parents[at] == NONE {
                     // Its parent is gone.
                     cells[at] = Resolved::Broken;
@@ -905,8 +973,8 @@ impl Graphics {
             while let Some(j) = path.pop() {
                 let (dx, dy) = self.placements[j].offset;
                 cells[j] = match cells[parents[j]] {
-                    Resolved::At(col, row, links) if links < MAX_DEPTH => {
-                        Resolved::At(col + dx, row + dy, links + 1)
+                    Resolved::At(col, row, links, root) if links < MAX_DEPTH => {
+                        Resolved::At(col + dx, row + dy, links + 1, root)
                     }
                     _ => Resolved::Broken,
                 };
@@ -914,6 +982,9 @@ impl Graphics {
         }
         let (cw, ch) = (i64::from(self.cell.0), i64::from(self.cell.1));
         let bottom = self.screen_rows as i64 * ch;
+        // The virtual placements' keys, by index: (index, key).
+        let virtuals: Vec<(usize, u64)> =
+            self.placements.iter().enumerate().filter(|(_, p)| p.is_virtual).map(|(i, p)| (i, p.key)).collect();
         let mut lost = Vec::new();
         let mut i = 0;
         self.placements.retain_mut(|p| {
@@ -921,9 +992,16 @@ impl Graphics {
             i += 1;
             match cell {
                 _ if p.parent.is_none() => true,
-                Resolved::At(col, row, _) => {
+                Resolved::At(col, row, _, root) => {
                     let (col, row) = (col.clamp(-MAX_CELL, MAX_CELL), row.clamp(-MAX_CELL, MAX_CELL));
                     p.parent_at = parent_at;
+                    // Placed from a virtual placement: laid out by finish.
+                    if let Ok(k) = virtuals.binary_search_by_key(&root, |&(i, _)| i) {
+                        p.virtual_root = Some((virtuals[k].1, col, row));
+                        p.slices.clear();
+                        return true;
+                    }
+                    p.virtual_root = None;
                     p.col = col;
                     p.row = row;
                     p.x = col * cw + p.inner.0;
@@ -972,11 +1050,15 @@ impl Graphics {
             b'c' => (col as i64, row as i64),
             _ => (i64::from(cmd.x) - 1, i64::from(cmd.y) - 1),
         };
-        let in_col = |p: &Placement| p.col <= x && x < p.col + p.cols;
-        let in_row = |p: &Placement| p.row <= y && y < p.row + p.rows;
+        // Virtual placements, and the relative ones placed from them, have
+        // no cells until the final screen.
+        let located = |p: &Placement| !p.is_virtual && p.virtual_root.is_none();
+        let in_col = |p: &Placement| located(p) && p.col <= x && x < p.col + p.cols;
+        let in_row = |p: &Placement| located(p) && p.row <= y && y < p.row + p.rows;
         let pid = cmd.placement_id;
         match selector {
-            b'a' => self.delete_where(upper, |_| true, |_| false),
+            // Only i, n and r reach a virtual placement, as the spec says.
+            b'a' => self.delete_where(upper, |p| !p.is_virtual, |_| false),
             b'i' | b'n' => {
                 // A command cannot give both, so find uses the one selected.
                 let image = match selector {
@@ -1002,7 +1084,7 @@ impl Graphics {
             b'q' => self.delete_where(upper, |p| in_col(p) && in_row(p) && p.z == cmd.z, |_| false),
             b'x' => self.delete_where(upper, in_col, |_| false),
             b'y' => self.delete_where(upper, in_row, |_| false),
-            b'z' => self.delete_where(upper, |p| p.z == cmd.z, |_| false),
+            b'z' => self.delete_where(upper, |p| !p.is_virtual && p.z == cmd.z, |_| false),
             _ => {}
         }
     }
@@ -1076,8 +1158,9 @@ impl Graphics {
         // kitty's start row stops at a margin only in a partial region.
         let partial = first != 0 || last != self.screen_rows as i64;
         for p in &mut self.placements {
-            // Relative placements follow their roots, in relayout.
-            if p.parent.is_some() || p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {
+            // Relative placements follow their roots, in relayout; virtual
+            // ones are not on the screen.
+            if p.is_virtual || p.parent.is_some() || p.slices.iter().any(|s| s.top < top || s.bottom > bottom) {
                 continue;
             }
             for part in &mut p.slices {
@@ -1096,11 +1179,174 @@ impl Graphics {
             }
         }
         let before = self.placements.len();
-        self.placements.retain(|p| p.parent.is_some() || !p.slices.is_empty());
+        self.placements.retain(|p| p.is_virtual || p.parent.is_some() || !p.slices.is_empty());
         if self.placements.len() < before {
             self.free_unplaced(|_| false);
         }
         self.relayout();
+    }
+}
+
+/// A run of placeholder cells in one row that show one stretch of one
+/// virtual placement, as kitty's `screen_render_line_graphics` finds them.
+struct Run {
+    row: usize,
+    start: usize,
+    len: usize,
+    image: u32,
+    placement: u32,
+    /// The row of the image, the column of the run's last cell in it, and
+    /// the image id's high byte, each plus one, as kitty keeps them.
+    img_row: u32,
+    img_col: u32,
+    high: u32,
+}
+
+/// Split the placeholder cells, in screen order, into runs. A cell continues
+/// the run to its left when it is the next cell of the row, has the same
+/// foreground and underline colours, and each diacritic it has agrees with
+/// what it would inherit: the same row, the next column, the same high byte.
+/// It inherits what it lacks. Any other cell starts a run, at row 0, column
+/// 0 and high byte 0 where it has no diacritic.
+fn runs(cells: &[PlaceholderCell]) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for c in cells {
+        let [row, col, high] = c.marks.map(diacritic);
+        if let Some(run) = runs.last_mut() {
+            if run.row == c.row
+                && run.start + run.len == c.col
+                && (run.image, run.placement) == (c.image, c.placement)
+                && (row == 0 || row == run.img_row)
+                && (col == 0 || col == run.img_col + 1)
+                && (high == 0 || high == run.high)
+            {
+                run.len += 1;
+                run.img_col += 1;
+                continue;
+            }
+        }
+        runs.push(Run {
+            row: c.row,
+            start: c.col,
+            len: 1,
+            image: c.image,
+            placement: c.placement,
+            img_row: row.max(1),
+            img_col: col.max(1),
+            high: high.max(1),
+        });
+    }
+    runs
+}
+
+impl Graphics {
+    /// What the final screen draws, in draw order: the placements, an image
+    /// for each run of placeholder cells (`cells`, in screen order) that
+    /// names a virtual placement, and the relative placements under a
+    /// virtual one, laid out from where its placeholders are. Virtual
+    /// placements themselves are not drawn. As kitty, which makes these
+    /// images from the screen each time it draws (grman_put_cell_image):
+    ///
+    /// - The image id is the foreground's id, with the third diacritic, less
+    ///   one, as its high byte. The underline colour's id names the virtual
+    ///   placement; 0 takes any, here the oldest.
+    /// - The whole image, whatever the placement's crop and offsets, is
+    ///   fitted into a box of the placement's c x r cells (the image's size
+    ///   in cells where 0), keeping its aspect ratio, and centered across
+    ///   the side it does not fill. Each run shows the part of that box
+    ///   under its cells, at z-index -1: over the backgrounds, under the
+    ///   text and cursor.
+    /// - A relative placement under a virtual one is placed from the top
+    ///   row and the leftmost column, separately, of the cells that show
+    ///   part of the image. With none on the screen it is not drawn.
+    pub fn finish(mut self, cells: &[PlaceholderCell], cell: (i32, i32), screen_rows: usize) -> Vec<Placement> {
+        let (cw, ch) = (i64::from(cell.0), i64::from(cell.1));
+        let any_virtual = self.has_virtual();
+        let mut out = std::mem::take(&mut self.placements);
+        if cw <= 0 || ch <= 0 || !any_virtual {
+            out.retain(|p| !p.is_virtual && p.virtual_root.is_none());
+            return out;
+        }
+        // The virtual placement each (image id, placement id) names.
+        let mut named: std::collections::HashMap<(u32, u32), Option<usize>> = Default::default();
+        // Each virtual placement's top row and leftmost column shown.
+        let mut shown: std::collections::HashMap<u64, (i64, i64)> = Default::default();
+        let mut cell_images = Vec::new();
+        for run in runs(cells) {
+            let id = run.image | ((run.high - 1) & 0xff) << 24;
+            // kitty's ids are never 0; it would find an image without one.
+            if id == 0 {
+                continue;
+            }
+            let found = *named.entry((id, run.placement)).or_insert_with(|| {
+                (0..out.len())
+                    .filter(|&i| out[i].is_virtual && out[i].id == id)
+                    .filter(|&i| run.placement == 0 || out[i].placement_id == run.placement)
+                    .min_by_key(|&i| out[i].key)
+            });
+            let Some(v) = found.map(|i| &out[i]) else { continue };
+            let (iw, ih) = (i64::from(v.width), i64::from(v.height));
+            let box_w = cw * if v.cols == 0 { (iw + cw - 1) / cw } else { v.cols };
+            let box_h = ch * if v.rows == 0 { (ih + ch - 1) / ch } else { v.rows };
+            // Fit to the width when the image is relatively wider than the
+            // box, else to the height, as kitty compares them.
+            let (w, h) = if iw * box_h > ih * box_w {
+                (box_w, (box_w * ih / iw).max(1))
+            } else {
+                ((box_h * iw / ih).max(1), box_h)
+            };
+            let (row, start, len) = (run.row as i64, run.start as i64, run.len as i64);
+            let x = (start - i64::from(run.img_col) + len) * cw + (box_w - w) / 2;
+            let y = (row - i64::from(run.img_row) + 1) * ch + (box_h - h) / 2;
+            let (left, right) = (x.max(start * cw), (x + w).min((start + len) * cw));
+            let (top, bottom) = (y.max(row * ch), (y + h).min((row + 1) * ch));
+            if left >= right || top >= bottom {
+                continue;
+            }
+            let at = shown.entry(v.key).or_insert((row, i64::MAX));
+            at.0 = at.0.min(row);
+            at.1 = at.1.min(left / cw);
+            self.clock += 1;
+            cell_images.push(Placement {
+                pixels: Rc::clone(&v.pixels),
+                src: [0, 0, v.width, v.height],
+                x,
+                w,
+                h,
+                slices: vec![ImageSlice { y, top, bottom }],
+                clip_x: (left, right),
+                key: self.clock,
+                placement_id: 0,
+                z: -1,
+                col: left / cw,
+                cols: (right - 1) / cw + 1 - left / cw,
+                row,
+                rows: 1,
+                anchor: row,
+                parent: None,
+                offset: (0, 0),
+                parent_at: usize::MAX,
+                inner: (0, 0),
+                is_virtual: false,
+                virtual_root: None,
+                ..*v
+            });
+        }
+        let bottom = screen_rows as i64 * ch;
+        out.retain_mut(|p| {
+            let Some((root, dx, dy)) = p.virtual_root else { return !p.is_virtual };
+            let Some(&(row, col)) = shown.get(&root) else { return false };
+            let (col, row) = ((col + dx).clamp(-MAX_CELL, MAX_CELL), (row + dy).clamp(-MAX_CELL, MAX_CELL));
+            p.col = col;
+            p.row = row;
+            p.x = col * cw + p.inner.0;
+            let y = row * ch + p.inner.1;
+            append_slice(&mut p.slices, y, y.max(0), (y + p.h).min(bottom));
+            true
+        });
+        out.append(&mut cell_images);
+        out.sort_by_key(|p| (p.z, p.image, p.key));
+        out
     }
 }
 
@@ -1112,3 +1358,5 @@ mod zlib_tests;
 mod geometry_tests;
 #[cfg(test)]
 mod relative_tests;
+#[cfg(test)]
+mod placeholder_tests;
