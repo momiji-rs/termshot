@@ -50,6 +50,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Output collision checks follow dangling symlinks and compare existing file
+  identities, rejecting hard-link aliases of outputs, logs or fonts before
+  writing (#43 review).
+
 - ASCII autowrap and skipped-row batching now scroll images alongside text;
   whole-region skips discard image pixels even when row-storage rotation is
   zero modulo the region height (#43 review).

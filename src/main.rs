@@ -1557,30 +1557,59 @@ fn load_fonts(
     Ok((font, fallback))
 }
 
-/// Write a text output to its file, or to stdout for -.
+/// Resolve symlinks component by component, including a dangling final link.
+/// canonicalize alone cannot name a target that an output has yet to create.
+fn output_target(path: &str) -> std::path::PathBuf {
+    use std::path::{Component, Path, PathBuf};
+    if let Ok(path) = fs::canonicalize(path) { return path; }
+    let original = env::current_dir().unwrap_or_default().join(path);
+    let mut parts: std::collections::VecDeque<_> = original.components()
+        .map(|part| part.as_os_str().to_os_string()).collect();
+    let mut resolved = PathBuf::new();
+    let mut links = 0;
+    while let Some(part) = parts.pop_front() {
+        match Path::new(&part).components().next() {
+            Some(Component::CurDir) => continue,
+            Some(Component::ParentDir) => { resolved.pop(); continue; }
+            _ => resolved.push(&part),
+        }
+        if let Ok(target) = fs::read_link(&resolved) {
+            links += 1;
+            // A cyclic or excessive chain cannot be opened either. Leave the
+            // usual preflight open to report the filesystem error, without a loop.
+            if links > 40 { return original; }
+            resolved.pop();
+            if target.is_absolute() { resolved.clear(); }
+            for part in target.components().rev() {
+                parts.push_front(part.as_os_str().to_os_string());
+            }
+        }
+    }
+    resolved
+}
+
 /// Why an output can't be written: it names the same file as another output,
 /// which would overwrite it, or as an input, which would destroy it. One file
 /// can be named many ways (`a`, `./a`, `d/../a`, a symlink), so paths are
-/// compared canonical: the file if it exists, else its directory.
+/// compared by resolved target and (for existing files) device/inode identity.
 fn output_clash(options: &Options) -> Option<String> {
-    let canonical = |path: &str| {
-        let path = std::path::Path::new(path);
-        let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-        fs::canonicalize(path)
-            .or_else(|_| fs::canonicalize(dir).map(|dir| dir.join(path.file_name().unwrap_or_default())))
-            .unwrap_or_else(|_| path.to_path_buf())
+    let same_file = |a: &str, b: &str| {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (fs::metadata(a), fs::metadata(b)) {
+            if (a.dev(), a.ino()) == (b.dev(), b.ino()) { return true; }
+        }
+        output_target(a) == output_target(b)
     };
     fn named<'a>(pairs: [(&'static str, Option<&'a String>); 3]) -> Vec<(&'static str, &'a String)> {
         pairs.into_iter().filter_map(|(name, path)| Some((name, path.filter(|p| *p != "-")?))).collect()
     }
     let outputs = named([("<out.png>", options.out.as_ref()), ("--text", options.text.as_ref()), ("--json", options.json.as_ref())]);
     let inputs = named([("<log>", Some(&options.log)), ("--font", options.font.as_ref()), ("--fallback-font", options.fallback_font.as_ref())]);
-    let outputs: Vec<_> = outputs.into_iter().map(|(name, path)| (name, path, canonical(path))).collect();
-    for (i, (name, path, file)) in outputs.iter().enumerate() {
-        if let Some((other, ..)) = outputs[..i].iter().find(|(.., earlier)| earlier == file) {
+    for (i, (name, path)) in outputs.iter().enumerate() {
+        if let Some((other, ..)) = outputs[..i].iter().find(|(_, earlier)| same_file(path, earlier)) {
             return Some(format!("{name} and {other} name the same file, {path}; give each output its own"));
         }
-        if let Some((input, _)) = inputs.iter().find(|(_, input)| canonical(input) == *file) {
+        if let Some((input, _)) = inputs.iter().find(|(_, input)| same_file(path, input)) {
             return Some(format!("{name} {path} is the {input} file; writing it would destroy the input"));
         }
     }
