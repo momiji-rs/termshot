@@ -1221,6 +1221,14 @@ fn widths() {
 }
 
 #[test]
+fn the_width_table_matches_the_width_ranges() {
+    // Every code point, and past the end, as utf8_at never decodes there.
+    for cp in 0..0x11_0100 {
+        assert_eq!(unicode::width(cp), unicode::width_in_ranges(cp), "U+{cp:04X}");
+    }
+}
+
+#[test]
 fn wide_characters_take_two_cells() {
     let g = grid("a中b".as_bytes());
     assert_eq!(shown(&g[..C]), "a中b      ");

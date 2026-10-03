@@ -61,6 +61,49 @@ fn print_ranges(name: &str, doc: &str, set: &BTreeSet<u32>) {
     println!();
 }
 
+/// Widths below WIDTH_LIMIT as a two-level table, so a lookup is two
+/// loads instead of two binary searches: WIDTH_BLOCKS has a byte per
+/// 64-code-point block naming its row in WIDTH_ROWS, and a row holds 2 bits
+/// per code point (the width), 4 to a byte, lowest bits first. Blocks with
+/// the same widths share a row.
+fn print_width_table(zero: &BTreeSet<u32>, wide: &BTreeSet<u32>) {
+    const LIMIT: u32 = 0x40000;
+    let mut rows: Vec<[u8; 16]> = Vec::new();
+    let mut blocks = Vec::new();
+    for block in 0..LIMIT / 64 {
+        let mut row = [0u8; 16];
+        for k in 0..64 {
+            let cp = block * 64 + k;
+            let width = if zero.contains(&cp) { 0 } else if wide.contains(&cp) { 2 } else { 1 };
+            row[k as usize / 4] |= width << (k % 4 * 2);
+        }
+        let index = rows.iter().position(|r| *r == row).unwrap_or_else(|| {
+            rows.push(row);
+            rows.len() - 1
+        });
+        blocks.push(u8::try_from(index).expect("more than 256 distinct width rows"));
+    }
+    println!("/// Code points below this have their width in WIDTH_BLOCKS and WIDTH_ROWS.");
+    println!("pub const WIDTH_LIMIT: u32 = 0x{LIMIT:X};");
+    println!();
+    println!("/// The WIDTH_ROWS row of each 64-code-point block below WIDTH_LIMIT.");
+    println!("pub static WIDTH_BLOCKS: [u8; {}] = [", blocks.len());
+    for chunk in blocks.chunks(24) {
+        let row: Vec<String> = chunk.iter().map(|b| b.to_string()).collect();
+        println!("    {},", row.join(", "));
+    }
+    println!("];");
+    println!();
+    println!("/// The widths of a block's 64 code points, 2 bits each, lowest bits first.");
+    println!("pub static WIDTH_ROWS: [[u8; 16]; {}] = [", rows.len());
+    for row in &rows {
+        let bytes: Vec<String> = row.iter().map(|b| format!("0x{b:02X}")).collect();
+        println!("    [{}],", bytes.join(", "));
+    }
+    println!("];");
+    println!();
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (dir, version) = (&args[1], &args[2]);
@@ -109,6 +152,7 @@ fn main() {
     println!();
     print_ranges("ZERO_WIDTH", "Code points that take no cell.", &zero);
     print_ranges("DOUBLE_WIDTH", "Code points that take two cells.", &wide);
+    print_width_table(&zero, &wide);
     println!("/// Canonical compositions (base, mark, composed), sorted by base then mark.");
     println!("pub static COMPOSE: [(u32, u32, u32); {}] = [", compose.len());
     for chunk in compose.chunks(4) {
