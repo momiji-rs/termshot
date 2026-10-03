@@ -79,7 +79,9 @@ int image_inflate(const unsigned char *in, int len, unsigned char *out, int olen
     if (a.zout - a.zout_start != olen) return 0;
     /* The trailer starts at the first whole byte stb has not consumed. */
     const unsigned char *end = a.zbuffer - a.num_bits / 8;
-    if (end + 4 > in + len) return 0;
+    /* end is at most in + len, so count the bytes left: a pointer past
+       in + len would be undefined behaviour even unused. */
+    if (in + len - end < 4) return 0;
     uint32_t s1 = 1, s2 = 0;
     for (int i = 0; i < olen;) {
         int n = olen - i < 5552 ? olen - i : 5552;
