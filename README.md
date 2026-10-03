@@ -240,7 +240,8 @@ decoder (its `graphics_sixel.c`, patch 412) and the VT340 it emulates:
   attributes (`"Pan;Pad;Ph;Pv`). Pixels are square device pixels at their
   native size, as in xterm, which also ignores `P1` and `Pan;Pad`; cell
   dimensions come from the font and `--px`, as for kitty's native sizing.
-  The image is as large as `Ph`x`Pv` or its pixels reach, whichever is larger.
+  The image is as large as `Ph`x`Pv` or its pixels reach, whichever is larger;
+  an extent given as 0 or left empty counts as 1, as in xterm.
 - `P2` 1 leaves pixels no sixel set transparent. `P2` 0 or 2 paints the declared
   area with register 0, as xterm does; pixels past it stay transparent.
 - With Sixel scrolling on (the default), the image starts at the cursor, and

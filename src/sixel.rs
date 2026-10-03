@@ -245,8 +245,10 @@ impl Decoder {
     }
 
     /// `"Pan;Pad;Ph;Pv`: the aspect is ignored; the size grows the image.
+    /// As in xterm's GetExtent, an extent that is given, even as 0 or empty,
+    /// is at least 1; one left out declares nothing.
     fn raster(&mut self, params: &[Option<u32>]) -> Option<()> {
-        let get = |i: usize| params.get(i).copied().flatten().unwrap_or(0) as usize;
+        let get = |i: usize| params.get(i).map_or(0, |v| v.unwrap_or(0).max(1) as usize);
         self.declared = (get(2), get(3));
         self.extend(self.declared.0, self.declared.1)
     }

@@ -162,6 +162,12 @@ fn raster_attributes_size_the_image_and_p2_its_background() {
     assert!(decode(b"q#0", &mut Budget::default()).is_none());
     assert!(decode(b"q#1;2;100;0;0!9?-?$", &mut Budget::default()).is_none());
     assert!(decode(b"q\"1;1", &mut Budget::default()).is_none());
+    assert!(decode(b"q\"1;1;4", &mut Budget::default()).is_none());
+    // An extent given as 0 or empty is 1, as in xterm.
+    let black = [0, 0, 0, 255];
+    assert_eq!(pixels(b"q\"1;1;0;5?"), (1, 5, vec![black; 5]));
+    assert_eq!(pixels(b"q\"1;1;3;?"), (3, 1, vec![black; 3]));
+    assert_eq!(pixels(b"q\"1;1;;0?"), (1, 1, vec![black]));
 }
 
 #[test]
