@@ -223,6 +223,10 @@ check "--text - writes stdout" 'cmp -s "$out/text-stdout.txt" "$out/text-want.tx
 ./termshot --text "$out/text-png.txt" "$log" "$out/text-png.png"
 check "--text leaves the PNG as it was" 'cmp -s "$out/text-png.png" "$out/builtin.png"'
 check "--text needs no font without a PNG" './termshot --font README.md --text "$out/q.txt" "$log"'
+printf '\033_Ga=p,i=9\033\\ab' > "$out/put-unsent.pty"
+check "--text needs no font for a put of an image never sent" './termshot --font README.md --text "$out/q.txt" "$out/put-unsent.pty"'
+printf '\033_Ga=t,i=9,f=24,s=1,v=1;/wAA\033\\\033_Ga=p,i=9\033\\' > "$out/put-sent.pty"
+expect 1 --font README.md --text "$out/q.txt" "$out/put-sent.pty"
 expect 2 "$log" --text
 expect 2 --text - "$log" -
 expect 1 --text "$out/no-such-dir/x.txt" "$log"

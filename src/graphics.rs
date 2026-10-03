@@ -211,8 +211,12 @@ impl Command {
 }
 
 /// Text/JSON output only needs font metrics for commands that can move its
-/// cursor. Capability probes and other skipped strings must not require fonts.
+/// cursor. Capability probes and other skipped strings must not require fonts,
+/// nor does a put of an image no earlier transmission named, which replay
+/// ignores. Any earlier transmission counts, so the answer stays conservative.
 pub fn needs_cell_metrics(data: &[u8]) -> bool {
+    // (is a number, value) for every i or I a transmission named so far.
+    let mut sent = std::collections::HashSet::new();
     let mut i = 0;
     while i + 1 < data.len() {
         if data[i] == 0x1b && matches!(data[i + 1], b']' | b'P' | b'_' | b'^' | b'X') {
@@ -225,8 +229,21 @@ pub fn needs_cell_metrics(data: &[u8]) -> bool {
             {
                 let bytes = &data[start + 1..end - 2];
                 let header = bytes.split(|&b| b == b';').next().unwrap_or_default();
-                if Command::parse(header).is_some_and(|c| matches!(c.action, b'T' | b'p') && !c.no_move) {
-                    return true;
+                if let Some(c) = Command::parse(header) {
+                    let name = if c.id != 0 { (false, c.id) } else { (true, c.number) };
+                    let moves = match c.action {
+                        b't' | b'T' => {
+                            if name.1 != 0 {
+                                sent.insert(name);
+                            }
+                            c.action == b'T'
+                        }
+                        b'p' => sent.contains(&name),
+                        _ => false,
+                    };
+                    if moves && !c.no_move {
+                        return true;
+                    }
                 }
             }
             i = end;

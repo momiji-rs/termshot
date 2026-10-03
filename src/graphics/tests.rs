@@ -492,9 +492,19 @@ fn font_metrics_are_needed_only_for_potential_cursor_movement() {
     assert!(needs_cell_metrics(&red("")));
     assert!(!needs_cell_metrics(&red(",C=1")));
     assert!(needs_cell_metrics(b"\x1b_Ga=T,f=24,s=2,v=1,m=1;/wAA\x1b\\"));
-    assert!(needs_cell_metrics(b"\x1b_Ga=p,i=1\x1b\\"));
-    assert!(!needs_cell_metrics(b"\x1b_Ga=p,i=1,C=1\x1b\\"));
-    assert!(!needs_cell_metrics(b"\x1b_Ga=t,i=1,f=24,s=1,v=1;/wAA\x1b\\"));
+    let stored = "\x1b_Ga=t,i=1,f=24,s=1,v=1;/wAA\x1b\\\x1b_Ga=t,I=7,f=24,s=1,v=1;/wAA\x1b\\";
+    assert!(!needs_cell_metrics(stored.as_bytes()));
+    for (put, needed) in [("i=1", true), ("I=7", true), ("i=1,C=1", false), ("i=7", false), ("I=1", false), ("i=2", false)] {
+        let put = format!("\x1b_Ga=p,{put}\x1b\\");
+        // Replay ignores a put of an image never transmitted: no metrics.
+        assert!(!needs_cell_metrics(put.as_bytes()), "{put:?} alone");
+        assert_eq!(needs_cell_metrics(format!("{stored}{put}").as_bytes()), needed, "{put:?}");
+        assert!(!needs_cell_metrics(format!("{put}{stored}").as_bytes()), "{put:?} first");
+    }
+    // A put with neither i nor I names no image, even after an anonymous one.
+    assert!(!needs_cell_metrics(b"\x1b_Ga=T,C=1,f=24,s=1,v=1;/wAA\x1b\\\x1b_Ga=p\x1b\\"));
+    // a=T with C=1 stores without moving; a later put may move.
+    assert!(needs_cell_metrics(b"\x1b_Ga=T,i=3,C=1,f=24,s=1,v=1;/wAA\x1b\\\x1b_Ga=p,i=3\x1b\\"));
     for log in [
         b"text".as_slice(),
         b"\x1b_Ga=q,f=24,s=1,v=1;AAAA\x1b\\",
