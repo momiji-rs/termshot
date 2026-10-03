@@ -931,21 +931,27 @@ static int is_ignorable(uint32_t cp) {
    no advance, to overlay the character before it: that mark is drawn from
    where the character ends (base_x plus its advance). A mark drawn to the
    right of its origin, as in right-to-left fonts, is centered over the
-   character instead. y is the baseline. Returns 0, or 2 when memory runs out. */
+   character instead. y is the baseline. Adds the time spent finding glyphs
+   and blending them to glyph_ms and blend_ms. Returns 0, or 2 when memory
+   runs out. */
 static int paint_marks(Canvas *cv, Glyphs *g, const CellMarks *marks, const Cell *cell, int base_x,
-                       float base_advance, int y) {
+                       float base_advance, int y, double *glyph_ms, double *blend_ms) {
     int italic = (cell->attrs & ATTR_ITALIC) != 0;
     for (int k = 0; k < MAX_MARKS && marks->marks[k]; k++) {
         uint32_t cp = marks->marks[k];
         if (is_ignorable(cp)) continue;
+        double tick = now_ms();
         Glyph *mark = find_glyph(g, cp, 0, italic, 1, 0);
+        *glyph_ms += now_ms() - tick;
         if (!mark) return 2;
         if (!mark->bitmap) continue;
+        tick = now_ms();
         int dx = 2 * mark->ix0 + mark->w < 0 ? base_x + (int)floorf(base_advance + 0.5f) + mark->ix0
                                              : base_x + (int)floorf((base_advance - (float)mark->w) / 2 + 0.5f);
         int dy = y + mark->iy0;
         blend(cv, dx, dy, mark->bitmap, mark->w, mark->h, cell->fr, cell->fg, cell->fb);
         if (cell->attrs & ATTR_BOLD) blend(cv, dx + 1, dy, mark->bitmap, mark->w, mark->h, cell->fr, cell->fg, cell->fb);
+        *blend_ms += now_ms() - tick;
     }
     return 0;
 }
@@ -1082,12 +1088,10 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                     blend_ms += now_ms() - tick;
                 }
             }
-            if (cell_marks) {
-                double tick = now_ms();
-                if (paint_marks(cv, &g, cell_marks, cell, base_x, base_advance, r * cell_h + baseline) != 0)
-                    return glyphs_failed(cv, cache, &scratch);
-                glyph_ms += now_ms() - tick;
-            }
+            if (cell_marks &&
+                paint_marks(cv, &g, cell_marks, cell, base_x, base_advance, r * cell_h + baseline, &glyph_ms,
+                            &blend_ms) != 0)
+                return glyphs_failed(cv, cache, &scratch);
         }
     }
 
