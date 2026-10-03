@@ -187,7 +187,8 @@ refused with the list (exit 1), and `-v` prints the face used. If the file's own
 ## Images in PTY logs
 
 Kitty graphics sent inline (`t=d`) render above the text: RGB (`f=24`),
-RGBA (`f=32`, the default), and PNG (`f=100`), including `m=1`/`m=0` chunks.
+RGBA (`f=32`, the default), and PNG (`f=100`), including `m=1`/`m=0` chunks
+and zlib-compressed payloads (`o=z`; a compressed PNG gives its size in `S`).
 `a=T` transmits and places an image; `a=t` only stores it, under an id `i` or
 a number `I`, and each `a=p` places a stored one again, sharing its pixels.
 Images start at the cursor, use their native pixel size or fit a `c`/`r` cell
@@ -212,8 +213,7 @@ valid. Main and alternate screens keep separate images. See
 [the regression evidence](docs/kitty-graphics.md).
 
 This is a subset, not full kitty emulation: Sixel, file/shared-memory transfer,
-compressed raw pixels (`o=z`), source cropping,
-pixel offsets, negative z-index, animation, relative placements and Unicode
+source cropping, pixel offsets, negative z-index, animation, relative placements and Unicode
 placeholders are not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain

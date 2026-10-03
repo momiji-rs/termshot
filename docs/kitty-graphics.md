@@ -156,6 +156,37 @@ stored images put in seven cells: draw order by z-index and creation, a moved
 placement and a delete by column, against pixels it computes itself.
 
 
+## Compressed payloads
+
+`o=z` follows kitty's `inflate_zlib` and `initialize_load_data` (master, read
+2026-10-03). The payload, after base64 and chunking, is an RFC 1950 zlib
+stream that must inflate to exactly the data's size: `w*h*3` or `w*h*4` for
+raw pixels, and for PNG the `S` key, or 100 KiB without it, as kitty assumes.
+Any other `o` is ignored, as kitty refuses it. `S` changes nothing on an
+uncompressed transmission.
+
+The inflater is stb_image's, already built into `src/image.c` for PNG, so
+nothing new is vendored. `image_inflate` adds what kitty gets from zlib and
+stb skips: the Adler-32 trailer, the window field (at most 32 KiB) and the
+exact output size; bytes after the trailer are ignored, as zlib ignores them.
+It finds the trailer from the bits stb has buffered, and the caller pads the
+input with 8 zero bytes so that read-ahead stays in the buffer. The output is
+the image buffer itself, sized before inflating and limited to 16 MiB, so a
+stream cannot allocate more than its size promises.
+
+`tests/image.c`, also run under ASan and UBSan, round-trips noise, runs and
+mixtures up to 70,000 bytes through the renderer's compressor, and checks
+sizes one short and one long, trailing bytes, every change to the trailer,
+truncations, the window and dictionary fields, and 2,000 mutations. It
+includes data whose Adler-32 has a zero low half, where the zero padding
+matches a trailer cut short, so only the bounds checks can refuse it.
+`src/graphics/tests.rs` checks each format, `S`, the 100 KiB default, chunks
+and the 16 MiB limit at its edge. `tests/graphics.rs` renders the four
+fixture images again from `tests/fixtures/kitty-*-z.pty`, compressed by
+Python's zlib, against the same expected pixels. Ten hand-made mutants of
+the checks all fail the tests.
+
+
 ## ASCII autowrap regression
 
 [Copilot review](https://github.com/momiji-rs/termshot/pull/43#discussion_r4170788572)
