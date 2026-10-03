@@ -3,6 +3,7 @@
    deflate included). No Core Text, FreeType, window, or distro package.
    Box-drawing is geometry so the joints meet at an integer cell size. */
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -98,11 +99,20 @@ typedef struct {
 } Outline;
 
 /* Fetch glyph of a CFF face into o, unless o holds it already. Returns the
-   vertex count, or -1 when memory runs out. */
+   vertex count, or -1 when memory runs out. A glyph with more vertices than
+   o has room for runs its charstring twice, so o starts with room for most
+   glyphs and doubles. */
 static int cff_outline(Outline *o, const Face *face, int glyph) {
     if (o->face == face && o->glyph == glyph) return o->n;
     o->face = NULL;
+    int want = o->capacity ? 0 : 512;
     for (;;) {
+        if (want > o->capacity) {
+            stbtt_vertex *v = (stbtt_vertex *)realloc(o->v, (size_t)want * sizeof *v);
+            if (!v) return -1;
+            o->v = v;
+            o->capacity = want;
+        }
         int n = face->outline(face->cff, glyph, o->v, o->capacity, o->box);
         if (n <= o->capacity) {
             o->n = n < 0 ? 0 : n;
@@ -110,10 +120,7 @@ static int cff_outline(Outline *o, const Face *face, int glyph) {
             o->glyph = glyph;
             return o->n;
         }
-        stbtt_vertex *v = (stbtt_vertex *)realloc(o->v, (size_t)n * sizeof *v);
-        if (!v) return -1;
-        o->v = v;
-        o->capacity = n;
+        want = o->capacity > INT_MAX / 2 || n > 2 * o->capacity ? n : 2 * o->capacity;
     }
 }
 
