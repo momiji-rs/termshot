@@ -261,6 +261,70 @@ check "--text and --json together match each alone" 'cmp -s "$out/both.txt" "$ou
 expect 2 --json - --text - "$log"
 expect 2 --json - "$log" -
 expect 1 --json "$out/no-such-dir/x.json" "$log"
+# asciicast input: v2 and v3 replay their output events, sized by the
+# recording (the header, or its last resize) unless a size is given.
+cast2=tests/fixtures/asciicast-v2.cast
+cast3=tests/fixtures/asciicast-v3.cast
+./termshot --size 24x6 --text "$out/cast-raw.txt" tests/fixtures/asciicast.pty "$out/cast-raw.png"
+./termshot --text "$out/cast-v2.txt" "$cast2" "$out/cast-v2.png"
+./termshot --text "$out/cast-v3.txt" "$cast3" "$out/cast-v3.png"
+check "a v2 cast renders as its raw output at its header's size" 'cmp -s "$out/cast-v2.png" "$out/cast-raw.png"'
+check "a v3 cast renders as its raw output at its last resize" 'cmp -s "$out/cast-v3.png" "$out/cast-raw.png"'
+check "a cast's --text is the raw output's" 'cmp -s "$out/cast-v2.txt" "$out/cast-raw.txt" && cmp -s "$out/cast-v3.txt" "$out/cast-raw.txt"'
+./termshot - "$out/cast-stdin.png" < "$cast3"
+check "a cast on stdin is detected" 'cmp -s "$out/cast-stdin.png" "$out/cast-raw.png"'
+./termshot --cast "$cast2" "$out/cast-flag.png"
+check "--cast reads it the same" 'cmp -s "$out/cast-flag.png" "$out/cast-raw.png"'
+check "a cast is quiet on success" '[ -z "$(./termshot "$cast3" "$out/q.png" 2>&1)" ]'
+./termshot --size 30x8 "$cast2" "$out/cast-size.png"
+./termshot --size 30x8 tests/fixtures/asciicast.pty "$out/cast-raw-size.png"
+check "--size overrides the cast's size" 'cmp -s "$out/cast-size.png" "$out/cast-raw-size.png"'
+./termshot "$cast3" "$out/cast-legacy.png" "$font" 48 30 8
+check "the original form's size overrides it too" 'cmp -s "$out/cast-legacy.png" "$out/cast-raw-size.png"'
+./termshot --size 24x6 "$cast3" "$out/cast-cols.png" "$font" 48 2>/dev/null
+check "--size and a font as the original form" 'cmp -s "$out/cast-cols.png" "$out/cast-raw.png"'
+check "only cols given: rows come from the cast" \
+    './termshot "$cast2" "$out/cast-c.png" "$font" 24 30 && ./termshot --size 30x6 tests/fixtures/asciicast.pty "$out/cast-c-raw.png" -p 24 && cmp -s "$out/cast-c.png" "$out/cast-c-raw.png"'
+check "--json reports the cast's size" './termshot --json - "$cast3" | grep -q "^{\"cols\":24,\"rows\":6,"'
+check "--cursor is checked against the cast's size" \
+    './termshot --cursor 25,0 "$cast3" "$out/x.png" 2>&1 | grep -q "off the 24x6 grid"'
+expect 2 --cursor 25,0 "$cast3" "$out/x.png"
+expect 0 --cursor 24,5 "$cast3" "$out/x.png"
+printf '{"version":2,"width":501,"height":10}\n[0,"o","a"]\n' > "$out/wide.cast"
+printf '{"version":3,"term":{"cols":80,"rows":24}}\n[0,"r","80x201"]\n' > "$out/tall.cast"
+printf '{"version":2,"width":0,"height":10}\n' > "$out/zero.cast"
+expect 2 "$out/wide.cast" "$out/x.png"
+expect 2 "$out/tall.cast" "$out/x.png"
+expect 2 "$out/zero.cast" "$out/x.png"
+expect 0 --size 10x4 "$out/wide.cast" "$out/x.png"
+expect 0 --size 10x4 "$out/tall.cast" "$out/x.png"
+check "an oversized cast says where its size came from" \
+    './termshot "$out/tall.cast" "$out/x.png" 2>&1 | grep -q "201 rows (its last resize event).*pass --size"'
+# A malformed cast is an unusable input: exit 1, with the line, and no output left behind.
+printf '{"version":2,"width":10,"height":2}\n[0,"o","ok"]\n[0,"o","cut' > "$out/truncated.cast"
+printf '{"version":2,"width":10,"height":2}\n[0,"o","\\ud800"]\n' > "$out/surrogate.cast"
+printf '{"version":2,"width":10,"height":2}\n[0,"o","\377"]\n' > "$out/latin1.cast"
+printf '{"version":1,"width":10,"height":2}\n' > "$out/v1.cast"
+printf '{"version":2,"width":"10","height":2}\n' > "$out/types.cast"
+printf '{"version":2,"width":10,"height":2}\n[0,"o",%s]\n' "$(printf '[%.0s' $(seq 20))" > "$out/deep.cast"
+for bad in truncated surrogate latin1 v1 types deep; do
+    expect 1 "$out/$bad.cast" "$out/x.png"
+    rm -f "$out/gone.png" "$out/gone.txt"
+    ./termshot --text "$out/gone.txt" "$out/$bad.cast" "$out/gone.png" 2>/dev/null || true
+    check "a malformed cast ($bad) leaves no output" '[ ! -e "$out/gone.png" ] && [ ! -e "$out/gone.txt" ]'
+done
+check "a malformed cast names the line" \
+    './termshot "$out/truncated.cast" "$out/x.png" 2>&1 | grep -q "truncated.cast: not a readable asciicast: line 3, column 12: the line ends inside a string"'
+check "an unsupported version says so" './termshot "$out/v1.cast" "$out/x.png" 2>&1 | grep -q "version 1 is not supported"'
+expect 1 --cast "$log" "$out/x.png"
+expect 2 --cast=yes "$cast2" "$out/x.png"
+# Detection never takes a raw log for a cast: only a first-line JSON object with a version is one.
+printf '{"width":3}\r\nplain' | ./termshot --size 12x2 - "$out/not-cast.png"
+printf '{"width":3}\r\nplain' | ./termshot --size 12x2 --text - - > "$out/not-cast.txt"
+check "a JSON first line without a version is a raw log" 'printf "{\"width\":3}\nplain\n" | cmp -s - "$out/not-cast.txt"'
+check "the --lf-newline hint looks at a cast's output" \
+    'printf "{\"version\":2,\"width\":10,\"height\":2}\n[0,\"o\",\"a\\\\nb\"]\n" | ./termshot - "$out/q.png" 2>&1 | grep -q -- "stdin has line feeds but no CR"'
+check "a cast from a PTY gives no hint, though its lines end in LF" '[ -z "$(./termshot "$cast2" "$out/q.png" 2>&1)" ]'
 # No output may be another output or an input, however the path is spelled.
 cp "$log" "$out/clash.pty"
 ln -sf clash.pty "$out/clash-link.pty"

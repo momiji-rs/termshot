@@ -1,5 +1,6 @@
 //! asciicast input: the JSON reader, v2 and v3 headers and events, resizes,
-//! and every way a cast can be malformed.
+//! and every way a cast can be malformed. The committed fixtures render as
+//! the raw log of the same bytes (tests/golden.rs and test.sh check pixels).
 
 use super::*;
 use cast::{decode, detect, parse, JsonError, Value, MAX_DEPTH};
@@ -221,5 +222,17 @@ fn truncated_casts_are_refused() {
             Ok(cast) => assert!(at_line_end && end > 0, "cut at {end} read: {:?}", cast.output),
             Err(_) => assert!(!(at_line_end && end > V2.find('\n').unwrap())),
         }
+    }
+}
+
+#[test]
+fn the_fixtures_replay_their_raw_log() {
+    let raw = fs::read("tests/fixtures/asciicast.pty").unwrap();
+    for (path, version) in [("tests/fixtures/asciicast-v2.cast", 2), ("tests/fixtures/asciicast-v3.cast", 3)] {
+        let data = fs::read(path).unwrap();
+        assert!(detect(&data), "{path}");
+        let cast = decode(&data).unwrap();
+        assert_eq!((cast.version, cast.final_size), (version, (24, 6)), "{path}");
+        assert_eq!(cast.output, raw, "{path}");
     }
 }
