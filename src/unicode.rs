@@ -1,7 +1,7 @@
 //! Character widths and canonical composition, looked up in the tables that
 //! tools/unicode-tables.sh generates into src/unicode_tables.rs.
 
-use crate::unicode_tables::{COMPOSE, DOUBLE_WIDTH, WIDTH_BLOCKS, WIDTH_LIMIT, WIDTH_ROWS, ZERO_WIDTH};
+use crate::unicode_tables::{COMPOSE, COMPOSING_MARKS, DOUBLE_WIDTH, WIDTH_BLOCKS, WIDTH_LIMIT, WIDTH_ROWS, ZERO_WIDTH};
 use std::cmp::Ordering;
 
 fn in_ranges(table: &[(u32, u32)], cp: u32) -> bool {
@@ -49,5 +49,8 @@ pub fn width_in_ranges(cp: u32) -> usize {
 /// The canonical composition of base followed by mark, if Unicode has one
 /// (e + U+0301 COMBINING ACUTE ACCENT is é).
 pub fn compose(base: u32, mark: u32) -> Option<u32> {
+    // Most marks compose with nothing (Thai, Hebrew): rule them out in
+    // the short list of those that do before searching the pairs (#21).
+    COMPOSING_MARKS.binary_search(&mark).ok()?;
     COMPOSE.binary_search_by(|&(b, m, _)| (b, m).cmp(&(base, mark))).ok().map(|i| COMPOSE[i].2)
 }

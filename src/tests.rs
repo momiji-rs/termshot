@@ -1229,6 +1229,14 @@ fn the_width_table_matches_the_width_ranges() {
 }
 
 #[test]
+fn every_composition_passes_the_mark_filter() {
+    for &(base, mark, composed) in crate::unicode_tables::COMPOSE.iter() {
+        assert_eq!(unicode::compose(base, mark), Some(composed), "U+{base:04X} U+{mark:04X}");
+    }
+    assert_eq!(unicode::compose('ก' as u32, 0x0E48), None);
+}
+
+#[test]
 fn wide_characters_take_two_cells() {
     let g = grid("a中b".as_bytes());
     assert_eq!(shown(&g[..C]), "a中b      ");

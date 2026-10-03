@@ -160,4 +160,15 @@ fn main() {
         println!("    {},", row.join(", "));
     }
     println!("];");
+    println!();
+    let mut marks: Vec<u32> = compose.iter().map(|&(_, mark, _)| mark).collect();
+    marks.sort();
+    marks.dedup();
+    println!("/// The second code points of COMPOSE, sorted: a mark not here composes with nothing.");
+    println!("pub static COMPOSING_MARKS: [u32; {}] = [", marks.len());
+    for chunk in marks.chunks(8) {
+        let row: Vec<String> = chunk.iter().map(|m| format!("0x{m:04X}")).collect();
+        println!("    {},", row.join(", "));
+    }
+    println!("];");
 }
