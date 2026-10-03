@@ -514,11 +514,11 @@ impl Screen {
     }
 
     /// Rotate row storage and move graphics together. Pixel clipping uses the
-    /// logical distance, not the rotation modulo. After a whole region has
-    /// scrolled out, additional distance cannot change its surviving pixels.
+    /// logical distance, not the rotation modulo. Without margins, images
+    /// below the screen move the whole distance, however far below they are.
     fn rotate_rows(&mut self, top: usize, bottom: usize, n: usize, up: bool) {
         let height = bottom + 1 - top;
-        let distance = n.min(height) as i64;
+        let distance = i64::try_from(n).unwrap_or(i64::MAX);
         self.graphics.scroll(top, bottom, if up { -distance } else { distance }, self.cell_size.1);
         if up {
             self.map[top..=bottom].rotate_left(n % height);
@@ -628,7 +628,7 @@ impl Screen {
     /// pass its bottom margin. Rows scrolled above the top margin are cut off.
     fn sixel(&mut self, mut image: sixel::Image) {
         if self.sixel_display {
-            self.graphics.command(&sixel::kitty_command(&image), 0, 0, self.cell_size, self.rows);
+            self.graphics.sixel(&sixel::kitty_command(&image), 0, 0, self.cell_size, self.rows);
             return;
         }
         let (col, mut row) = (self.col, self.row);
@@ -650,7 +650,49 @@ impl Screen {
             self.row = last.min(self.rows - 1);
         }
         self.pending = false;
-        self.graphics.command(&sixel::kitty_command(&image), col, row, self.cell_size, self.rows);
+        self.graphics.sixel(&sixel::kitty_command(&image), col, row, self.cell_size, self.rows);
+    }
+
+    /// Clear the Sixel pixels over rows x cols cells from (row, col), as xterm's
+    /// chararea_clear_displayed_graphics does: xterm keeps Sixel pixels with
+    /// the cells, so a cell written later, or erased below or above the
+    /// cursor, shows instead of them.
+    fn clear_sixel(&mut self, row: usize, col: usize, rows: usize, cols: usize) {
+        if rows == 0 || cols == 0 || self.graphics.placements.is_empty() {
+            return;
+        }
+        let (cw, ch) = (i64::from(self.cell_size.0), i64::from(self.cell_size.1));
+        let (x, y) = (col as i64 * cw, row as i64 * ch);
+        self.graphics.erase_sixel(x, y, x + cols as i64 * cw, y + rows as i64 * ch);
+    }
+
+    /// Move the cursor past a kitty placement of cols x rows cells, as kitty
+    /// does (handle_put_command, screen_handle_graphics_command): right by
+    /// cols and down by rows - 1, to the start of the next row if that reaches
+    /// the screen's right edge. Past the bottom margin, the region scrolls up
+    /// by the overshoot, and the cursor stays on the screen.
+    fn move_past_image(&mut self, cols: usize, rows: usize) {
+        self.pending = false;
+        let (mut col, mut row) = (self.col.saturating_add(cols), self.row.saturating_add(rows.saturating_sub(1)));
+        if (col, row) == (self.col, self.row) {
+            return;
+        }
+        // kitty keeps the cursor in the margins only in origin mode, and only
+        // if the move left it inside them, before the wrap.
+        let (top, bottom) = if self.origin && (self.top..=self.bottom).contains(&row) {
+            (self.top, self.bottom)
+        } else {
+            (0, self.rows - 1)
+        };
+        if col >= self.cols {
+            col = 0;
+            row = row.saturating_add(1);
+        }
+        if row > self.bottom {
+            self.scroll_up(self.top, self.bottom, (row - self.bottom).min(self.rows));
+        }
+        self.col = col.min(self.cols - 1);
+        self.row = row.clamp(top, bottom);
     }
 
     /// Switch to the alternate screen or back. clear_first blanks the
@@ -730,6 +772,7 @@ impl Screen {
         self.cells[at] = cell;
         self.clear_marks(at, at + width);
         self.last_at = Some(at);
+        self.clear_sixel(self.row, self.col, 1, width);
         if self.col + width <= self.last_col() {
             self.col += width;
         } else {
@@ -845,6 +888,7 @@ impl Screen {
                 cell.ch = u32::from(*byte);
                 *dest = cell;
             }
+            self.clear_sixel(self.row, self.col, 1, count);
             text = &text[count..];
             self.col += count;
             if self.col == self.cols {
@@ -861,6 +905,7 @@ impl Screen {
                         self.cells[at] = cell;
                         self.clear_marks(at, at + 1);
                         self.last_at = Some(at);
+                        self.clear_sixel(self.row, self.col, 1, 1);
                     }
                     break;
                 }
@@ -979,13 +1024,17 @@ impl Screen {
             b'J' => {
                 let (cursor, line) = (self.cursor_index(), self.line(self.row));
                 match p.get(0, 0) {
+                    // xterm erases Sixel pixels in the rows below or above the
+                    // cursor's, but not in its own (ClearBelow, ClearAbove).
                     0 => {
                         self.erase(cursor, line.end);
                         self.erase_rows(self.row + 1, self.rows);
+                        self.clear_sixel(self.row + 1, 0, self.rows - self.row - 1, self.cols);
                     }
                     1 => {
                         self.erase_rows(0, self.row);
                         self.erase(line.start, cursor + 1);
+                        self.clear_sixel(0, 0, self.row, self.cols);
                     }
                     2 => {
                         self.erase_rows(0, self.rows);
@@ -1298,10 +1347,7 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
                         if let Some((dc, dr)) = screen.graphics.command(
                             &data[i + 1..end - 2], screen.col, screen.row, cell_size, rows,
                         ) {
-                            screen.col = screen.col.saturating_add(dc).min(cols - 1);
-                            // The protocol leaves overflow positioning implementation-defined.
-                            screen.row = screen.row.saturating_add(dr).min(screen.bottom.max(screen.row));
-                            screen.pending = false;
+                            screen.move_past_image(dc, dr);
                         }
                     } else { screen.graphics.abort(); }
                     i = end;
@@ -2224,11 +2270,13 @@ fn main() -> ExitCode {
             match (cursor, cursor_shape) {
                 (None, _) => {}
                 (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, cols, row, col),
-                // Over everything, images too, as a terminal draws it.
+                // As kitty draws it, with the text: over the images under
+                // the text, under those of z-index 0 and up, so it goes first
+                // among the views drawn after the text.
                 (Some(at), shape) => {
                     let ((x, y, w, h), pixel) = cursor_mark(&cells, cols, at, shape, (cell_w, cell_h));
                     mark_pixel = pixel;
-                    image_views.push(graphics::ImageView::solid(&mark_pixel, x, y, w, h));
+                    image_views.insert(0, graphics::ImageView::solid(&mark_pixel, x, y, w, h));
                 }
             }
             opaque_backgrounds(&mut cells);

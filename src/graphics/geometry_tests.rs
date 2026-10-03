@@ -60,7 +60,7 @@ fn an_empty_crop_draws_nothing_but_still_moves_the_cursor() {
     // The space c and r give is still passed.
     let g = replay(&put("x=4,c=3,r=2"));
     assert!(g.images.is_empty());
-    assert_eq!(g.cursor, Some((2, 3)));
+    assert_eq!(g.cursor, Some((1, 3)));
     // An offset is a cell the image would start in.
     let g = replay(&put("x=4,X=3"));
     assert_eq!(g.cursor, Some((0, 1)));
@@ -83,14 +83,14 @@ fn offsets_start_the_image_inside_its_first_cell() {
     assert_eq!(shown(&put("X=3,Y=5")), ([0, 0, 4, 2], 3, 5, 4, 2));
     // It still fits in its cell, which the cursor passes.
     let g = replay(&put("X=3,Y=5"));
-    assert_eq!(g.cursor, Some((1, 1)));
+    assert_eq!(g.cursor, Some((0, 1)));
     // At most a pixel short of the cell's edge, as kitty clamps them.
     assert_eq!(shown(&put("X=9,Y=19")), ([0, 0, 4, 2], 9, 19, 4, 2));
     assert_eq!(shown(&put("X=10,Y=20")), ([0, 0, 4, 2], 9, 19, 4, 2));
     assert_eq!(shown(&put("X=4294967295,Y=4294967295")), ([0, 0, 4, 2], 9, 19, 4, 2));
     // The image runs into the next cells, which the cursor passes.
     let g = replay(&put("X=9,Y=19"));
-    assert_eq!(g.cursor, Some((2, 2)));
+    assert_eq!(g.cursor, Some((1, 2)));
     let p = &g.images[0];
     assert_eq!((p.col, p.cols, p.row, p.rows), (0, 2, 0, 2));
     // Placed at another cell, the offset is from that cell's corner.
@@ -212,12 +212,16 @@ fn offset_images_scroll_and_clip_as_wholes() {
     let g = replay(&log);
     let s = g.images[0].slices[0];
     assert_eq!((s.y, s.top, s.bottom), (50, 50, 54));
-    // At the bottom of the screen, the screen clips it.
+    // At the bottom of the screen it runs on below, as in kitty, where a
+    // scroll can bring it into view; draw.c clips it at the canvas.
     let mut log = b"\x1b[10;1H".to_vec();
     log.extend(put("Y=19,C=1"));
     let g = replay(&log);
     let s = g.images[0].slices[0];
-    assert_eq!((s.y, s.top, s.bottom), (199, 199, 200));
+    assert_eq!((s.y, s.top, s.bottom), (199, 199, 201));
+    log.extend_from_slice(b"\x1b[S");
+    let s = replay(&log).images[0].slices[0];
+    assert_eq!((s.y, s.top, s.bottom), (179, 179, 181));
 }
 
 #[test]
