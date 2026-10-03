@@ -313,6 +313,9 @@ struct Screen {
     bottom: usize,
     saved: [Saved; 2],
     pen: Pen,
+    /// pen.cell(), kept up to date wherever pen changes (SGR, DECRC,
+    /// RIS), so printing does not mix colours per character.
+    pen_cell: Cell,
     /// Tab stops, one per column; every 8th column at start.
     tabs: Vec<bool>,
     /// G0 and G1. SO shifts to G1, SI back to G0.
@@ -363,6 +366,7 @@ impl Screen {
             bottom: rows - 1,
             saved: [Saved::HOME; 2],
             pen: Pen::DEFAULT,
+            pen_cell: Pen::DEFAULT.cell(),
             tabs: (0..cols).map(|c| c % 8 == 0).collect(),
             charsets: [Charset::Ascii; 2],
             shifted: false,
@@ -391,6 +395,7 @@ impl Screen {
         let s = self.saved[usize::from(self.on_alternate)];
         (self.row, self.col, self.pending, self.origin) = (s.row, s.col, s.pending, s.origin);
         self.pen = s.pen;
+        self.pen_cell = s.pen.cell();
         (self.charsets, self.shifted) = (s.charsets, s.shifted);
     }
 
@@ -721,7 +726,7 @@ impl Screen {
         let line = self.line(self.row);
         let at = line.start + self.col;
         self.split_wide(&line, at);
-        let mut cell = Cell { ch, ..self.pen.cell() };
+        let mut cell = Cell { ch, ..self.pen_cell };
         if width == 2 {
             self.split_wide(&line, at + 1);
             cell.attrs |= WIDE;
@@ -809,7 +814,7 @@ impl Screen {
         if let Some(byte) = text.last() {
             self.last = Some(u32::from(*byte));
         }
-        let mut cell = self.pen.cell();
+        let mut cell = self.pen_cell;
         while !text.is_empty() {
             if self.pending {
                 if self.autowrap && self.row == self.bottom {
@@ -975,7 +980,10 @@ impl Screen {
             // xterm saves the same state for CSI s as for DECSC.
             b's' => self.save_cursor(),
             b'u' => self.restore_cursor(),
-            b'm' => self.sgr(p),
+            b'm' => {
+                self.sgr(p);
+                self.pen_cell = self.pen.cell();
+            }
             b'J' => {
                 let (cursor, line) = (self.cursor_index(), self.line(self.row));
                 match p.get(0, 0) {
