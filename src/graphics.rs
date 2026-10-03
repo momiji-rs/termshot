@@ -867,6 +867,8 @@ impl Graphics {
         #[derive(Clone, Copy)]
         enum Resolved {
             Unknown,
+            /// On the walk being resolved: met again, it closes a cycle.
+            Walking,
             Broken,
             /// The cell it is placed at, and the links up to its root.
             At(i64, i64, usize),
@@ -874,16 +876,28 @@ impl Graphics {
         let mut cells = vec![Resolved::Unknown; n];
         let mut path = Vec::new();
         for i in 0..n {
-            // Walk up to a placement already resolved, or a root.
+            // Walk up to a placement already resolved, or a root. Depth is
+            // only known on the way back down: a placement met on the way up
+            // may be fine even when the one the walk started from is too deep.
             let mut at = i;
-            while let Resolved::Unknown = cells[at] {
+            loop {
+                match cells[at] {
+                    Resolved::Unknown => {}
+                    // A cycle, which the put checks prevent, resolves nowhere.
+                    Resolved::Walking => {
+                        cells[at] = Resolved::Broken;
+                        break;
+                    }
+                    _ => break,
+                }
                 let p = &self.placements[at];
                 if p.parent.is_none() {
                     cells[at] = Resolved::At(p.col, p.anchor, 0);
-                } else if parents[at] == NONE || path.len() > MAX_DEPTH {
-                    // A parent that is gone, or a chain too long (or a cycle).
+                } else if parents[at] == NONE {
+                    // Its parent is gone.
                     cells[at] = Resolved::Broken;
                 } else {
+                    cells[at] = Resolved::Walking;
                     path.push(at);
                     at = parents[at];
                 }

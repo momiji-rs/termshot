@@ -344,14 +344,18 @@ Where termshot differs from kitty, deliberately:
 
 Every relative placement counts toward the 1,024-placement limit. Layout is
 linear in the placements: each child keeps its parent's index, checked
-against its key, so scrolling 1,024 placements costs no lookups; the walk
-up a chain stops at 8 links, so a cycle, which the checks above prevent,
-could not make it loop.
+against its key, so scrolling 1,024 placements costs no lookups. Each walk
+up a chain stops at a placement already resolved, and marks the ones it
+passes, so a cycle, which the checks above prevent, is found rather than
+followed. Depth is counted on the way back down, where each placement's own
+is known: a placement passed on the walk up from one too deep may itself be
+fine ([review](https://github.com/momiji-rs/termshot/pull/63#discussion_r4175211540)).
 
 Tests: `src/graphics/relative_tests.rs` covers the keys at their limits,
 offsets with `X`, `Y` and `c`, the cursor with and without `C`, `Q` and the
 oldest placement, each missing-parent case with an existing placement named,
-chains at 8 and 9 links, new and moved, cycles of one, two and three, every
+chains at 8 and 9 links, new and moved (with the too-deep descendants laid
+out before their ancestors too), cycles of one, two and three, every
 delete selector in both cases against a three-level family with the images
 it frees, retransmission, the quota, empty crops, full-screen and partial
 scrolling, off-screen children, `z` order, and 1,024 placements in chains

@@ -211,6 +211,18 @@ fn chains_are_limited_to_eight_links() {
     assert_eq!(at(&g, 23, 1).map(|a| a.0), Some(4));
     assert_eq!(at(&g, 24, 1), None);
     assert!(!ids(&g).contains(&24), "its image went with its only placement");
+
+    // The same when the descendants draw, and so are laid out, before their
+    // ancestors, the deepest first: only those too deep go.
+    let mut g = chain(5);
+    put(&mut g, (0, 0), 20, "C=1");
+    for k in 21..=24 {
+        put(&mut g, (0, 0), k, &format!("P={},Q=1,z=-{}", k - 1, k - 20));
+    }
+    put(&mut g, (0, 0), 20, "P=6,Q=1");
+    let left: Vec<_> = placed(&g).into_iter().map(|(id, _)| id).collect();
+    assert_eq!(left, [1, 2, 3, 4, 5, 6, 20, 21, 22]);
+    assert_eq!(ids(&g), [1, 2, 3, 4, 5, 6, 20, 21, 22]);
 }
 
 #[test]
