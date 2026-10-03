@@ -150,12 +150,49 @@ static int glyph_empty(const stbtt_fontinfo *info, const Face *face, int glyph, 
     return n < 0 ? -1 : n == 0;
 }
 
+/* Rounded corners and diagonals are stamped: a disc at each of a stroke's
+   points. Stamps keeps which pixels of its cell a stroke covered, to paint
+   the next one like it as runs; stamp_points says when two are alike. A
+   render of the largest screen finds well under STAMP_SEQUENCES sequences
+   per shape and axis (tests/boxes.c checks), and STAMP_MAX_BYTES bounds
+   what is kept; past either, strokes are stamped afresh. */
+#define STAMP_SHAPES 6 /* the four corners, then the two diagonals */
+#define STAMP_SEQUENCES 64
+#define STAMP_MASKS 1024
+#define STAMP_MAX_POINTS 4096
+#define STAMP_MAX_BYTES (4u << 20)
+
+typedef struct {
+    uint32_t key; /* 0 for an empty slot */
+    int run_count;
+    uint16_t *runs; /* 3 per run: row, first column, past the last, in the cell */
+} StampMask;
+
+typedef struct {
+    int w, h; /* the cell size, set by the first stroke */
+    int n[STAMP_SHAPES]; /* each shape's point count */
+    int lines[2]; /* columns and rows */
+    /* Per axis (x, y), shape and column or row: the sequence of offsets the
+       stroke there has, as 1 + its index; 0 not known yet, -1 none. */
+    int16_t *ids[2][STAMP_SHAPES];
+    /* Per axis and shape: the distinct sequences, n floats each. */
+    float *sequences[2][STAMP_SHAPES];
+    int sequence_count[2][STAMP_SHAPES], sequence_room[2][STAMP_SHAPES];
+    StampMask *masks; /* STAMP_MASKS */
+    float *points; /* the stroke being stamped: x, y */
+    int capacity;
+    uint8_t *mask; /* a cell's coverage, on a miss */
+    size_t hits, misses, uncached, bytes;
+} Stamps;
+
 /* The image being painted. Passed explicitly so draw_png is reentrant. */
 typedef struct {
     uint8_t *px, *filtered;
     int w, h;
     size_t stride;
     float *arc_offsets[4];
+    /* Strokes to reuse, or NULL to stamp each one afresh. */
+    Stamps *stamps;
     /* While clipped, put and fill_rect stay inside [x0, x1) x [y0, y1):
        geometry never paints into a neighbouring cell. */
     int clipped, clip_x0, clip_y0, clip_x1, clip_y1;
@@ -220,6 +257,274 @@ static void vbar(Canvas *cv, int mid, int y0, int y1, int thick, uint8_t r, uint
     fill_rect(cv, mid - thick / 2, y0, mid - thick / 2 + thick, y1, r, g, b);
 }
 
+/* a - b, and whether that is exact: Knuth's TwoSum error is zero. */
+static int exact_difference(float a, float b, float *out) {
+    float s = a - b;
+    float bv = s - a;
+    float av = s - bv;
+    float err = (a - av) + (-b - bv);
+    *out = s;
+    return err == 0.0f;
+}
+
+/* The cell being stamped, the clip: its column and row in a grid of cells of
+   the first stroke's size. 0 when strokes there are not reused. */
+static int stamp_cell(Canvas *cv, int shape, int n, int *col, int *row) {
+    Stamps *st = cv->stamps;
+    int w = cv->clip_x1 - cv->clip_x0, h = cv->clip_y1 - cv->clip_y0;
+    if (!st || !cv->clipped || n > STAMP_MAX_POINTS || w <= 0 || h <= 0 || w > 65535 || h > 65535) return 0;
+    if (!st->w) {
+        st->w = w;
+        st->h = h;
+        st->lines[0] = cv->w / w;
+        st->lines[1] = cv->h / h;
+    }
+    if (w != st->w || h != st->h || (st->n[shape] && st->n[shape] != n)) return 0;
+    st->n[shape] = n;
+    if (cv->clip_x0 < 0 || cv->clip_y0 < 0 || cv->clip_x0 % w || cv->clip_y0 % h) return 0;
+    *col = cv->clip_x0 / w;
+    *row = cv->clip_y0 / h;
+    return *col < st->lines[0] && *row < st->lines[1];
+}
+
+/* The key of shape's stroke at col and row, at thickness thick: 0 when it
+   isn't known yet, -1 when it is not reused. */
+static int64_t stamp_key(const Stamps *st, int shape, int col, int row, int thick) {
+    if (!st->ids[0][shape] || !st->ids[1][shape]) return 0;
+    int x = st->ids[0][shape][col], y = st->ids[1][shape][row];
+    if (x < 0 || y < 0 || thick >= 256) return -1;
+    if (!x || !y) return 0;
+    return 1 + ((((int64_t)shape * 256 + thick) * (STAMP_SEQUENCES + 1) + x) * (STAMP_SEQUENCES + 1) + y);
+}
+
+static StampMask *stamp_slot(Stamps *st, uint32_t key) {
+    return &st->masks[(key * 2654435761u) >> 22 & (STAMP_MASKS - 1)];
+}
+
+static void paint_runs(Canvas *cv, const StampMask *m, uint8_t r, uint8_t g, uint8_t b) {
+    for (int k = 0; k < m->run_count; k++) {
+        const uint16_t *run = m->runs + 3 * k;
+        uint8_t *p = cv->px + (size_t)(cv->clip_y0 + run[0]) * cv->stride + (size_t)(cv->clip_x0 + run[1]) * BPP;
+        for (int x = run[1]; x < run[2]; x++, p += BPP) {
+            p[0] = r;
+            p[1] = g;
+            p[2] = b;
+        }
+    }
+}
+
+/* Paint shape's stroke in this cell from a stroke like it, if one was kept.
+   1 when painted; 0 when the caller should put its points in
+   cv->stamps->points (with room for n) and call stamp_points; -1 when the
+   caller stamps them itself. */
+static int stamp_find(Canvas *cv, int shape, int n, int thick, uint8_t r, uint8_t g, uint8_t b) {
+    int col, row;
+    if (!stamp_cell(cv, shape, n, &col, &row)) {
+        if (cv->stamps) cv->stamps->uncached++;
+        return -1;
+    }
+    Stamps *st = cv->stamps;
+    int64_t key = stamp_key(st, shape, col, row, thick);
+    if (key < 0) {
+        st->uncached++;
+        return -1;
+    }
+    if (key && st->masks) {
+        StampMask *m = stamp_slot(st, (uint32_t)key);
+        if (m->key == (uint32_t)key) {
+            st->hits++;
+            paint_runs(cv, m, r, g, b);
+            return 1;
+        }
+    }
+    if (n > st->capacity) {
+        float *points = (float *)realloc(st->points, (size_t)n * 2 * sizeof(float));
+        if (!points) {
+            st->uncached++;
+            return -1;
+        }
+        st->bytes += (size_t)(n - st->capacity) * 2 * sizeof(float);
+        st->points = points;
+        st->capacity = n;
+    }
+    return 0;
+}
+
+/* The index + 1 of the sequence of offsets of the n points (stride 2) from
+   origin, kept for shape and axis; -1 when an offset is inexact or there is
+   no room. */
+static int stamp_sequence(Stamps *st, int axis, int shape, const float *points, int n, float origin) {
+    float *seen = st->sequences[axis][shape];
+    int count = st->sequence_count[axis][shape], room = st->sequence_room[axis][shape];
+    if (count + 1 > room) {
+        /* Room for one more row than is kept, for the one being compared. */
+        int more = room ? 2 * room : 4;
+        if (more > STAMP_SEQUENCES + 1) more = STAMP_SEQUENCES + 1;
+        seen = (float *)realloc(seen, (size_t)more * (size_t)n * sizeof(float));
+        if (!seen) return -1;
+        st->sequences[axis][shape] = seen;
+        st->sequence_room[axis][shape] = more;
+        st->bytes += (size_t)(more - room) * (size_t)n * sizeof(float);
+    }
+    float *d = seen + (size_t)count * n;
+    for (int i = 0; i < n; i++)
+        if (!exact_difference(points[2 * i], origin, &d[i])) return -1;
+    for (int k = 0; k < count; k++)
+        if (memcmp(seen + (size_t)k * n, d, (size_t)n * sizeof(float)) == 0) return k + 1;
+    if (count == STAMP_SEQUENCES) return -1;
+    st->sequence_count[axis][shape] = count + 1;
+    return count + 1;
+}
+
+/* Stamp the n points in cv->stamps->points with discs of squared radius rad2
+   (radius rad) in the clip, which stamp_find found to be a cell, as put
+   would, and keep what they cover. 1 when painted, 0 when the caller must.
+
+   Which pixels a disc covers depends only on (x + 0.5f) - px and (y + 0.5f)
+   - py for the pixel (x, y) and the point (px, py). Moved by whole pixels,
+   x + 0.5f stays exact, so if each of a stroke's points is exactly as far
+   from its cell's origin as the same point of a stroke kept before, each
+   difference is the same real number, rounds the same, and the stroke covers
+   the same pixels of its cell. That is checked, not assumed: how a point
+   rounds depends on where its cell is. A stroke's x offsets depend only on
+   its column, and its y offsets on its row, so each is found once. */
+static int stamp_points(Canvas *cv, int shape, int n, int thick, float rad, float rad2, uint8_t r, uint8_t g,
+                        uint8_t b) {
+    Stamps *st = cv->stamps;
+    int col = cv->clip_x0 / st->w, row = cv->clip_y0 / st->h, w = st->w, h = st->h;
+    const float *pts = st->points;
+    for (int axis = 0; axis < 2; axis++) {
+        int16_t **ids = &st->ids[axis][shape];
+        if (!*ids) {
+            *ids = (int16_t *)calloc((size_t)st->lines[axis], sizeof(int16_t));
+            if (!*ids) {
+                st->uncached++;
+                return 0;
+            }
+            st->bytes += (size_t)st->lines[axis] * sizeof(int16_t);
+        }
+        int line = axis ? row : col;
+        if (!(*ids)[line]) {
+            float origin = (float)(axis ? cv->clip_y0 : cv->clip_x0);
+            (*ids)[line] = (int16_t)stamp_sequence(st, axis, shape, pts + axis, n, origin);
+        }
+    }
+    int64_t key = stamp_key(st, shape, col, row, thick);
+    if (key <= 0) {
+        st->uncached++;
+        return 0;
+    }
+    if (!st->masks) {
+        st->masks = (StampMask *)calloc(STAMP_MASKS, sizeof(StampMask));
+        if (!st->masks) {
+            st->uncached++;
+            return 0;
+        }
+        st->bytes += STAMP_MASKS * sizeof(StampMask);
+    }
+    StampMask *m = stamp_slot(st, (uint32_t)key);
+    if (m->key == (uint32_t)key) {
+        st->hits++;
+        paint_runs(cv, m, r, g, b);
+        return 1;
+    }
+    size_t size = (size_t)w * (size_t)h;
+    if (!st->mask) {
+        st->mask = (uint8_t *)malloc(size);
+        if (!st->mask) {
+            st->uncached++;
+            return 0;
+        }
+        st->bytes += size;
+    }
+    /* Stamp into a mask of the cell what the caller would into the canvas. */
+    uint8_t *mask = st->mask;
+    int cx = cv->clip_x0, cy = cv->clip_y0;
+    memset(mask, 0, size);
+    for (int i = 0; i < n; i++) {
+        float px = pts[2 * i], py = pts[2 * i + 1];
+        int x0 = (int)floorf(px - rad - 1.0f), y0 = (int)floorf(py - rad - 1.0f);
+        int x1 = (int)ceilf(px + rad + 1.0f), y1 = (int)ceilf(py + rad + 1.0f);
+        if (x0 < cx) x0 = cx;
+        if (y0 < cy) y0 = cy;
+        if (x1 > cx + w - 1) x1 = cx + w - 1;
+        if (y1 > cy + h - 1) y1 = cy + h - 1;
+        for (int y = y0; y <= y1; y++) {
+            for (int x = x0; x <= x1; x++) {
+                float dx = (x + 0.5f) - px;
+                float dy = (y + 0.5f) - py;
+                if (dx * dx + dy * dy <= rad2) mask[(size_t)(y - cy) * w + (x - cx)] = 1;
+            }
+        }
+    }
+    int count = 0;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *line = mask + (size_t)y * w;
+        for (int x = 0; x < w; x++) count += line[x] && (x == 0 || !line[x - 1]);
+    }
+    size_t bytes = (size_t)(count ? count : 1) * 3 * sizeof(uint16_t);
+    uint16_t *runs = NULL;
+    if (st->bytes + bytes <= STAMP_MAX_BYTES) runs = (uint16_t *)malloc(bytes);
+    StampMask fresh = {(uint32_t)key, count, runs};
+    if (!runs) {
+        /* Not kept: paint from the mask's runs all the same. */
+        st->uncached++;
+        for (int y = 0; y < h; y++) {
+            const uint8_t *line = mask + (size_t)y * w;
+            uint8_t *p = cv->px + (size_t)(cy + y) * cv->stride + (size_t)cx * BPP;
+            for (int x = 0; x < w; x++, p += BPP) {
+                if (!line[x]) continue;
+                p[0] = r;
+                p[1] = g;
+                p[2] = b;
+            }
+        }
+        return 1;
+    }
+    uint16_t *run = runs;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *line = mask + (size_t)y * w;
+        for (int x = 0; x < w; x++) {
+            if (!line[x] || (x > 0 && line[x - 1])) continue;
+            int end = x;
+            while (end < w && line[end]) end++;
+            run[0] = (uint16_t)y;
+            run[1] = (uint16_t)x;
+            run[2] = (uint16_t)end;
+            run += 3;
+        }
+    }
+    if (m->key) {
+        st->bytes -= (size_t)(m->run_count ? m->run_count : 1) * 3 * sizeof(uint16_t);
+        free(m->runs);
+    }
+    *m = fresh;
+    st->bytes += bytes;
+    st->misses++;
+    paint_runs(cv, m, r, g, b);
+    return 1;
+}
+
+static void free_stamps(Stamps *st) {
+    if (!st) return;
+    for (int k = 0; st->masks && k < STAMP_MASKS; k++) free(st->masks[k].runs);
+    free(st->masks);
+    for (int axis = 0; axis < 2; axis++) {
+        for (int shape = 0; shape < STAMP_SHAPES; shape++) {
+            free(st->ids[axis][shape]);
+            free(st->sequences[axis][shape]);
+        }
+    }
+    free(st->points);
+    free(st->mask);
+}
+
+/* What geometry holds: the arc offsets and the stamps. */
+static void free_geometry(Canvas *cv) {
+    for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    free_stamps(cv->stamps);
+}
+
 /* Quarter ellipse. Angles are standard math angles with y growing downward. */
 static void arc(Canvas *cv, int corner, float cx, float cy, float rx, float ry, float a0, float a1, float thick,
                  uint8_t r, uint8_t g, uint8_t b) {
@@ -235,6 +540,24 @@ static void arc(Canvas *cv, int corner, float cx, float cy, float rx, float ry, 
     float *offsets = cv->arc_offsets[corner];
     float rad = thick * 0.5f;
     float rad2 = (rad + 0.6f) * (rad + 0.6f);
+    if (offsets && !cached) {
+        for (int i = 0; i <= steps; i++) {
+            float a = a0 + (a1 - a0) * ((float)i / (float)steps);
+            offsets[2 * i] = rx * cosf(a);
+            offsets[2 * i + 1] = ry * sinf(a);
+        }
+        cached = 1;
+    }
+    int found = offsets ? stamp_find(cv, corner, steps + 1, (int)thick, r, g, b) : -1;
+    if (found == 1) return;
+    if (found == 0) {
+        float *pts = cv->stamps->points;
+        for (int i = 0; i <= steps; i++) {
+            pts[2 * i] = cx + offsets[2 * i];
+            pts[2 * i + 1] = cy + offsets[2 * i + 1];
+        }
+        if (stamp_points(cv, corner, steps + 1, (int)thick, rad, rad2, r, g, b)) return;
+    }
     for (int i = 0; i <= steps; i++) {
         float ox, oy;
         if (cached) {
@@ -429,6 +752,18 @@ static void paint_segment(Canvas *cv, int x, int y, int w, int h, float ax, floa
     int steps = (int)(len * 2.0f) + 1;
     float rad = thick * 0.5f;
     float rad2 = (rad + 0.6f) * (rad + 0.6f);
+    /* Shapes 4 and 5: from the top right (as ╱) or the top left. */
+    int shape = ax > (float)x ? 4 : 5;
+    int found = stamp_find(cv, shape, steps + 1, (int)thick, r, g, b);
+    if (found == 1) return;
+    if (found == 0) {
+        float *pts = cv->stamps->points;
+        for (int i = 0; i <= steps; i++) {
+            pts[2 * i] = ax + (bx - ax) * ((float)i / (float)steps);
+            pts[2 * i + 1] = ay + (by - ay) * ((float)i / (float)steps);
+        }
+        if (stamp_points(cv, shape, steps + 1, (int)thick, rad, rad2, r, g, b)) return;
+    }
     for (int i = 0; i <= steps; i++) {
         float px = ax + (bx - ax) * ((float)i / (float)steps);
         float py = ay + (by - ay) * ((float)i / (float)steps);
@@ -788,7 +1123,7 @@ static void paint_images(Canvas *cv, const ImageView *images, size_t count, int 
 /* Free what the glyph pass holds when memory runs out in it; returns 2. */
 static int glyphs_failed(Canvas *cv, Glyph *cache, Outline *scratch) {
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
-    for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    free_geometry(cv);
     free(scratch->v);
     free(cv->filtered);
     cv->px = NULL;
@@ -1009,8 +1344,9 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     /* One leading zero per scanline is PNG's None filter. Paint directly into
        the compressor input instead of copying a second full image later. */
     size_t stride = (size_t)width * BPP + 1;
+    Stamps stamps = {0};
     Canvas canvas = {.filtered = (uint8_t *)malloc(stride * (size_t)height),
-                     .w = (int)width, .h = (int)height, .stride = stride};
+                     .w = (int)width, .h = (int)height, .stride = stride, .stamps = &stamps};
     Canvas *cv = &canvas;
     if (!cv->filtered) {
         fprintf(stderr, "termshot: out of memory for a %lldx%lld image\n", width, height);
@@ -1123,7 +1459,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     }
 
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
-    for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    free_geometry(cv);
     free(scratch.v);
     paint_images(cv, images, image_count, LAYER_OVER_TEXT, NULL, cell_w, cell_h);
     double foreground = now_ms();
@@ -1144,13 +1480,13 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     free(cv->filtered);
     cv->px = NULL;
     if (profiling) {
-        fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"glyph_cache_evictions\":%zu,\"glyph_missing\":%zu,\"fallback_lookups\":%zu,\"fallback_rasterizations\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
+        fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"geometry_cache_hits\":%zu,\"geometry_cache_misses\":%zu,\"geometry_cache_uncached\":%zu,\"geometry_cache_bytes\":%zu,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"glyph_cache_evictions\":%zu,\"glyph_missing\":%zu,\"fallback_lookups\":%zu,\"fallback_rasterizations\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
             termshot_deflate_profile.allocate_ms, termshot_deflate_profile.match_emit_ms,
             termshot_deflate_profile.finalize_ms, termshot_deflate_profile.checksum_ms,
             font_setup - started, allocated - font_setup,
             background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
-            encoded - foreground, written - encoded, now_ms() - written, g.glyphs, g.cache_hits, g.evictions, g.missing, g.fallback_lookups, g.fallback_glyphs, png_len, (size_t)(width * height * BPP));
+            encoded - foreground, written - encoded, now_ms() - written, stamps.hits, stamps.misses, stamps.uncached, stamps.bytes, g.glyphs, g.cache_hits, g.evictions, g.missing, g.fallback_lookups, g.fallback_glyphs, png_len, (size_t)(width * height * BPP));
     }
     if (!ok) {
         fprintf(stderr, "termshot: png write failed: %s\n", out_path);
