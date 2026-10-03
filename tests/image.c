@@ -104,8 +104,75 @@ static void check_inflate(void) {
     free(z);
 }
 
+// A fixed-Huffman stream built bit by bit: one zero literal, then copies of
+// 258 at distance 1, then its Adler-32. Independent of both compressors.
+typedef struct { unsigned char *p; size_t n; unsigned bits, count; } Bits;
+static void put_bits(Bits *b, unsigned value, int n) {
+    for (int i = 0; i < n; i++) {
+        b->bits |= ((value >> i) & 1u) << b->count;
+        if (++b->count == 8) { b->p[b->n++] = (unsigned char)b->bits; b->bits = b->count = 0; }
+    }
+}
+static void put_code(Bits *b, unsigned value, int n) { // Huffman codes go most significant bit first
+    for (int i = n - 1; i >= 0; i--) put_bits(b, value >> i & 1u, 1);
+}
+static size_t zero_bomb(unsigned char *p, size_t copies) {
+    Bits b = {p, 0, 0, 0};
+    p[b.n++] = 0x78;
+    p[b.n++] = 0x01;
+    put_bits(&b, 1, 1);         // final block
+    put_bits(&b, 1, 2);         // fixed codes
+    put_code(&b, 0x30, 8);      // literal 0
+    for (size_t i = 0; i < copies; i++) {
+        put_code(&b, 0xc5, 8);  // length 258 (code 285)
+        put_code(&b, 0, 5);     // distance 1
+    }
+    put_code(&b, 0, 7);         // end of block
+    if (b.count) put_bits(&b, 0, 8 - b.count);
+    uint32_t n = (uint32_t)(1 + 258 * copies);
+    uint32_t adler = (n % 65521) << 16 | 1; // all zeros: s1 stays 1, s2 adds it n times
+    for (int i = 3; i >= 0; i--) p[b.n++] = (unsigned char)(adler >> (8 * i));
+    return b.n;
+}
+// Inflate into a heap buffer of exactly olen bytes, so ASan sees any overrun.
+static int inflates_exact(const unsigned char *z, int len, int olen) {
+    unsigned char *out = malloc((size_t)olen);
+    assert(out);
+    int ok = inflates(z, len, out, olen);
+    if (ok) for (int i = 0; i < olen; i++) assert(out[i] == 0);
+    free(out);
+    assert(allocated == 0);
+    return ok;
+}
+
+static void check_bounded_inflate(void) {
+    // A 104 KiB stream of 16,908,289 zeros. Inflation stops at the bound
+    // given, small, near or past the end, and only the exact size succeeds.
+    unsigned char *z = malloc(128 * 1024);
+    assert(z);
+    int len = (int)zero_bomb(z, 65536);
+    assert(len < 128 * 1024);
+    int full = 1 + 258 * 65536;
+    assert(!inflates_exact(z, len, 12));
+    assert(!inflates_exact(z, len, 16 * 1024 * 1024));
+    assert(!inflates_exact(z, len, full - 1));
+    assert(!inflates_exact(z, len, full + 1));
+    assert(inflates_exact(z, len, full));
+    free(z);
+    // Inflation allocates nothing, so it works with the quota spent.
+    unsigned char hello[] = {0x78, 0x01, 1, 5, 0, 0xfa, 0xff, 'h', 'e', 'l', 'l', 'o', 0x06, 0x2c, 0x02, 0x15, 0, 0, 0, 0, 0, 0, 0, 0};
+    unsigned char out[5];
+    void *p = image_alloc(DECODE_BUDGET);
+    assert(p);
+    assert(image_inflate(hello, 16, out, 5) && memcmp(out, "hello", 5) == 0);
+    assert(allocated == DECODE_BUDGET);
+    image_free(p);
+    assert(allocated == 0);
+}
+
 int main(void) {
     check_inflate();
+    check_bounded_inflate();
     int w, h;
     unsigned char out[16];
     assert(image_png_size(png, sizeof(png), &w, &h) && w == 2 && h == 2);
@@ -148,6 +215,6 @@ int main(void) {
     image_free(p);
     assert(image_png_decode(png, sizeof(png), out, 2, 2));
     assert(allocated == 0);
-    puts("ok, PNG pixels, all truncations, 2000 mutations, decoder quota and allocation cleanup; zlib round trips, exact sizes, trailers, truncations and mutations");
+    puts("ok, PNG pixels, all truncations, 2000 mutations, decoder quota and allocation cleanup; zlib round trips, exact sizes, trailers, truncations and mutations; bounded inflation of 16.9M zeros without allocation");
     return 0;
 }
