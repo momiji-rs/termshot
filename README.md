@@ -134,6 +134,36 @@ cursor=$(tmux display -p -t app '#{?cursor_flag,#{cursor_x}#,#{cursor_y},none}')
 tmux capture-pane -t app -e -p | ./termshot --lf-newline --size 100x30 --cursor "$cursor" - top.png
 ```
 
+An [asciinema](https://asciinema.org) recording works as the log too, in either format,
+asciicast [v2](https://docs.asciinema.org/manual/asciicast/v2/) or
+[v3](https://docs.asciinema.org/manual/asciicast/v3/). The grid takes the recording's size,
+so `--size` isn't needed:
+
+```sh
+asciinema rec demo.cast
+./termshot demo.cast demo.png
+```
+
+A log is read as a cast when its first line, from the first byte, is a JSON object with a
+`"version"` member at its top level; the rest of the line need not be valid, so a damaged
+header is refused rather than drawn as text. Terminal output rarely starts that way; when it does, `--raw` reads the
+log as raw output, and a log taken for a cast that fails to read says so. `--cast` reads the
+log as a cast whatever it starts with, which matters only for the error you get. termshot replays the data of the
+output (`"o"`) events, in the order the file has them, and ignores input (`"i"`), markers
+(`"m"`), exit (`"x"`) and other events. The size is the header's (`width` and `height` in v2,
+`term.cols` and `term.rows` in v3), or that of the last resize (`"r"`, `"COLSxROWS"`) event, as
+the final screen is the one drawn. The grid has that one size from the start rather than
+changing mid-replay: full-screen programs redraw when resized, so their last frame is right,
+but text printed before a resize may wrap where it did not in the terminal. `--size`, or the
+original form's cols and rows, override it, each dimension on its own. A recording larger
+than 500×200 needs `--size` (exit 2). Timing is not used, so the replay doesn't depend on it.
+
+The JSON is read strictly: UTF-8, with every escape including `\uXXXX` surrogate pairs, no
+duplicate keys, and nesting at most 16 deep. A lone surrogate, invalid UTF-8, a truncated line,
+a wrong type, a size that is not a whole number, or a negative or infinite time is refused
+with its line, and for bad JSON or UTF-8 its column (exit 1), as for an unusable font. For a raw log, the size isn't
+guessed from where the cursor went; give it with `--size`.
+
 To check what a screen shows rather than how it looks (in a test, or as an agent), write it as
 text. It is laid out as `tmux capture-pane -p` prints it: a line per row, trailing spaces
 trimmed. For logs without graphics, omitting the PNG skips font loading, drawing and PNG
@@ -166,7 +196,9 @@ shows. Colours are as drawn: reverse video and dim are already applied, and conc
 | `-f`, `--font FILE` | TrueType or OpenType (CFF or CFF2) font (default: built-in JetBrains Mono); `FILE#N` or `FILE#NAME` picks a face of a collection |
 | `--fallback-font FILE` | TrueType or OpenType (CFF or CFF2) font for characters the first lacks, such as CJK; faces as for `--font` |
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
-| `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
+| `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default: a cast's size, else 100x30) |
+| `--cast` | read the log as an asciinema `.cast` (v2 or v3), even if its first line isn't a header |
+| `--raw` | read the log as raw PTY output, even if its first line looks like a cast's header |
 | `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
 | `--cursor COL,ROW` or `none` | draw the cursor there, counting from 0 as tmux's `#{cursor_x},#{cursor_y}` do, or not at all (default: where the log leaves it, unless it hides it) |
 | `--cursor-shape block`, `underline` or `bar` | draw the cursor as that shape (default: the one the log sets with DECSCUSR, or a block) |
@@ -175,11 +207,12 @@ shows. Colours are as drawn: reverse video and dim are already applied, and conc
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 
-It prints nothing on success, except a hint on stderr when the log has line feeds but no CR,
+It prints nothing on success, except a hint on stderr when the log (for a cast, its output) has line feeds but no CR,
 which means it was probably not captured through a PTY and needs `--lf-newline`, and a warning
 when a font maps a character to an empty glyph, so it was drawn as a box. The warning names the
 first such cell, the font, and what to pass instead. Exit status is 0 when done; 1 when a file can't be read or written,
-or the font is unusable; and 2 for bad arguments, including an image over 2^27 pixels. termshot
+a `.cast` is malformed, or the font is unusable; and 2 for bad arguments, including an image
+over 2^27 pixels and a cast larger than 500×200 without `--size`. termshot
 won't write a PNG to a terminal, and only one output can be `-`. A failed run removes the output
 files it created.
 
