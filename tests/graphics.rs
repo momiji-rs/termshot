@@ -114,7 +114,46 @@ fn main() {
     ascii_scroll(&bin);
     grid_outputs(&bin);
     cursor_shapes(&bin);
+    stored_placements(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes; native clipping, text layering, transparency and deletion");
+}
+
+// Images stored once (a=t) and put (a=p) in several cells: each placement is
+// the image's square centred in its cell, drawn by z-index, then by the order
+// the images were made. A moved placement and a delete by column are checked
+// over the whole raster.
+fn stored_placements(bin: &str) {
+    let mut log = b"\x1b_Ga=t,i=1,f=24,s=1,v=1;/wAA\x1b\\\x1b_Ga=t,i=2,f=24,s=1,v=1;AP8A\x1b\\".to_vec();
+    for (at, put) in [
+        ("1;1", "i=1"),
+        ("2;4", "i=1"),
+        ("1;6", "i=2,p=5"),
+        ("2;6", "i=2,p=5"),
+        ("1;1", "i=2"),
+        ("2;1", "i=2"),
+        ("2;1", "i=1,z=1"),
+    ] {
+        log.extend_from_slice(format!("\x1b[{at}H\x1b_Ga=p,{put},c=1,r=1,C=1\x1b\\").as_bytes());
+    }
+    log.extend_from_slice(b"\x1b_Ga=d,d=x,x=4\x1b\\");
+    let (w, h, pixels) = render(bin, "stored", &log, "24", 6, 2);
+    let (cw, ch) = (w / 6, h / 2);
+    let side = cw.min(ch);
+    let (left, top) = ((cw - side) / 2, (ch - side) / 2);
+    // The colour on top in each (row, col): the move emptied (0, 5), d=x (1, 3).
+    let shown = [((0, 0), COLORS[1]), ((1, 5), COLORS[1]), ((1, 0), COLORS[0])];
+    for y in 0..h {
+        for x in 0..w {
+            let (dx, dy) = (x % cw, y % ch);
+            let inside = dx >= left && dx < left + side && dy >= top && dy < top + side;
+            let want = shown
+                .iter()
+                .find(|(cell, _)| inside && *cell == (y / ch, x / cw))
+                .map_or(BG, |&(_, color)| color);
+            assert_eq!(&pixels[(y * w + x) * 4..][..3], &want, "stored placements at ({x},{y})");
+        }
+    }
+    println!("ok, stored images put in several cells: draw order, a moved placement, delete by column");
 }
 
 // Underline and bar cursors (DECSCUSR), pixel by pixel: a solid rectangle an

@@ -71,8 +71,9 @@ arm64 and macOS, and tests Rust 1.70 compatibility.
 This implements the issue's first stage, direct `a=T` transmission, with an
 independent image layer. The PNG decoder reuses vendored stb and adds no
 external library dependency. Sixel remains deferred. See the README's supported
-subset before using this to test a TUI: Unicode-placeholder placements,
-separate transmit/put commands and external-file transfers remain unsupported.
+subset before using this to test a TUI: Unicode-placeholder placements and
+external-file transfers remain unsupported. Separate transmit and put came
+with #44; see [Stored images and placements](#stored-images-and-placements).
 It has not been validated against captures of AgentAmp or yazi, or compared
 pixel-for-pixel with a live kitty terminal.
 
@@ -112,6 +113,47 @@ omission, `i=1` and `i=4294967295` remain valid. The zero-ID test fails on
 
 Remaining protocol work: Sixel is already tracked by #41; advanced kitty
 features now have a dedicated follow-up, #44.
+
+
+## Stored images and placements
+
+The first stage of #44 separates stored images from their placements, with
+the semantics taken from kitty's `docs/graphics-protocol.rst` and
+`kitty/graphics.c` (master, read 2026-10-02) rather than from the earlier
+`a=T`-only code:
+
+- `a=t` stores an image, `a=p` places a stored one at the cursor, and `a=T`
+  does both. Placements share the image's pixels (`Rc`), so putting one image
+  many times costs no pixel copies. `a=t` with neither `i` nor `I` stores
+  nothing, as kitty trims such an image at once.
+- `I` names the newest image with that number. Such an image gets the lowest
+  free id (kitty's `get_free_client_id`). Giving both `i` and `I` is ignored.
+- `(i, p)` with a nonzero `p` names one placement; putting it again moves it.
+  `p` is ignored on an image without an id.
+- Retransmitting an id removes the old image and its placements as the
+  transmission starts, so a failed retransmission leaves nothing to place.
+- Draw order is kitty's: z-index, then image creation, then placement
+  creation. The earlier code broke ties by image id, which kitty does not.
+- Delete selectors `a i n r c p q x y z` follow `handle_delete_command` and
+  `filter_refs`: lowercase removes placements and frees only images without
+  an id; uppercase also frees the images it emptied. `d=I`/`d=N` without `p`
+  and `d=R` also free matching images that already had no placement; `d=A`
+  keeps stored images it did not touch. Cell selectors use the cells each
+  placement covers, which follow scrolling and are clipped at the margins as
+  kitty's `scroll_filter_margins_func` clips them. `f` (frames) is ignored.
+- ED 2, RIS and entering the alternate screen act as `grman_clear`: every
+  placement goes and every image left without one is freed, stored ones too.
+- Over 16 MiB or 4,096 images, an upload frees every image without a
+  placement (except itself), then the least recently placed, with their
+  placements, as `apply_storage_quota` does. The image count limit is
+  termshot's: it bounds the linear lookups. kitty's own quota is 320 MB.
+
+`src/graphics/tests.rs` covers each selector in both cases against a fixed
+scene, freeing of stored images, the quota order, numbers, placement moves,
+retransmission and scrolled cell bounds. Seventeen hand-made mutants of this
+logic all fail the tests. `tests/graphics.rs` checks one full raster with two
+stored images put in seven cells: draw order by z-index and creation, a moved
+placement and a delete by column, against pixels it computes itself.
 
 
 ## ASCII autowrap regression

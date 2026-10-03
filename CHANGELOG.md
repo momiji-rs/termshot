@@ -14,6 +14,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   external-file transfers, remain ignored; see the README for the supported
   subset and resource limits.
 
+- Kitty graphics store images apart from their placements (#44): `a=t`
+  transmits without placing, `a=p` places a stored image again, `I` names
+  images by number, and a placement id moves one placement. Deletes support
+  kitty's `a`, `i`, `n`, `r`, `c`, `p`, `q`, `x`, `y` and `z` selectors, and
+  uppercase frees the image data. Over the storage limit, images without a
+  placement and then the least recently placed are freed instead of refusing
+  the new image. Draw order now breaks z-index ties by creation, as kitty does.
+
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so

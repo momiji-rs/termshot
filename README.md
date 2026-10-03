@@ -186,8 +186,10 @@ refused with the list (exit 1), and `-v` prints the face used. If the file's own
 
 ## Images in PTY logs
 
-Kitty graphics sent inline with `a=T,t=d` render above the text: RGB (`f=24`),
+Kitty graphics sent inline (`t=d`) render above the text: RGB (`f=24`),
 RGBA (`f=32`, the default), and PNG (`f=100`), including `m=1`/`m=0` chunks.
+`a=T` transmits and places an image; `a=t` only stores it, under an id `i` or
+a number `I`, and each `a=p` places a stored one again, sharing its pixels.
 Images start at the cursor, use their native pixel size or fit a `c`/`r` cell
 rectangle while preserving aspect ratio, and blend alpha over the existing
 screen. Scaling uses deterministic nearest-neighbor sampling. Cell dimensions
@@ -195,15 +197,22 @@ come from the selected font and `--px`. `C=1` keeps the cursor in place;
 otherwise it advances by the placement's columns and rows, clamped to the
 screen/scroll area's bottom and right edges.
 
-`a=d` deletes all placements; `d=i`/`d=I,i=...` deletes by image ID, optionally
-restricted with `p`. Retransmitting an ID replaces its image. Nonnegative `z`
-orders overlays. Only images wholly inside a scrolling region move and clip
-at its edges; images crossing a margin stay stationary. Full-screen erase/reset
-clears images. Explicit image IDs must be nonzero; omitting `i` is valid. Main and alternate screens keep
-separate images. See [the regression evidence](docs/kitty-graphics.md).
+A placement id `p` names one placement of an image: putting the same `i,p`
+again moves it. Deletes follow kitty's selectors: all (`d=a`, the default), by
+id (`i`, with `p`), by number (`n`), by id range (`r`), at the cursor (`c`), at
+a cell (`p`, `q` with a z-index), in a column (`x`), a row (`y`), or by z-index
+(`z`). Lowercase keeps the image data for another `a=p`; uppercase also frees
+the images it leaves without a placement. Retransmitting an id replaces its
+image and removes its placements. Nonnegative `z` orders overlays, then the
+order images and placements were made. Only images wholly inside a scrolling
+region move and clip at its edges; images crossing a margin stay stationary.
+Full-screen erase and reset remove every placement and free every stored image,
+as kitty does. Explicit image ids and numbers must be nonzero; omitting `i` is
+valid. Main and alternate screens keep separate images. See
+[the regression evidence](docs/kitty-graphics.md).
 
 This is a subset, not full kitty emulation: Sixel, file/shared-memory transfer,
-separate transmit/put (`a=t`/`a=p`), compressed raw pixels (`o=z`), source cropping,
+compressed raw pixels (`o=z`), source cropping,
 pixel offsets, negative z-index, animation, relative placements and Unicode
 placeholders are not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
@@ -213,8 +222,10 @@ image-using TUI capture compatible automatically. Sixel remains tracked in
 [#41](https://github.com/momiji-rs/termshot/issues/41); advanced kitty work is
 tracked in [#44](https://github.com/momiji-rs/termshot/issues/44).
 
-Limits per screen are 1,024 placements and 16 MiB of retained RGBA pixels;
-each upload is limited to 16 MiB of decoded payload and 8,192 pixels per source
+Limits per screen are 1,024 placements, and 4,096 stored images holding 16 MiB
+of RGBA pixels. Past the image limits, an upload first frees every image
+without a placement, then the least recently placed ones, as kitty's storage
+quota does; a placement past its limit is discarded. Each upload is limited to 16 MiB of decoded payload and 8,192 pixels per source
 axis (at most 4,194,304 source pixels). A display rectangle is limited to
 16,777,216 pixels per axis. The PNG decoder has a separate 64 MiB allocation
 budget, including inflation; over-limit commands are discarded.
