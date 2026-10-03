@@ -113,7 +113,46 @@ fn main() {
     scroll_regions(&bin);
     ascii_scroll(&bin);
     grid_outputs(&bin);
+    cursor_shapes(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes; native clipping, text layering, transparency and deletion");
+}
+
+// Underline and bar cursors (DECSCUSR), pixel by pixel: a solid rectangle an
+// eighth of a cell wide in the default foreground, over images too, and
+// nothing else changed.
+fn cursor_shapes(bin: &str) {
+    const FG: [u8; 3] = [219, 231, 247];
+    const RED: [u8; 3] = [255, 0, 0];
+    // A red image fills cell 1, which the cursor is on.
+    let image = "\x1b[1;2H\x1b_Ga=T,f=24,s=1,v=1,c=1,r=1,C=1;/wAA\x1b\\";
+    for px in ["9", "24", "47.5"] {
+        for (shape, ps) in [("underline", 4), ("bar", 6)] {
+            for with_image in [false, true] {
+                let name = format!("graphics-cursor-{shape}-{px}-{with_image}");
+                let (input, out) = (format!("target/test/{name}.pty"), format!("target/test/{name}.png"));
+                let log = format!("\x1b[{ps} q{}\x1b[1;2H", if with_image { image } else { "" });
+                fs::write(&input, log).unwrap();
+                let ok = Command::new(bin).args(["--size", "3x1", "--px", px, &input, &out]).status().unwrap().success();
+                assert!(ok, "{name}");
+                let (w, h, pixels) = decode(&out);
+                let cw = w / 3;
+                let thick = (cw / 8).max(1);
+                // The square image, centred in the cell as the kitty checks above have it.
+                let side = cw.min(h);
+                let (left, top) = (cw + (cw - side) / 2, (h - side) / 2);
+                for y in 0..h {
+                    for x in 0..w {
+                        let in_cell = (cw..2 * cw).contains(&x);
+                        let mark = in_cell && if shape == "bar" { x < cw + thick } else { y >= h - thick };
+                        let red = with_image && (left..left + side).contains(&x) && (top..top + side).contains(&y);
+                        let want = if mark { FG } else if red { RED } else { BG };
+                        assert_eq!(&pixels[(y * w + x) * 4..][..3], &want, "{name} at ({x},{y})");
+                    }
+                }
+            }
+        }
+    }
+    println!("ok, underline and bar cursors, over the background and over an image");
 }
 
 // Compare the final PNG with an independent raster-row scroll oracle. The
@@ -228,7 +267,7 @@ fn grid_outputs(bin: &str) {
         assert!(cmd.status().unwrap().success());
         assert_eq!(fs::read_to_string(text).unwrap(), "\n X\n\n\n");
         let data = fs::read_to_string(json).unwrap();
-        assert!(data.contains("\"cursor\":{\"col\":2,\"row\":1}"), "{data}");
+        assert!(data.contains("\"cursor\":{\"col\":2,\"row\":1,\"shape\":\"block\"}"), "{data}");
     }
     for extension in ["txt", "json"] {
         assert_eq!(

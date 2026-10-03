@@ -28,8 +28,9 @@ It draws one final frame, not an animation. The screen model follows xterm and c
   that full-screen programs use (`vi`, `less`)
 - cursor movement, tabs, erase, inserting and deleting characters, saving the cursor, and DEC
   line drawing (`ESC ( 0`)
-- the cursor, drawn as a block in reverse video where the log leaves it, unless the log hides
-  it (`ESC [ ? 25 l`)
+- the cursor, drawn where the log leaves it, unless the log hides it (`ESC [ ? 25 l`): a block
+  in reverse video, or the underline or bar a program picks with DECSCUSR (`ESC [ 5 SP q`, as
+  shells in vi mode and editors do for insert mode), drawn steady
 
 `tests/vt/` checks this against tmux, on short cases and on recorded `ls`, `less` and `vi`
 sessions. A bare LF moves down without returning to column 0, as in a terminal; logs captured
@@ -136,13 +137,13 @@ even for text/JSON-only output; images themselves are not included in these form
 that look alike, with the column each starts at (a wide character takes two):
 
 ```json
-{"cols":100,"rows":30,"cursor":{"col":2,"row":5},"lines":[
+{"cols":100,"rows":30,"cursor":{"col":2,"row":5,"shape":"block"},"lines":[
 [{"col":0,"text":"ok","fg":"#00cd00","bg":"#111823","bold":true},{"col":2,"text":" done","fg":"#dbe7f7","bg":"#111823"}],
 ...
 ]}
 ```
 
-`cursor` is null when the log hides it. `bold`, `italic`, `underline`, `double_underline` and `strike`
+`cursor` is null when the log hides it; its `shape` is `block`, `underline` or `bar`. `bold`, `italic`, `underline`, `double_underline` and `strike`
 appear only when set. Blank cells that end a row are left out unless their background or a line
 shows. Colours are as drawn: reverse video and dim are already applied, and concealed text has
 `fg` equal to `bg`.
@@ -155,8 +156,9 @@ shows. Colours are as drawn: reverse video and dim are already applied, and conc
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default 100x30) |
 | `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
 | `--cursor COL,ROW` or `none` | draw the cursor there, counting from 0 as tmux's `#{cursor_x},#{cursor_y}` do, or not at all (default: where the log leaves it, unless it hides it) |
+| `--cursor-shape block`, `underline` or `bar` | draw the cursor as that shape (default: the one the log sets with DECSCUSR, or a block) |
 | `--text FILE` | write the screen as text, a line per row with trailing spaces trimmed; the PNG is then optional |
-| `--json FILE` | write the screen as JSON: the cursor, and per row the runs of cells alike in colour and attributes; the PNG is then optional |
+| `--json FILE` | write the screen as JSON: the cursor and its shape, and per row the runs of cells alike in colour and attributes; the PNG is then optional |
 | `-v`, `--verbose` | print the cell and image size to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 

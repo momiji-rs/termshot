@@ -201,6 +201,19 @@ check "--cursor draws it there, even if the log hid it" 'cmp -s "$out/cursor-at.
 printf 'ab' | ./termshot --size 10x4 --cursor=10,3 - "$out/cursor-pending.png"
 printf 'ab\033[4;10H' | ./termshot --size 10x4 - "$out/cursor-last.png"
 check "--cursor at the column count is the last column" 'cmp -s "$out/cursor-pending.png" "$out/cursor-last.png"'
+# --cursor-shape: block, underline or bar, in place of the one the log sets.
+expect 2 "$log" "$out/x.png" --cursor-shape
+expect 2 "$log" "$out/x.png" --cursor-shape beam
+check "--cursor-shape names the shapes" './termshot --cursor-shape Bar "$log" "$out/x.png" 2>&1 | grep -q "block, underline or bar"'
+printf '\033[6 qab' | ./termshot --size 10x4 - "$out/shape-bar.png"
+printf 'ab' | ./termshot --size 10x4 --cursor-shape bar - "$out/shape-bar-option.png"
+check "--cursor-shape draws the shape DECSCUSR would" 'cmp -s "$out/shape-bar.png" "$out/shape-bar-option.png"'
+printf '\033[6 qab' | ./termshot --size 10x4 --cursor-shape block - "$out/shape-block-option.png"
+printf 'ab' | ./termshot --size 10x4 - "$out/shape-block.png"
+check "--cursor-shape block undoes the log's shape" 'cmp -s "$out/shape-block.png" "$out/shape-block-option.png"'
+check "a bar is not a block" '! cmp -s "$out/shape-bar.png" "$out/shape-block.png"'
+printf '\033[6 qab\033[?25l' | ./termshot --size 10x4 - "$out/shape-hidden.png"
+check "a hidden bar draws nothing" 'cmp -s "$out/shape-hidden.png" "$out/cursor-hidden.png"'
 # --text: the screen as text, with the PNG or without it.
 printf 'ab\r\ncd  \r\n\344\270\255x' | ./termshot --size 10x4 --text "$out/text.txt" -
 printf 'ab\ncd\n\344\270\255x\n\n' > "$out/text-want.txt"
@@ -223,7 +236,11 @@ printf '%s\n' '{"cols":10,"rows":2,"cursor":null,"lines":[' \
     '[{"col":0,"text":"中x","fg":"#dbe7f7","bg":"#111823"}]' ']}' > "$out/grid-want.json"
 check "--json writes the runs and the cursor" 'cmp -s "$out/grid.json" "$out/grid-want.json"'
 printf 'ab' | ./termshot --size 10x2 --cursor 4,1 --json - - > "$out/grid-cursor.json"
-check "--json reports --cursor" 'grep -q "\"cursor\":{\"col\":4,\"row\":1}" "$out/grid-cursor.json"'
+check "--json reports --cursor" 'grep -q "\"cursor\":{\"col\":4,\"row\":1,\"shape\":\"block\"}" "$out/grid-cursor.json"'
+printf '\033[5 qab' | ./termshot --size 10x2 --json - - > "$out/grid-shape.json"
+check "--json reports the shape the log sets" 'grep -q "\"cursor\":{\"col\":2,\"row\":0,\"shape\":\"bar\"}" "$out/grid-shape.json"'
+printf '\033[5 qab' | ./termshot --size 10x2 --cursor-shape underline --json - - > "$out/grid-shape-option.json"
+check "--json reports --cursor-shape" 'grep -q "\"shape\":\"underline\"" "$out/grid-shape-option.json"'
 ./termshot --text "$out/both.txt" --json "$out/both.json" "$log"
 check "--text and --json together match each alone" 'cmp -s "$out/both.txt" "$out/text-png.txt"'
 expect 2 --json - --text - "$log"

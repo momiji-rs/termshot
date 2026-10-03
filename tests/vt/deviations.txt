@@ -20,3 +20,4 @@ wide-1col-rep: REP repeats the wide character, each on its own row; tmux overwri
 wide-1col-combine: é composes, then the wide character wraps to the next row; tmux overwrites é
 wide-1col-margins: wrapping at the bottom margin scrolls the region; tmux overwrites in place
 wide-2col-rep: REP repeats the wide character as if sent again, wrapping, as in rep-wrap; tmux stops at the end of the line
+shape-ris: RIS resets the cursor shape to a block, as xterm, VTE and kitty do; tmux keeps the shape
