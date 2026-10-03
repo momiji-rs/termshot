@@ -235,4 +235,16 @@ if [ "$mode" = update ]; then
 else
     "$out/golden" || fail=1
 fi
+echo "== kitty graphics pixels"
+rustc --edition 2021 tests/graphics.rs -o "$out/graphics" -L native="$out" -l static=png_read
+"$out/graphics"
+
+# Exercise the production PNG decoder, including allocation quota failures.
+cc tests/image.c -I third_party/stb -O2 -Wno-unused-function ${CFLAGS:-} -o "$out/image"
+"$out/image"
+
+echo "== output aliases"
+rustc --edition 2021 tests/output_aliases.rs -o "$out/output_aliases"
+"$out/output_aliases"
+
 exit "$fail"

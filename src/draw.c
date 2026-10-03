@@ -543,34 +543,21 @@ static void paint_tofu(Canvas *cv, int x, int y, int span, int cell_w, int cell_
     fill_rect(cv, x1 - t, y0 + t, x1, y1 - t, r, g, b);
 }
 
-/* Paint cells with the font in ttf (a TrueType file the caller has already
-   checked; see src/font.rs) and write a PNG. fallback_ttf, checked the same
-   way, or NULL, supplies the characters ttf lacks; characters neither has are
-   drawn as an outlined box. The canvas and cache are local; timing hooks use
-   thread-local state so concurrent renders remain independent.
-   verbose prints the cell and image size to stderr.
-   Returns 0; 1 for an unusable font; 2 when the image is too large or memory
-   runs out; 3 when the PNG cannot be written. */
-int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
-             const unsigned char *fallback_ttf, double font_px, const char *out_path, int verbose) {
-    profiling = getenv("TERMSHOT_PROFILE") != NULL;
-    termshot_deflate_profile.enabled = profiling;
-    double started = now_ms();
-    stbtt_fontinfo font, fallback;
-    if (!init_font(&font, ttf) || (fallback_ttf && !init_font(&fallback, fallback_ttf))) {
-        fprintf(stderr, "termshot: font init failed\n");
-        return 1;
-    }
+typedef struct {
+    int adv, cell_w, cell_h, body, baseline;
+    float scale, italic_pivot;
+} CellMetrics;
 
+static int cell_metrics(const stbtt_fontinfo *font, double font_px, CellMetrics *m) {
     int ascent, descent, line_gap;
-    stbtt_GetFontVMetrics(&font, &ascent, &descent, &line_gap);
+    stbtt_GetFontVMetrics(font, &ascent, &descent, &line_gap);
     int adv = 0, lsb = 0;
-    stbtt_GetCodepointHMetrics(&font, 'M', &adv, &lsb);
+    stbtt_GetCodepointHMetrics(font, 'M', &adv, &lsb);
     if (adv <= 0 || ascent <= descent) {
         fprintf(stderr, "termshot: font metrics unusable\n");
-        return 1;
+        return 0;
     }
-    float scale = stbtt_ScaleForPixelHeight(&font, (float)font_px);
+    float scale = stbtt_ScaleForPixelHeight(font, (float)font_px);
     int cell_w = (int)(adv * scale + 0.5f);
     if (cell_w < 1) cell_w = 1;
     scale = (float)cell_w / (float)adv;
@@ -580,9 +567,81 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
     int cell_h = body + gap;
     if (cell_h < 1) cell_h = 1;
     int baseline = (int)(ascent * scale + 0.5f) + (cell_h - body) / 2;
+    *m = (CellMetrics){adv, cell_w, cell_h, body, baseline, scale, (ascent + descent) * scale / 2};
+    return 1;
+}
+
+/* Uses the exact same metrics as the renderer, including custom fonts. */
+int draw_cell_size(const unsigned char *ttf, double px, int *w, int *h) {
+    stbtt_fontinfo font;
+    CellMetrics m;
+    if (!init_font(&font, ttf) || !cell_metrics(&font, px, &m)) return 0;
+    *w = m.cell_w;
+    *h = m.cell_h;
+    return 1;
+}
+
+typedef struct {
+    const unsigned char *pixels;
+    uint32_t width, height;
+    int64_t x, y, w, h, clip_top, clip_bottom;
+} ImageView;
+
+/* Rust validates dimensions and owns each RGBA buffer. Clip before looping,
+   and use integer nearest-neighbor sampling for reproducible screenshots. */
+static void paint_images(Canvas *cv, const ImageView *images, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        const ImageView *im = &images[i];
+        int64_t x0 = im->x > 0 ? im->x : 0;
+        int64_t y0 = im->y > im->clip_top ? im->y : im->clip_top;
+        if (y0 < 0) y0 = 0;
+        int64_t x1 = im->x + im->w;
+        int64_t y1 = im->y + im->h;
+        if (x1 > cv->w) x1 = cv->w;
+        if (y1 > im->clip_bottom) y1 = im->clip_bottom;
+        if (y1 > cv->h) y1 = cv->h;
+        for (int64_t y = y0; y < y1; y++) {
+            size_t sy = (size_t)((y - im->y) * im->height / im->h);
+            for (int64_t x = x0; x < x1; x++) {
+                size_t sx = (size_t)((x - im->x) * im->width / im->w);
+                const unsigned char *src = im->pixels + (sy * im->width + sx) * 4;
+                unsigned char *dst = cv->px + (size_t)y * cv->stride + (size_t)x * BPP;
+                unsigned a = src[3];
+                for (int c = 0; c < 3; c++)
+                    dst[c] = (unsigned char)((src[c] * a + dst[c] * (255 - a) + 127) / 255);
+            }
+        }
+    }
+}
+
+/* Paint cells with the font in ttf (a TrueType file the caller has already
+   checked; see src/font.rs) and write a PNG. fallback_ttf, checked the same
+   way, or NULL, supplies the characters ttf lacks; characters neither has are
+   drawn as an outlined box. The canvas and cache are local; timing hooks use
+   thread-local state so concurrent renders remain independent.
+   verbose prints the cell and image size to stderr.
+   Returns 0; 1 for an unusable font; 2 when the image is too large or memory
+   runs out; 3 when the PNG cannot be written. */
+int draw_png_images(const Cell *cells, int cols, int rows, const unsigned char *ttf,
+             const unsigned char *fallback_ttf, double font_px, const char *out_path, int verbose,
+             const ImageView *images, size_t image_count) {
+    profiling = getenv("TERMSHOT_PROFILE") != NULL;
+    termshot_deflate_profile.enabled = profiling;
+    double started = now_ms();
+    stbtt_fontinfo font, fallback;
+    if (!init_font(&font, ttf) || (fallback_ttf && !init_font(&fallback, fallback_ttf))) {
+        fprintf(stderr, "termshot: font init failed\n");
+        return 1;
+    }
+
+    CellMetrics metrics;
+    if (!cell_metrics(&font, font_px, &metrics)) return 1;
+    int adv = metrics.adv, cell_w = metrics.cell_w, cell_h = metrics.cell_h;
+    int body = metrics.body, baseline = metrics.baseline;
+    float scale = metrics.scale;
     /* Italic slants around the middle of the body, in pixels above the
        baseline, for both fonts. */
-    float italic_pivot = (ascent + descent) * scale / 2;
+    float italic_pivot = metrics.italic_pivot;
     /* The fallback is sized to the same ascent-to-descent height and shares
        the baseline. */
     float fallback_scale = fallback_ttf ? stbtt_ScaleForPixelHeight(&fallback, (float)body) : 0;
@@ -758,6 +817,7 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
 
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
     for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    paint_images(cv, images, image_count);
     double foreground = now_ms();
     int png_len = 0;
     STBIW_PNG_PROFILE(0);
@@ -789,4 +849,10 @@ int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
         return 3;
     }
     return 0;
+}
+
+/* Keep the cell-only entry point for the C and Rust rasterizer tests. */
+int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf,
+             const unsigned char *fallback_ttf, double font_px, const char *out_path, int verbose) {
+    return draw_png_images(cells, cols, rows, ttf, fallback_ttf, font_px, out_path, verbose, NULL, 0);
 }
