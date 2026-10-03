@@ -636,3 +636,141 @@ cursor 1,0
 
 
 cursor 9,1
+== shape-block
+ab
+
+
+
+cursor 2,0
+== shape-blinking-block
+ab
+
+
+
+cursor 2,0
+== shape-default
+ab
+
+
+
+cursor 2,0
+== shape-no-param
+ab
+
+
+
+cursor 2,0
+== shape-underline
+ab
+
+
+
+cursor 2,0 underline
+== shape-blinking-underline
+ab
+
+
+
+cursor 2,0 underline
+== shape-bar
+ab
+
+
+
+cursor 2,0 bar
+== shape-blinking-bar
+ab
+
+
+
+cursor 2,0 bar
+== shape-unknown
+ab
+
+
+
+cursor 2,0 bar
+== shape-first-param
+ab
+
+
+
+cursor 2,0 bar
+== shape-private
+ab
+
+
+
+cursor 2,0
+== shape-two-intermediates
+ab
+
+
+
+cursor 2,0
+== shape-other-final
+ab
+
+
+
+cursor 2,0
+== shape-pending
+
+0123456789
+X
+
+cursor 1,2 bar
+== shape-decrc
+ab
+
+
+
+cursor 2,0
+== shape-decstr
+ab
+
+
+
+cursor 2,0 bar
+== shape-alt
+x
+
+
+
+cursor 1,0 underline
+== shape-alt-exit
+
+
+
+
+cursor 0,0 bar
+== shape-hidden
+ab
+
+
+
+cursor hidden
+== shape-shown-again
+ab
+
+
+
+cursor 2,0 bar
+== shape-ris
+x
+
+
+
+cursor 1,0
+== shape-param-after-intermediate
+ab
+
+
+
+cursor 2,0 underline
+== shape-semicolon-after-intermediate
+ab
+
+
+
+cursor 2,0 bar

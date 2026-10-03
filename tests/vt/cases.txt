@@ -1,7 +1,8 @@
 # VT behaviour cases: name, grid size, then the log as a printf(1) format
 # string (\033 is ESC; use %% for a percent sign). The screen termshot must
 # produce, and its last line where the cursor is ("cursor COL,ROW" from 0, or
-# "cursor hidden"), is in expected.txt, generated from tmux by
+# "cursor hidden"; a DECSCUSR shape other than a block follows, as in
+# "cursor 2,0 bar"), is in expected.txt, generated from tmux by
 # tests/vt/oracle.sh.
 # Rows with tabs are pre-filled so tmux records no tab cells (capture-pane
 # would print them as \t).
@@ -119,3 +120,26 @@ cursor-hidden-decrc	10x4	\0337\033[?25l\0338
 cursor-wide	10x4	a\344\270\255\033[1;3H
 cursor-wide-first	10x4	a\344\270\255\033[1;2H
 cursor-pending	10x4	\033[2;1H0123456789
+shape-block	10x4	\033[5 q\033[2 qab
+shape-blinking-block	10x4	\033[5 q\033[1 qab
+shape-default	10x4	\033[5 q\033[0 qab
+shape-no-param	10x4	\033[5 q\033[ qab
+shape-underline	10x4	\033[4 qab
+shape-blinking-underline	10x4	\033[3 qab
+shape-bar	10x4	\033[6 qab
+shape-blinking-bar	10x4	\033[5 qab
+shape-unknown	10x4	\033[5 q\033[7 qab
+shape-first-param	10x4	\033[5;2 qab
+shape-private	10x4	\033[?5 qab
+shape-two-intermediates	10x4	\033[5 !qab
+shape-other-final	10x4	\033[5 pab
+shape-pending	10x4	\033[2;1H0123456789\033[5 qX
+shape-decrc	10x4	\033[5 q\0337\033[2 q\0338ab
+shape-decstr	10x4	\033[5 q\033[!pab
+shape-alt	10x4	\033[3 q\033[?1049hx
+shape-alt-exit	10x4	\033[?1049h\033[5 qx\033[?1049l
+shape-hidden	10x4	\033[5 q\033[?25lab
+shape-shown-again	10x4	\033[5 q\033[?25lab\033[?25h
+shape-ris	10x4	\033[5 qab\033cx
+shape-param-after-intermediate	10x4	\033[4 q\033[0 6qab
+shape-semicolon-after-intermediate	10x4	\033[5 q\033[ ;2qab

@@ -351,6 +351,82 @@ fn the_cursor_keeps_concealed_text_hidden() {
 }
 
 #[test]
+fn decscusr_sets_the_cursor_shape() {
+    let shape = |log: &str| replay(log.as_bytes(), C, R, Lf::Index).cursor_shape;
+    assert_eq!(shape("ab"), CursorShape::Block);
+    for (ps, want) in [
+        ("", CursorShape::Block),
+        ("0", CursorShape::Block),
+        ("1", CursorShape::Block),
+        ("2", CursorShape::Block),
+        ("3", CursorShape::Underline),
+        ("4", CursorShape::Underline),
+        ("5", CursorShape::Bar),
+        ("6", CursorShape::Bar),
+    ] {
+        // Over another shape, so each value is seen to set one.
+        let before = if want == CursorShape::Bar { "\x1b[3 q" } else { "\x1b[5 q" };
+        assert_eq!(shape(&format!("{before}\x1b[{ps} q")), want, "Ps {ps:?}");
+    }
+    // Unknown values and other sequences change nothing.
+    for log in ["\x1b[5 q\x1b[7 q", "\x1b[5 q\x1b[99999 q", "\x1b[5 q\x1b[?2 q", "\x1b[5 q\x1b[2 !q", "\x1b[5 q\x1b[2 p"] {
+        assert_eq!(shape(log), CursorShape::Bar, "{log:?}");
+    }
+    // Parameter bytes after the intermediate make the sequence malformed.
+    for log in ["\x1b[5 q\x1b[0 2q", "\x1b[5 q\x1b[ ;2q", "\x1b[5 q\x1b[ ?2q", "\x1b[5 q\x1b[ 2q"] {
+        assert_eq!(shape(log), CursorShape::Bar, "{log:?}");
+    }
+    // Only the first parameter counts; RIS resets it, DECSTR keeps it.
+    assert_eq!(shape("\x1b[5;2 q"), CursorShape::Bar);
+    assert_eq!(shape("\x1b[5 q\x1bc"), CursorShape::Block);
+    assert_eq!(shape("\x1b[5 q\x1b[!p"), CursorShape::Bar);
+    // A sequence with an intermediate does nothing else: no SGR, no cursor move.
+    let g = replay(b"\x1b[1 mab\x1b[1 H", C, R, Lf::Index);
+    assert_eq!((g.cells[0].attrs & BOLD, g.cursor), (0, Some((0, 2))));
+}
+
+#[test]
+fn cursor_shape_option() {
+    for shape in CursorShape::ALL {
+        assert_eq!(CursorShape::parse(shape.name()), Ok(shape));
+    }
+    for bad in ["", "Block", "beam", "bar ", "5"] {
+        let message = CursorShape::parse(bad).unwrap_err();
+        assert!(message.contains("block, underline or bar"), "{message}");
+    }
+}
+
+/// The underline or bar cursor's rectangle and colour, for 16x32 cells.
+fn mark(log: &str, shape: CursorShape) -> ((i64, i64, i64, i64), [u8; 4]) {
+    let g = replay(log.as_bytes(), C, R, Lf::Index);
+    cursor_mark(&g.cells, C, g.cursor.unwrap(), shape, (16, 32))
+}
+
+#[test]
+fn underline_and_bar_cursors_cover_the_cell() {
+    let (r, g, b) = DEFAULT_FG;
+    let fg = [r, g, b, 255];
+    // At column 2, row 1: an eighth of the cell's width thick.
+    assert_eq!(mark("\r\nab", CursorShape::Underline), ((32, 62, 16, 2), fg));
+    assert_eq!(mark("\r\nab", CursorShape::Bar), ((32, 32, 2, 32), fg));
+    // Under a wide character, from either half: both cells; the bar on the first.
+    for log in ["a中\x1b[1;2H", "a中\x1b[1;3H"] {
+        assert_eq!(mark(log, CursorShape::Underline).0, (16, 30, 32, 2), "{log:?}");
+        assert_eq!(mark(log, CursorShape::Bar).0, (16, 0, 2, 32), "{log:?}");
+    }
+    // A wide character the last column cuts: one cell.
+    let g = replay("\x1b[1;10H中".as_bytes(), 10, 1, Lf::Index);
+    let cut = cursor_mark(&g.cells, 10, (0, 9), CursorShape::Underline, (16, 32));
+    assert_eq!(cut.0, (144, 30, 16, 2));
+    // Never thinner than a pixel.
+    let g = replay(b"a", C, R, Lf::Index);
+    assert_eq!(cursor_mark(&g.cells, C, (0, 1), CursorShape::Bar, (7, 14)).0, (7, 0, 1, 14));
+    // On a background the default foreground colour, the default background.
+    let (r, g, b) = DEFAULT_BG;
+    assert_eq!(mark("\x1b[48;2;219;231;247mx\x1b[H", CursorShape::Bar).1, [r, g, b, 255]);
+}
+
+#[test]
 fn cursor_option_counts_from_0_as_tmux_does() {
     assert_eq!(parse_cursor("4,2", 10, 4), Ok(Some((2, 4))));
     assert_eq!(parse_cursor("0,0", 10, 4), Ok(Some((0, 0))));
@@ -370,14 +446,16 @@ fn cursor_option_counts_from_0_as_tmux_does() {
 fn json_has_runs_of_alike_cells_and_the_cursor() {
     let log = "\x1b[1;31mab\x1b[m c\x1b[4m \x1b[m\r\n中\x1b[32mx\x1b[44m  \x1b[m\r\n\"\\";
     let g = replay(log.as_bytes(), 8, 4, Lf::Index);
-    let want = r##"{"cols":8,"rows":4,"cursor":{"col":2,"row":2},"lines":[
+    let want = r##"{"cols":8,"rows":4,"cursor":{"col":2,"row":2,"shape":"block"},"lines":[
 [{"col":0,"text":"ab","fg":"#cd0000","bg":"#111823","bold":true},{"col":2,"text":" c","fg":"#dbe7f7","bg":"#111823"},{"col":4,"text":" ","fg":"#dbe7f7","bg":"#111823","underline":true}],
 [{"col":0,"text":"中","fg":"#dbe7f7","bg":"#111823"},{"col":2,"text":"x","fg":"#00cd00","bg":"#111823"},{"col":3,"text":"  ","fg":"#00cd00","bg":"#0000ee"}],
 [{"col":0,"text":"\"\\","fg":"#dbe7f7","bg":"#111823"}],
 []
 ]}
 "##;
-    assert_eq!(grid_json(&g.cells, 8, 4, g.cursor), want);
+    assert_eq!(grid_json(&g.cells, 8, 4, g.cursor, g.cursor_shape), want);
+    let bar = grid_json(&g.cells, 8, 4, g.cursor, CursorShape::Bar);
+    assert!(bar.starts_with(r#"{"cols":8,"rows":4,"cursor":{"col":2,"row":2,"shape":"bar"},"#), "{bar}");
 }
 
 #[test]
@@ -386,7 +464,7 @@ fn json_escapes_controls_and_reports_a_hidden_cursor() {
     cells[1].ch = 0x1b;
     let want = "{\"cols\":3,\"rows\":1,\"cursor\":null,\"lines\":[\n\
         [{\"col\":0,\"text\":\"a\\u001b\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"italic\":true,\"double_underline\":true,\"strike\":true}]\n]}\n";
-    assert_eq!(grid_json(&cells, 3, 1, None), want);
+    assert_eq!(grid_json(&cells, 3, 1, None, CursorShape::Bar), want);
 }
 
 #[test]
@@ -980,9 +1058,10 @@ fn printf_bytes(format: &str) -> Vec<u8> {
 fn screen_lines(g: &Grid, cols: usize, rows: usize) -> Vec<String> {
     let mut lines: Vec<String> = grid_text(&g.cells, cols).lines().map(String::from).collect();
     assert_eq!(lines.len(), rows);
-    lines.push(match g.cursor {
-        Some((row, col)) => format!("cursor {col},{row}"),
-        None => "cursor hidden".into(),
+    lines.push(match (g.cursor, g.cursor_shape) {
+        (Some((row, col)), CursorShape::Block) => format!("cursor {col},{row}"),
+        (Some((row, col)), shape) => format!("cursor {col},{row} {}", shape.name()),
+        (None, _) => "cursor hidden".into(),
     });
     lines
 }

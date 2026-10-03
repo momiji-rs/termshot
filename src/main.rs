@@ -191,6 +191,34 @@ impl Saved {
     };
 }
 
+/// The cursor shapes DECSCUSR (CSI Ps SP q) picks. A still image can't
+/// blink, so a blinking shape is drawn as the steady one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CursorShape {
+    #[default]
+    Block,
+    Underline,
+    Bar,
+}
+
+impl CursorShape {
+    const ALL: [CursorShape; 3] = [CursorShape::Block, CursorShape::Underline, CursorShape::Bar];
+
+    fn name(self) -> &'static str {
+        match self {
+            CursorShape::Block => "block",
+            CursorShape::Underline => "underline",
+            CursorShape::Bar => "bar",
+        }
+    }
+
+    /// --cursor-shape's value.
+    fn parse(value: &str) -> Result<CursorShape, String> {
+        (CursorShape::ALL.into_iter().find(|shape| shape.name() == value))
+            .ok_or_else(|| format!("cursor shape must be block, underline or bar, not {value:?}"))
+    }
+}
+
 /// The grid and the terminal state that writes to it.
 ///
 /// The cursor is always on the grid. After a character is printed in the
@@ -234,6 +262,9 @@ struct Screen {
     /// DECTCEM (mode 25): whether the cursor is shown. One setting for both
     /// screens, and DECSC does not save it, as in xterm.
     cursor_shown: bool,
+    /// DECSCUSR. One setting for both screens; DECSC does not save it and
+    /// DECSTR keeps it, as in tmux. RIS resets it, as in xterm.
+    cursor_shape: CursorShape,
     /// Not terminal state: RIS keeps it, as a reset keeps the tty's settings.
     lf: Lf,
 }
@@ -266,6 +297,7 @@ impl Screen {
             last: None,
             last_at: None,
             cursor_shown: true,
+            cursor_shape: CursorShape::Block,
             lf,
         }
     }
@@ -807,6 +839,18 @@ impl Screen {
         }
     }
 
+    /// DECSCUSR: 0 (or none) to 2 a block, 3 and 4 an underline, 5 and 6 a
+    /// bar. Other values change nothing, and only the first parameter counts,
+    /// as in tmux.
+    fn set_cursor_shape(&mut self, p: &Params) {
+        self.cursor_shape = match p.get(0, 0) {
+            0..=2 => CursorShape::Block,
+            3 | 4 => CursorShape::Underline,
+            5 | 6 => CursorShape::Bar,
+            _ => return,
+        };
+    }
+
     /// DECSET / DECRST: CSI ? Pm h and CSI ? Pm l.
     fn private_csi(&mut self, final_byte: u8, p: &Params) {
         if matches!(final_byte, b'h' | b'l') {
@@ -1027,12 +1071,13 @@ fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cell> {
     replay(data, cols, rows, lf).cells
 }
 
-/// The screen a log leaves: its cells in screen order, and the cursor as
-/// (row, col) unless the log hid it.
+/// The screen a log leaves: its cells in screen order, the cursor as
+/// (row, col) unless the log hid it, and its shape.
 struct Grid {
     images: Vec<graphics::Placement>,
     cells: Vec<Cell>,
     cursor: Option<(usize, usize)>,
+    cursor_shape: CursorShape,
 }
 
 #[cfg(test)]
@@ -1147,19 +1192,15 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
     // terminals draw it.
     let cursor = screen.cursor_shown.then_some((screen.row, screen.col));
     let images = std::mem::take(&mut screen.graphics.placements);
-    Grid { cells: screen.into_cells(), cursor, images }
+    let cursor_shape = screen.cursor_shape;
+    Grid { cells: screen.into_cells(), cursor, cursor_shape, images }
 }
 
 /// Draw the cursor as a block in reverse video over the cell at (row, col),
 /// or over both cells of the wide character it is on.
 fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
-    let line = row * cols..(row + 1) * cols;
-    let mut start = line.start + col;
-    if cells[start].attrs & TAIL != 0 && start > line.start {
-        start -= 1;
-    }
-    let end = if cells[start].attrs & WIDE != 0 { start + 2 } else { start + 1 };
-    for cell in &mut cells[start..end.min(line.end)] {
+    let under = cursor_cells(cells, cols, row, col);
+    for cell in &mut cells[under] {
         let (fg, bg) = ((cell.fr, cell.fg, cell.fb), (cell.br, cell.bg, cell.bb));
         // Concealed text (the colours alike) stays hidden in a block that
         // still shows.
@@ -1172,6 +1213,44 @@ fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
         (cell.fr, cell.fg, cell.fb) = fg;
         (cell.br, cell.bg, cell.bb) = bg;
     }
+}
+
+/// The cells the cursor at (row, col) covers: both halves of a wide
+/// character, unless the line cuts it.
+fn cursor_cells(cells: &[Cell], cols: usize, row: usize, col: usize) -> std::ops::Range<usize> {
+    let line = row * cols..(row + 1) * cols;
+    let mut start = line.start + col;
+    if cells[start].attrs & TAIL != 0 && start > line.start {
+        start -= 1;
+    }
+    let end = if cells[start].attrs & WIDE != 0 { start + 2 } else { start + 1 };
+    start..end.min(line.end)
+}
+
+/// An underline or bar cursor at (row, col), in pixels for cells of
+/// cell_w x cell_h: the rectangle (x, y, w, h) and its colour. The underline
+/// runs along the bottom of the cells the cursor covers, the bar down the left
+/// edge of the first. Both are an eighth of a cell wide, at least a pixel, in
+/// the default foreground; on a cell whose background is that colour, in the
+/// default background, so the cursor still shows.
+fn cursor_mark(
+    cells: &[Cell],
+    cols: usize,
+    (row, col): (usize, usize),
+    shape: CursorShape,
+    (cell_w, cell_h): (i32, i32),
+) -> ((i64, i64, i64, i64), [u8; 4]) {
+    let under = cursor_cells(cells, cols, row, col);
+    let first = &cells[under.start];
+    let (r, g, b) = if (first.br, first.bg, first.bb) == DEFAULT_FG { DEFAULT_BG } else { DEFAULT_FG };
+    let (cell_w, cell_h) = (i64::from(cell_w), i64::from(cell_h));
+    let thick = (cell_w / 8).max(1);
+    let (x, y) = ((under.start - row * cols) as i64 * cell_w, row as i64 * cell_h);
+    let rect = match shape {
+        CursorShape::Underline => (x, y + cell_h - thick, under.len() as i64 * cell_w, thick),
+        CursorShape::Bar | CursorShape::Block => (x, y, thick, cell_h),
+    };
+    (rect, [r, g, b, 255])
 }
 
 /// The screen as text, the way tmux capture-pane -p prints it: a line per row
@@ -1191,7 +1270,7 @@ fn grid_text(cells: &[Cell], cols: usize) -> String {
 /// line per row of the runs of cells alike in colour and attributes, each with
 /// the column it starts at (a wide character takes two). Blank cells that end a
 /// row are left out, as in --text, unless their background or a line shows.
-fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, usize)>) -> String {
+fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, usize)>, shape: CursorShape) -> String {
     use std::fmt::Write as _;
     const LINES: u8 = UNDERLINE | DOUBLE_UNDERLINE | STRIKE;
     const STYLE: u8 = BOLD | ITALIC | LINES;
@@ -1201,7 +1280,7 @@ fn grid_json(cells: &[Cell], cols: usize, rows: usize, cursor: Option<(usize, us
     let mut json = String::with_capacity(cells.len() * 2);
     let _ = write!(json, "{{\"cols\":{cols},\"rows\":{rows},\"cursor\":");
     let _ = match cursor {
-        Some((row, col)) => write!(json, "{{\"col\":{col},\"row\":{row}}}"),
+        Some((row, col)) => write!(json, "{{\"col\":{col},\"row\":{row},\"shape\":\"{}\"}}", shape.name()),
         None => write!(json, "null"),
     };
     json.push_str(",\"lines\":[");
@@ -1251,12 +1330,15 @@ fn csi(screen: &mut Screen, params: &mut Params, data: &[u8], mut i: usize) -> u
     let mut any = false;
     // The private marker (one of < = > ?) when the sequence starts with one.
     let mut private = None;
-    let mut intermediate = false;
+    // The intermediate byte; a second one makes a sequence nothing here uses.
+    let mut intermediate = None;
     let mut malformed = false;
     let start = i;
     while i < data.len() {
         let c = data[i];
         match c {
+            // Parameter bytes come before intermediates, never after.
+            0x30..=0x3f if intermediate.is_some() => malformed = true,
             b'0'..=b'9' => {
                 // A u32 times ten plus a digit fits in u64; one clamp preserves
                 // saturating arithmetic without two overflow checks per digit.
@@ -1271,16 +1353,20 @@ fn csi(screen: &mut Screen, params: &mut Params, data: &[u8], mut i: usize) -> u
             }
             b'<'..=b'?' if i == start => private = Some(c),
             b'<'..=b'?' => malformed = true,
-            0x20..=0x2f => intermediate = true,
+            0x20..=0x2f => {
+                malformed |= intermediate.is_some();
+                intermediate = Some(c);
+            }
             0x40..=0x7e => {
                 if any {
                     params.push(current);
                 }
-                if !(intermediate || malformed) {
-                    match private {
-                        None => screen.csi(c, params),
-                        Some(b'?') => screen.private_csi(c, params),
-                        Some(_) => {}
+                if !malformed {
+                    match (private, intermediate, c) {
+                        (None, None, _) => screen.csi(c, params),
+                        (Some(b'?'), None, _) => screen.private_csi(c, params),
+                        (None, Some(b' '), b'q') => screen.set_cursor_shape(params),
+                        _ => {}
                     }
                 }
                 return i + 1;
@@ -1359,12 +1445,15 @@ options:
                     draw the cursor there, counting from 0 as tmux's
                     #{cursor_x},#{cursor_y} do, or not at all (default:
                     where the log leaves it, unless it hides it)
+      --cursor-shape block|underline|bar
+                    draw the cursor as that shape (default: the one the
+                    log sets with DECSCUSR, or a block)
       --text FILE   write the screen as text, a line per row with trailing
                     spaces trimmed, as tmux capture-pane -p prints it; the
                     PNG is then optional, and fonts are only read for it
-      --json FILE   write the screen as JSON: the cursor, and for each row
-                    the runs of cells alike in colour (#rrggbb) and
-                    attributes, with the column each starts at
+      --json FILE   write the screen as JSON: the cursor and its shape, and for
+                    each row the runs of cells alike in colour (#rrggbb)
+                    and attributes, with the column each starts at
   -v, --verbose     print the cell and image size, and the face of each
                     collection, to stderr
   -h, --help        show this help
@@ -1394,6 +1483,8 @@ struct Options {
     lf: Lf,
     /// --cursor: Some(None) hides the cursor; None leaves it to the log.
     cursor: Option<Option<(usize, usize)>>,
+    /// --cursor-shape: None leaves it to the log.
+    cursor_shape: Option<CursorShape>,
     verbose: bool,
 }
 
@@ -1461,7 +1552,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
     let mut lf = Lf::Index;
-    let (mut cursor, mut text, mut json) = (None, None, None);
+    let (mut cursor, mut cursor_shape, mut text, mut json) = (None, None, None, None);
     let mut options_done = false;
     while let Some(arg) = args.next() {
         if options_done || arg == "-" || !arg.starts_with('-') {
@@ -1497,6 +1588,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "-s" | "--size" => size = Some(parse_size(&option_value(&name, attached, &mut args)?)?),
             // Checked once the grid size is known.
             "--cursor" => cursor = Some(option_value(&name, attached, &mut args)?),
+            "--cursor-shape" => cursor_shape = Some(CursorShape::parse(&option_value(&name, attached, &mut args)?)?),
             "--text" => text = Some(option_value(&name, attached, &mut args)?),
             "--json" => json = Some(option_value(&name, attached, &mut args)?),
             _ => return Err(format!("unknown option {arg}")),
@@ -1550,6 +1642,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         rows,
         lf,
         cursor,
+        cursor_shape,
         verbose,
     }))
 }
@@ -1805,13 +1898,15 @@ fn main() -> ExitCode {
             return cleanup(1, "font metrics unusable".into());
         }
     }
-    let Grid { mut cells, cursor, images } = replay_sized(&data, options.cols, options.rows, options.lf, (cell_w, cell_h));
-    let image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
+    let Grid { mut cells, cursor, cursor_shape, images } =
+        replay_sized(&data, options.cols, options.rows, options.lf, (cell_w, cell_h));
+    let mut image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
     let cursor = options.cursor.unwrap_or(cursor);
+    let cursor_shape = options.cursor_shape.unwrap_or(cursor_shape);
     let write = |path: &String, output: String| {
         write_output(path, output.as_bytes())
             .map_err(|error| format!("{}: {error}", if path == "-" { "stdout" } else { path }))
@@ -1820,16 +1915,25 @@ fn main() -> ExitCode {
         .map_or(Ok(()), |path| write(path, grid_text(&cells, options.cols)))
         .and_then(|()| {
             (options.json.as_ref())
-                .map_or(Ok(()), |path| write(path, grid_json(&cells, options.cols, options.rows, cursor)))
+                .map_or(Ok(()), |path| write(path, grid_json(&cells, options.cols, options.rows, cursor, cursor_shape)))
         });
     if let Err(message) = written {
         return cleanup(1, message);
     }
     let mut empty = EmptyGlyphs::default();
+    // The underline or bar cursor's colour; its view borrows it.
+    let mark_pixel;
     let code = match (&options.out, &fonts) {
         (Some(out), Some((font, fallback))) => {
-            if let Some((row, col)) = cursor {
-                draw_cursor(&mut cells, options.cols, row, col);
+            match (cursor, cursor_shape) {
+                (None, _) => {}
+                (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, options.cols, row, col),
+                // Over everything, images too, as a terminal draws it.
+                (Some(at), shape) => {
+                    let ((x, y, w, h), pixel) = cursor_mark(&cells, options.cols, at, shape, (cell_w, cell_h));
+                    mark_pixel = pixel;
+                    image_views.push(graphics::ImageView::solid(&mark_pixel, x, y, w, h));
+                }
             }
             let out = if out == "-" { "/dev/stdout" } else { out };
             let Ok(out) = std::ffi::CString::new(out) else {

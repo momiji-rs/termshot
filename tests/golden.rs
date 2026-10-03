@@ -22,7 +22,7 @@ const CJK: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
 // (log, px, cols, rows, font options). A log is examples/<log>.pty or
 // tests/fixtures/<log>.pty; with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 30] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 32] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -54,6 +54,8 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 30] = [
     // CFF outlines: as the fallback for CJK, and as the only font.
     ("cjk", "24", 40, 4, &["--fallback-font", CJK]),
     ("cjk", "46", 40, 4, &["--font", CJK]),
+    ("cursor-underline", "24", 8, 2, &[]),
+    ("cursor-bar", "24", 8, 2, &[]),
 ];
 
 extern "C" {

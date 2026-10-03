@@ -1,0 +1,4 @@
+{"cols":8,"rows":2,"cursor":{"col":2,"row":0,"shape":"bar"},"lines":[
+[{"col":0,"text":"x","fg":"#dbe7f7","bg":"#111823"},{"col":1,"text":" y ","fg":"#000000","bg":"#dbe7f7"}],
+[{"col":0,"text":"z","fg":"#dbe7f7","bg":"#111823"}]
+]}

@@ -1,4 +1,4 @@
-{"cols":100,"rows":30,"cursor":{"col":72,"row":24},"lines":[
+{"cols":100,"rows":30,"cursor":{"col":72,"row":24,"shape":"block"},"lines":[
 [{"col":0,"text":"                                                                                                    ","fg":"#ffffff","bg":"#182333"}],
 [{"col":0,"text":"  ","fg":"#ffffff","bg":"#182333"},{"col":2,"text":"crisp","fg":"#54a5ff","bg":"#182333","bold":true},{"col":7,"text":" / support inbox","fg":"#dbe7f7","bg":"#182333"},{"col":23,"text":"                                                          ","fg":"#ffffff","bg":"#182333"},{"col":81,"text":"DEMO · local only","fg":"#f0c36a","bg":"#182333"},{"col":98,"text":"  ","fg":"#ffffff","bg":"#182333"}],
 [{"col":0,"text":"                                                                                                    ","fg":"#ffffff","bg":"#182333"}],

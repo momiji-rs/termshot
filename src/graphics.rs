@@ -70,6 +70,14 @@ impl Placement {
     }
 }
 
+impl ImageView {
+    /// A rectangle of one colour: the opaque pixel, stretched over it.
+    /// The pixel is borrowed; it must outlive the view.
+    pub fn solid(pixel: &[u8; 4], x: i64, y: i64, w: i64, h: i64) -> ImageView {
+        ImageView { pixels: pixel.as_ptr(), width: 1, height: 1, x, y, w, h, clip_top: y, clip_bottom: y + h }
+    }
+}
+
 // Empty/clipped placements have no visible part.
 fn append_slice(slices: &mut Vec<ImageSlice>, y: i64, top: i64, bottom: i64) {
     if top >= bottom {

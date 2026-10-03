@@ -26,6 +26,7 @@ def check(json_path):
     cursor = grid["cursor"]
     if cursor is not None:
         assert 0 <= cursor["col"] < grid["cols"] and 0 <= cursor["row"] < grid["rows"], "cursor off the grid"
+        assert cursor["shape"] in ("block", "underline", "bar"), f"cursor shape {cursor['shape']}"
     for r, (runs, row) in enumerate(zip(grid["lines"], rows)):
         # Runs cover the row from column 0 without gaps, so each starts where
         # the one before ends, and the last ends inside the grid.
