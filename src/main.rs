@@ -1430,8 +1430,8 @@ Render the final screen of a terminal log (raw PTY output) as a PNG.
 Use - as <log> to read stdin, and - as an output to write stdout.
 
 options:
-  -f, --font FILE   TrueType or OpenType (CFF) font (default: built-in
-                    JetBrains Mono)
+  -f, --font FILE   TrueType or OpenType (CFF, CFF2) font (default:
+                    built-in JetBrains Mono)
       --fallback-font FILE
                     a font for the characters the first lacks, such
                     as CJK or emoji; others are drawn as an empty box

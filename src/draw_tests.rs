@@ -85,17 +85,18 @@ fn retagged(tag: &[u8; 4]) -> Vec<u8> {
 
 #[test]
 fn a_font_without_glyf_is_refused_for_what_it_has_instead() {
-    // glyf's bytes, read as a CFF table.
+    // glyf's bytes, read as a CFF or CFF2 table.
     let error = font::check(&retagged(b"CFF ")).unwrap_err();
     assert!(error.starts_with("CFF table: "), "{error}");
-    assert_eq!(font::check(&retagged(b"CFF2")).unwrap_err(), "CFF2 (variable) outlines are not supported");
+    let error = font::check(&retagged(b"CFF2")).unwrap_err();
+    assert!(error.starts_with("CFF2 table: "), "{error}");
     for (tag, name) in [(b"CBDT", "CBDT"), (b"CBLC", "CBLC"), (b"sbix", "sbix")] {
         assert_eq!(
             font::check(&retagged(tag)).unwrap_err(),
             format!("a color bitmap font ({name}) with no outlines; use a monochrome outline font, such as Noto Emoji")
         );
     }
-    assert_eq!(font::check(&retagged(b"xxxx")).unwrap_err(), "no glyf table, and no CFF table either");
+    assert_eq!(font::check(&retagged(b"xxxx")).unwrap_err(), "no glyf table, and no CFF or CFF2 table either");
 }
 
 /// Render with the vendored font, as both fonts when fallback is set, and

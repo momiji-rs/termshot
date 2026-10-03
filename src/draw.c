@@ -576,8 +576,44 @@ static void blend(Canvas *cv, int dx, int dy, const unsigned char *bm, int gw, i
     }
 }
 
+/* stbtt_InitFont for a CFF2 face, which stb refuses: with no glyf it wants a
+   CFF table to read outlines from. A CFF2 face's outlines come from Rust
+   (Face.outline), so only the rest of InitFont is done, as stb does it: the
+   metrics tables and the cmap subtable it would choose. font.rs has checked
+   all of them. No outline table is set, so stb can't read one. */
+static int init_cff2(stbtt_fontinfo *info, unsigned char *data, int start) {
+    stbtt_uint32 cmap = stbtt__find_table(data, start, "cmap");
+    memset(info, 0, sizeof *info);
+    info->data = data;
+    info->fontstart = start;
+    info->head = stbtt__find_table(data, start, "head");
+    info->hhea = stbtt__find_table(data, start, "hhea");
+    info->hmtx = stbtt__find_table(data, start, "hmtx");
+    info->kern = stbtt__find_table(data, start, "kern");
+    info->gpos = stbtt__find_table(data, start, "GPOS");
+    if (!cmap || !info->head || !info->hhea || !info->hmtx || !stbtt__find_table(data, start, "CFF2")) return 0;
+    stbtt_uint32 maxp = stbtt__find_table(data, start, "maxp");
+    info->numGlyphs = maxp ? ttUSHORT(data + maxp + 4) : 0xffff;
+    info->svg = -1;
+    for (stbtt_int32 i = 0, n = ttUSHORT(data + cmap + 2); i < n; ++i) {
+        stbtt_uint32 record = cmap + 4 + 8 * i;
+        stbtt_uint16 platform = ttUSHORT(data + record), encoding = ttUSHORT(data + record + 2);
+        if ((platform == STBTT_PLATFORM_ID_MICROSOFT &&
+             (encoding == STBTT_MS_EID_UNICODE_BMP || encoding == STBTT_MS_EID_UNICODE_FULL)) ||
+            platform == STBTT_PLATFORM_ID_UNICODE)
+            info->index_map = cmap + ttULONG(data + record + 4);
+    }
+    if (info->index_map == 0) return 0;
+    info->indexToLocFormat = ttUSHORT(data + info->head + 50);
+    return 1;
+}
+
 static int init_font(stbtt_fontinfo *font, const unsigned char *ttf, int start) {
-    return start >= 0 && stbtt_InitFont(font, ttf, start);
+    if (start < 0) return 0;
+    if (stbtt_InitFont(font, ttf, start)) return 1;
+    /* stb finds glyf or CFF before CFF2, as font.rs does. */
+    return !stbtt__find_table((unsigned char *)ttf, start, "glyf") &&
+           !stbtt__find_table((unsigned char *)ttf, start, "CFF ") && init_cff2(font, (unsigned char *)ttf, start);
 }
 
 /* A CFF face without outlines of its own would have stb run its charstrings. */

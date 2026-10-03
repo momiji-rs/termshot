@@ -70,8 +70,8 @@ fn main() {
         (b"CBDT", "a color bitmap font (CBDT) with no outlines; use a monochrome outline font, such as Noto Emoji"),
         (b"sbix", "a color bitmap font (sbix) with no outlines; use a monochrome outline font, such as Noto Emoji"),
         (b"CFF ", "CFF table: "),
-        (b"CFF2", "CFF2 (variable) outlines are not supported"),
-        (b"xxxx", "no glyf table, and no CFF table either"),
+        (b"CFF2", "CFF2 table: "),
+        (b"xxxx", "no glyf table, and no CFF or CFF2 table either"),
     ] {
         let name = String::from_utf8_lossy(tag).trim_end().to_owned();
         let font = dir.join(format!("{name}.ttf"));
