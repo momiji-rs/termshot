@@ -2,13 +2,15 @@
 //! font, hand-made hostile fonts (each with one defect that made stb hang,
 //! assert or read out of bounds; see docs/cff-rust-vs-c.md), and a mutation
 //! fuzz through draw.c. CFF2, which stb can't read, has hand-made fonts of
-//! its own. Paths are relative to the repo root.
+//! its own, and a real variable font checked against HarfBuzz's outlines and
+//! fuzzed the same way. Paths are relative to the repo root.
 
 use super::*;
 use crate::draw_tests::{mutate, render, render_with};
 use std::ffi::c_int;
 
 const CJK: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
+const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
 const CJK_TEXT: &str = "骨直角永東京台灣測試字型漢字中文繁體簡體龍鬱鑿齉 Ag";
 
 /// stbtt_fontinfo, with room to spare (it is 168 bytes on 64-bit).
@@ -183,6 +185,63 @@ fn mutated_cff_fonts_are_refused_or_render() {
     assert!(rendered > 100, "only {rendered} of 300 mutated fonts rendered");
 }
 
+/// POSIX cksum: the CRC and the length, as tools/cff2-outlines.sh records
+/// HarfBuzz's outlines.
+fn cksum(data: &[u8]) -> (u32, usize) {
+    let step = |crc: u32, byte: u8| {
+        (0..8).fold(crc ^ ((byte as u32) << 24), |c, _| if c & 0x8000_0000 != 0 { (c << 1) ^ 0x04c1_1db7 } else { c << 1 })
+    };
+    let mut crc = data.iter().fold(0, |crc, &b| step(crc, b));
+    let mut n = data.len();
+    while n > 0 {
+        crc = step(crc, n as u8);
+        n >>= 8;
+    }
+    (!crc, data.len())
+}
+
+/// An outline as hb-vector writes it as an SVG path: a contour starts when
+/// it draws, and each is closed.
+fn svg_path(outline: &[cff::Vertex]) -> String {
+    let mut path = String::new();
+    for (i, v) in outline.iter().enumerate() {
+        match v.kind {
+            cff::MOVE if outline.get(i + 1).map_or(true, |next| next.kind == cff::MOVE) => {}
+            cff::MOVE => path += &format!("{}M{},{}", if path.is_empty() { "" } else { "Z" }, v.x, v.y),
+            cff::LINE => path += &format!("L{},{}", v.x, v.y),
+            _ => path += &format!("C{},{} {},{} {},{}", v.cx, v.cy, v.cx1, v.cy1, v.x, v.y),
+        }
+    }
+    if !path.is_empty() {
+        path.push('Z');
+    }
+    path
+}
+
+/// stb has no CFF2 reader, so HarfBuzz is the reference: every character of
+/// the subset has the outline hb-vector draws for its default instance.
+#[test]
+fn every_character_of_a_cff2_font_matches_harfbuzz() {
+    assert_eq!(cksum(b"abc"), (1219131554, 3));
+    let font = font::prepare(fs::read(CJK_VF).unwrap()).unwrap();
+    let cff = font::cff_outlines(&font.data, font.start).unwrap().expect("a CFF2 font");
+    let (mut out, mut bounds, mut drawn) = (Vec::new(), [0; 4], 0);
+    for glyph in 0..cff.glyphs {
+        drawn += usize::from(cff.glyph(glyph, &mut out, &mut bounds).unwrap());
+    }
+    let reference = fs::read_to_string("tests/fixtures/cff2-outlines.txt").unwrap();
+    let mut checked = 0;
+    for line in reference.lines().filter(|line| !line.starts_with('#')) {
+        let fields: Vec<usize> = line.split(' ').map(|field| field.parse().unwrap()).collect();
+        let [glyph, crc, length] = fields[..] else { panic!("{line}") };
+        assert_eq!(cff.glyph(glyph, &mut out, &mut bounds), Ok(true), "glyph {glyph}");
+        let path = svg_path(&out);
+        assert_eq!(cksum(path.as_bytes()), (crc as u32, length), "glyph {glyph} differs from HarfBuzz's: {path}");
+        checked += 1;
+    }
+    assert!(checked > 100 && drawn > 150, "{checked} checked, {drawn} drawn");
+}
+
 #[test]
 fn hand_made_cff2_fonts_draw_the_square() {
     for (name, font) in [
@@ -208,6 +267,47 @@ fn hand_made_cff2_fonts_draw_the_square() {
         assert_eq!(bounds, [100, 100, 600, 600], "{name}");
         assert_eq!(render(&parse(b"AAA", 3, 1), 3, 1, &font, 16.0, "target/test/cff2-square.png"), 0, "{name}");
     }
+}
+
+#[test]
+fn cff2_fonts_render_as_primary_and_fallback() {
+    let vf = font::load(&font::Spec { path: CJK_VF.into(), face: None }).unwrap();
+    let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None }).unwrap();
+    let cells = parse(CJK_TEXT.as_bytes(), 60, 1);
+    let draw = |font: &font::Font, fallback: Option<&font::Font>, out: &str| {
+        assert_eq!(render_with(&cells, 60, 1, font, fallback, 24.0, out), 0);
+        fs::read(out).unwrap()
+    };
+    let alone = draw(&vf, None, "target/test/cff2-primary.png");
+    let fallback = draw(&mono, Some(&vf), "target/test/cff2-fallback.png");
+    let tofu = draw(&mono, None, "target/test/cff2-tofu.png");
+    assert!(alone != fallback && fallback != tofu);
+}
+
+/// The mutation fuzz, on the CFF2 table alone: the rest of the file is
+/// font.rs's, which the TrueType fuzz covers.
+#[test]
+fn mutated_cff2_fonts_are_refused_or_render() {
+    let original = fs::read(CJK_VF).unwrap();
+    let tables = u16::from_be_bytes([original[4], original[5]]) as usize;
+    let record = (0..tables).map(|i| 12 + 16 * i).find(|&r| &original[r..r + 4] == b"CFF2").unwrap();
+    let field = |at: usize| u32::from_be_bytes(original[at..at + 4].try_into().unwrap()) as usize;
+    let (at, length) = (field(record + 8), field(record + 12));
+    let cells = parse(format!("{CJK_TEXT} \x1b[3m{CJK_TEXT}").as_bytes(), 60, 1);
+    let (mut rendered, mut out, mut bounds) = (0, Vec::new(), [0; 4]);
+    for seed in 0..300 {
+        let mut font = original.clone();
+        mutate(&mut font[at..at + length], seed);
+        if let Ok(font) = font::prepare(font) {
+            let cff = font::cff_outlines(&font.data, font.start).unwrap().unwrap();
+            for glyph in 0..cff.glyphs {
+                let _ = cff.glyph(glyph, &mut out, &mut bounds);
+            }
+            assert_eq!(render(&cells, 60, 1, &font, 12.0, "target/test/fuzz-cff2.png"), 0, "seed {seed}");
+            rendered += 1;
+        }
+    }
+    assert!(rendered > 100, "only {rendered} of 300 mutated fonts rendered");
 }
 
 /// craft.py's fonts: a minimal OpenType file stb_truetype accepts (cmap,
