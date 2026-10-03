@@ -882,7 +882,7 @@ impl Screen {
             let mut blank = Cell::blank();
             (blank.fr, blank.fg, blank.fb) = self.pen.fg;
             (blank.br, blank.bg, blank.bb) = self.pen.bg;
-            self.cells[from..to].fill(blank);
+            fill_cells(&mut self.cells[from..to], blank);
             self.clear_marks(from, to);
             if matches!(self.last_at, Some(i) if (from..to).contains(&i)) {
                 self.last_at = None;
@@ -1149,6 +1149,22 @@ impl Screen {
         } else {
             self.pen.bg = color;
         }
+    }
+}
+
+/// Set every cell to cell. A 12-byte Cell defeats the vectorized fill, so
+/// a row is filled by copying what is already filled, doubling each time.
+fn fill_cells(cells: &mut [Cell], cell: Cell) {
+    if cells.len() <= 8 {
+        cells.fill(cell);
+        return;
+    }
+    cells[0] = cell;
+    let mut done = 1;
+    while done < cells.len() {
+        let n = done.min(cells.len() - done);
+        cells.copy_within(..n, done);
+        done += n;
     }
 }
 
