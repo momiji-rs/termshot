@@ -44,8 +44,10 @@ fn main() {
         std::process::exit(2);
     };
     let hollow = PathBuf::from(hollow);
-    let dir = env::temp_dir().join(format!("termshot-font-cli-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = env::temp_dir().join(format!("termshot-font-cli-{}-{nanos}", std::process::id()));
+    // A new directory, never one someone else made first: its files are written to.
+    fs::create_dir(&dir).unwrap();
     struct Cleanup(PathBuf);
     impl Drop for Cleanup {
         fn drop(&mut self) {
