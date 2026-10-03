@@ -11,8 +11,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The output events are replayed in order; input, markers and exit events are
   ignored. Without `--size`, the grid takes the recording's size: its header's,
   or its last resize event's. A first line that is a JSON object with a
-  `"version"` member marks a cast, and `--cast` reads one whatever it starts
-  with. The JSON is read strictly; a malformed cast is refused with its line
+  `"version"` member marks a cast; `--cast` reads one whatever it starts
+  with, and `--raw` reads a log as raw output whatever it starts with. The JSON is read strictly; a malformed cast is refused with its line
   (exit 1), and one larger than 500x200 needs `--size` (exit 2).
 
 - Replay kitty inline graphics (`a=T,t=d`) in RGB, RGBA and PNG formats,

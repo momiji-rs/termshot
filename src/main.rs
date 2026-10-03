@@ -1442,9 +1442,11 @@ options:
   -p, --px N        font pixel height, above 0 and below 256 (default 48)
   -s, --size CxR    grid size in columns x rows, up to 500x200 (default: a
                     cast's size, else 100x30)
-      --cast        read <log> as an asciinema .cast; without it, a log
-                    whose first line is a JSON object with a \"version\"
-                    member is read as one
+      --cast        read <log> as an asciinema .cast; without it or --raw,
+                    a log whose first line is a JSON object with a
+                    \"version\" member is read as one
+      --raw         read <log> as raw PTY output, even if it starts as a
+                    cast does
       --lf-newline  treat each bare LF as CR LF, for logs not captured
                     through a PTY: text files, cmd > out.log, and
                     tmux capture-pane -e -p; a final bare LF ends the
@@ -1495,8 +1497,9 @@ struct Options {
     cols: Option<usize>,
     rows: Option<usize>,
     lf: Lf,
-    /// --cast: read the log as an asciinema recording, however it starts.
-    cast: bool,
+    /// --cast (Some(true)) or --raw (Some(false)); None reads the log as
+    /// a cast if its first line is a cast's header.
+    cast: Option<bool>,
     /// --cursor, checked once the grid size is known.
     cursor: Option<String>,
     /// --cursor-shape: None leaves it to the log.
@@ -1567,7 +1570,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut args = args.into_iter();
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
-    let (mut lf, mut cast) = (Lf::Index, false);
+    let (mut lf, mut cast) = (Lf::Index, None);
     let (mut cursor, mut cursor_shape, mut text, mut json) = (None, None, None, None);
     let mut options_done = false;
     while let Some(arg) = args.next() {
@@ -1591,14 +1594,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             (arg.clone(), None)
         };
         match name.as_str() {
-            "-h" | "--help" | "-V" | "--version" | "-v" | "--verbose" | "--lf-newline" | "--cast" if attached.is_some() => {
+            "-h" | "--help" | "-V" | "--version" | "-v" | "--verbose" | "--lf-newline" | "--cast" | "--raw" if attached.is_some() => {
                 return Err(format!("{name} takes no value"));
             }
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
             "-v" | "--verbose" => verbose = true,
             "--lf-newline" => lf = Lf::Newline,
-            "--cast" => cast = true,
+            "--cast" | "--raw" if cast == Some(name == "--raw") => {
+                return Err("--cast and --raw contradict each other".into());
+            }
+            "--cast" => cast = Some(true),
+            "--raw" => cast = Some(false),
             "-f" | "--font" => font = Some(option_value(&name, attached, &mut args)?),
             "--fallback-font" => fallback_font = Some(option_value(&name, attached, &mut args)?),
             "-p" | "--px" => px = Some(parse_px(&option_value(&name, attached, &mut args)?)?),
@@ -1880,10 +1887,13 @@ fn main() -> ExitCode {
     // An asciinema recording replays its output events; its header gives
     // the grid size that --size and the original form's cols and rows don't.
     // Decoding it is part of reading the log, in the profile too.
-    let (data, cast_size) = if options.cast || cast::detect(&data) {
+    let (data, cast_size) = if options.cast.unwrap_or_else(|| cast::detect(&data)) {
         match cast::decode(data) {
             Ok(cast) => (cast.output, Some((cast.final_size, cast.resized))),
-            Err(reason) => return cleanup(1, format!("{name}: not a readable asciicast: {reason}")),
+            Err(reason) => {
+                let raw = if options.cast.is_none() { "; if it is raw PTY output, pass --raw" } else { "" };
+                return cleanup(1, format!("{name}: not a readable asciicast: {reason}{raw}"));
+            }
         }
     } else {
         (data, None)

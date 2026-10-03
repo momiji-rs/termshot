@@ -137,8 +137,9 @@ asciinema rec demo.cast
 ```
 
 A log is read as a cast when its first line, from the first byte, is a JSON object with a
-`"version"` member, which a raw PTY log never starts with; `--cast` reads it as one whatever
-it starts with, which matters only for the error you get. termshot replays the data of the
+`"version"` member. Terminal output rarely starts that way; when it does, `--raw` reads the
+log as raw output, and a log taken for a cast that fails to read says so. `--cast` reads the
+log as a cast whatever it starts with, which matters only for the error you get. termshot replays the data of the
 output (`"o"`) events, in the order the file has them, and ignores input (`"i"`), markers
 (`"m"`), exit (`"x"`) and other events. The size is the header's (`width` and `height` in v2,
 `term.cols` and `term.rows` in v3), or that of the last resize (`"r"`, `"COLSxROWS"`) event, as
@@ -187,6 +188,7 @@ shows. Colours are as drawn: reverse video and dim are already applied, and conc
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default: a cast's size, else 100x30) |
 | `--cast` | read the log as an asciinema `.cast` (v2 or v3), even if its first line isn't a header |
+| `--raw` | read the log as raw PTY output, even if its first line looks like a cast's header |
 | `--lf-newline` | treat each bare LF as CR LF, for logs not captured through a PTY; a final bare LF ends the last line instead of scrolling |
 | `--cursor COL,ROW` or `none` | draw the cursor there, counting from 0 as tmux's `#{cursor_x},#{cursor_y}` do, or not at all (default: where the log leaves it, unless it hides it) |
 | `--cursor-shape block`, `underline` or `bar` | draw the cursor as that shape (default: the one the log sets with DECSCUSR, or a block) |

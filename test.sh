@@ -318,6 +318,20 @@ check "a malformed cast names the line" \
 check "an unsupported version says so" './termshot "$out/v1.cast" "$out/x.png" 2>&1 | grep -q "version 1 is not supported"'
 expect 1 --cast "$log" "$out/x.png"
 expect 2 --cast=yes "$cast2" "$out/x.png"
+# --raw: output that happens to start as a cast does is still a raw log.
+printf '{"version":2,"msg":"hi"}\r\nok' > "$out/json-first.pty"
+expect 1 "$out/json-first.pty" "$out/x.png"
+check "a detected cast that fails suggests --raw" \
+    './termshot "$out/json-first.pty" "$out/x.png" 2>&1 | grep -q "no width; if it is raw PTY output, pass --raw"'
+check "--cast doesn't suggest --raw" '! ./termshot --cast "$out/json-first.pty" "$out/x.png" 2>&1 | grep -q -- --raw'
+printf '{"version":2,"msg":"hi"}\nok\n' > "$out/json-first.want"
+check "--raw reads it as raw output" \
+    './termshot --raw --size 30x2 --text - "$out/json-first.pty" | cmp -s - "$out/json-first.want"'
+./termshot --raw "$cast2" "$out/cast-as-raw.png"
+check "--raw draws a cast's JSON, not its output" '! cmp -s "$out/cast-as-raw.png" "$out/cast-raw.png"'
+expect 2 --cast --raw "$cast2" "$out/x.png"
+expect 2 --raw --cast "$cast2" "$out/x.png"
+expect 2 --raw=no "$cast2" "$out/x.png"
 # Detection never takes a raw log for a cast: only a first-line JSON object with a version is one.
 printf '{"width":3}\r\nplain' | ./termshot --size 12x2 - "$out/not-cast.png"
 printf '{"width":3}\r\nplain' | ./termshot --size 12x2 --text - - > "$out/not-cast.txt"

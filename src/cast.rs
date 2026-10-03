@@ -369,7 +369,7 @@ fn json_error(n: usize, line: &str, error: JsonError) -> String {
 
 /// Whether the input is read as a cast: its first line, from its first
 /// byte, is a JSON object with a "version" member. A raw PTY log starts
-/// with terminal output, which is never such a line.
+/// with terminal output, which is rarely such a line; --raw is for when it is.
 pub fn detect(data: &[u8]) -> bool {
     let first = data.split(|&b| b == b'\n').next().unwrap_or_default();
     if first.first() != Some(&b'{') {
