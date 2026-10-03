@@ -23,7 +23,8 @@ def width(text):
     is wide when it is W or F."""
     unknown = sum(unicodedata.category(ch) == "Cn" for ch in text)
     known = [ch for ch in text if unicodedata.category(ch) != "Cn"]
-    wide = sum(unicodedata.east_asian_width(ch) in "WF" for ch in known)
+    # A zero-width mark can be W too (U+302A, U+3099): it still takes none.
+    wide = sum(unicodedata.east_asian_width(ch) in "WF" for ch in known if not zero_width(ch))
     least = len(known) - sum(map(zero_width, known)) + wide
     return least, least + 2 * unknown
 
