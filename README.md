@@ -67,7 +67,11 @@ and peak RSS are measured as well; both batches retain every sample and p95.
 This round reduces work in ASCII scrolling, CSI parsing, glyph caching,
 and DEFLATE matching/emission. It also releases input storage before rendering.
 Small-case gains and tail latencies vary; the shared-machine measurements do not
-establish a universal millisecond figure or current Linux performance.
+establish a universal millisecond figure. The
+[current baseline](docs/performance.md#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)
+(2026-10-03, `d83c8fd`) remeasures all of these on an Apple M2 Max and on
+Linux x86-64, and adds the built-in font, CJK fallback fonts, mixed scripts and
+glyph working sets beyond the cache.
 
 See [performance measurements](docs/performance.md) for all cases, paired
 confidence intervals, memory tradeoffs, rejected experiments, remaining
@@ -247,11 +251,15 @@ SANITIZE=1 ./tests/run.sh
 ```
 
 Profiling writes two `termshot-profile` JSON records to stderr, covering input,
-parsing, font reading/validation/padding, drawing, PNG filtering, compression
+parsing, font allocation/reading/validation/padding (for the built-in or given
+font and the fallback alike), glyph cache and fallback counters, drawing, PNG filtering, compression
 allocation/matching/emission/checksum, PNG packaging, and writing. The benchmark
-measures ordinary CLI runs separately from profiling and optional peak RSS runs;
-it records raw samples, means, medians, p95, child CPU time, paired comparisons,
-output size and hash, and toolchain details. Python 3 is needed only for optional
+interleaves ordinary and profiled CLI runs in the same rounds, plus optional
+peak RSS and (on Linux) cold-cache runs; it records raw samples, means, medians,
+p95, child CPU time, paired comparisons, profiling overhead, output size and
+hash, and host, toolchain, source and font details. Each font-path case checks
+the profile counters that show it took its path (`scripts/bench-report.py`
+summarizes a result file). Python 3 is needed only for optional
 development scripts (benchmarks and CRC table generation); the tests need only
 a C compiler and rustc.
 

@@ -98,6 +98,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "not a usable TrueType font".
 - Renders now show the cursor unless the log hides it with `ESC [ ? 25 l`
   (DECTCEM), as full-screen programs and progress bars often do.
+- `TERMSHOT_PROFILE` times the built-in font, a `--font` file and a
+  `--fallback-font` on the same allocate/read/check/padding boundaries
+  (`font_*_ms`, `fallback_*_ms`, with their sizes and `font_builtin`), adds
+  `face_ms`, and counts glyph cache evictions, missing glyphs and fallback
+  lookups and rasterizations (#19). The built-in font's `font_check_ms` no
+  longer includes copying and padding it.
 
 ### Fixed
 

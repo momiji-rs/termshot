@@ -11,14 +11,25 @@ use crate::cff;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-#[derive(Default)]
+/// Where loading a font goes, for TERMSHOT_PROFILE. The built-in font and a
+/// file share four boundaries, which do not overlap:
+/// - allocate: an empty buffer the size of the font;
+/// - read: filling it; for a file also opening and sizing it, for the
+///   built-in font copying it out of the binary;
+/// - check: picking the face and checking it;
+/// - padding: appending PADDING zero bytes, which may move the buffer.
+#[derive(Default, Clone, Copy)]
 pub struct LoadTimings {
+    pub allocate_ms: f64,
     pub read_ms: f64,
     pub check_ms: f64,
     pub padding_ms: f64,
+    /// The font's size, before padding.
+    pub bytes: usize,
 }
 
 /// stb's reads past a checked table start reach at most about 460 KB
@@ -90,37 +101,69 @@ impl Spec {
 }
 
 /// Read a font file and check the face `spec` names.
+#[cfg(test)]
 pub fn load(spec: &Spec) -> Result<Font, String> {
-    load_timed(spec, None)
+    load_timed(spec, &mut LoadTimings::default())
 }
 
-/// The same as load(), with separate clocks.
-pub fn load_profiled(spec: &Spec, timings: &mut LoadTimings) -> Result<Font, String> {
-    load_timed(spec, Some(timings))
+fn ms(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
 }
 
-fn load_timed(spec: &Spec, timings: Option<&mut LoadTimings>) -> Result<Font, String> {
-    let ms = |since: Instant| since.elapsed().as_secs_f64() * 1000.0;
+/// The same as load(), with the clocks LoadTimings describes.
+pub fn load_timed(spec: &Spec, timings: &mut LoadTimings) -> Result<Font, String> {
     let path = &spec.path;
+    let error = |error: std::io::Error| format!("{path}: {error}");
     let started = Instant::now();
-    let data = fs::read(path).map_err(|error| format!("{path}: {error}"))?;
-    let read_ms = ms(started);
+    let mut file = fs::File::open(path).map_err(error)?;
+    // Sized as fs::read sizes it: a hint, which read_to_end grows past.
+    let len = file.metadata().map_or(0, |m| m.len() as usize);
+    let opened = ms(started);
+    let started = Instant::now();
+    let mut data = Vec::with_capacity(len);
+    timings.allocate_ms = ms(started);
+    let started = Instant::now();
+    file.read_to_end(&mut data).map_err(error)?;
+    timings.read_ms = opened + ms(started);
+    timings.bytes = data.len();
     let started = Instant::now();
     let font = choose(data, spec.face.as_deref(), path)?;
-    let check_ms = ms(started);
+    timings.check_ms = ms(started);
     let started = Instant::now();
     let font = pad(font);
-    if let Some(timings) = timings {
-        *timings = LoadTimings { read_ms, check_ms, padding_ms: ms(started) };
-    }
+    timings.padding_ms = ms(started);
     Ok(font)
 }
 
 /// Check font bytes (the first face of a collection) and append the padding.
+#[cfg(test)]
 pub fn prepare(data: Vec<u8>) -> Result<Font, String> {
+    Ok(pad(check_first(data)?))
+}
+
+/// prepare() for bytes it copies, the built-in font's, with the clocks
+/// LoadTimings describes.
+pub fn prepare_timed(bytes: &[u8], timings: &mut LoadTimings) -> Result<Font, String> {
+    let started = Instant::now();
+    let mut data = Vec::with_capacity(bytes.len());
+    timings.allocate_ms = ms(started);
+    let started = Instant::now();
+    data.extend_from_slice(bytes);
+    timings.read_ms = ms(started);
+    timings.bytes = data.len();
+    let started = Instant::now();
+    let font = check_first(data)?;
+    timings.check_ms = ms(started);
+    let started = Instant::now();
+    let font = pad(font);
+    timings.padding_ms = ms(started);
+    Ok(font)
+}
+
+fn check_first(data: Vec<u8>) -> Result<Font, String> {
     let start = faces(&data)?[0].ok_or("face #0 is not a font")?;
     check_at(&data, start)?;
-    Ok(pad(Font { data, start, face: None, hint: None }))
+    Ok(Font { data, start, face: None, hint: None })
 }
 
 fn pad(mut font: Font) -> Font {

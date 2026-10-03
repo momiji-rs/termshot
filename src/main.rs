@@ -1648,23 +1648,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
 }
 
 /// The font and fallback font a render asks for, checked and padded.
+/// Each font's load is timed on the same boundaries (font::LoadTimings),
+/// whether it is built in or a file.
 fn load_fonts(
     options: &Options,
-    profile: bool,
-    timings: &mut font::LoadTimings,
+    timings: &mut [font::LoadTimings; 2],
 ) -> Result<(font::Font, Option<font::Font>), String> {
+    let [font_timings, fallback_timings] = timings;
     let font = match &options.font {
-        Some(path) if profile => font::load_profiled(path, timings)?,
-        Some(path) => font::load(path)?,
-        // Built in: nothing to read; the check (and padding) is all the work.
-        None => {
-            let checked = Instant::now();
-            let font = font::prepare(EMBEDDED_FONT.to_vec()).map_err(|reason| format!("built-in font: {reason}"));
-            timings.check_ms = checked.elapsed().as_secs_f64() * 1000.0;
-            font?
-        }
+        Some(path) => font::load_timed(path, font_timings)?,
+        None => font::prepare_timed(EMBEDDED_FONT, font_timings).map_err(|reason| format!("built-in font: {reason}"))?,
     };
-    let fallback = options.fallback_font.as_ref().map(font::load).transpose()?;
+    let fallback = options.fallback_font.as_ref().map(|path| font::load_timed(path, fallback_timings)).transpose()?;
     Ok((font, fallback))
 }
 
@@ -1869,11 +1864,11 @@ fn main() -> ExitCode {
     }
 
     let font_started = Instant::now();
-    let mut font_timings = font::LoadTimings::default();
+    let mut font_timings = [font::LoadTimings::default(); 2];
     // Plain text/JSON logs need no fonts. Graphics also need cell metrics,
     // even without a PNG, because placement can move the text cursor.
     let needs_fonts = options.out.is_some() || graphics::needs_cell_metrics(&data);
-    let fonts = match needs_fonts.then(|| load_fonts(&options, profile, &mut font_timings)).transpose() {
+    let fonts = match needs_fonts.then(|| load_fonts(&options, &mut font_timings)).transpose() {
         Ok(fonts) => fonts,
         Err(error) => return cleanup(1, error),
     };
@@ -1923,6 +1918,7 @@ fn main() -> ExitCode {
     let mut empty = EmptyGlyphs::default();
     // The underline or bar cursor's colour; its view borrows it.
     let mark_pixel;
+    let mut face_ms = 0.0;
     let code = match (&options.out, &fonts) {
         (Some(out), Some((font, fallback))) => {
             match (cursor, cursor_shape) {
@@ -1939,7 +1935,10 @@ fn main() -> ExitCode {
             let Ok(out) = std::ffi::CString::new(out) else {
                 return cleanup(2, "output path contains a nul byte".into());
             };
+            // with_face parses a CFF table again; that is face_ms.
+            let face_started = Instant::now();
             let mut draw = |font: &font::Face, fallback: Option<&font::Face>| unsafe {
+                face_ms = face_started.elapsed().as_secs_f64() * 1000.0;
                 draw_png_images(
                     cells.as_ptr(),
                     options.cols as i32,
@@ -1971,7 +1970,21 @@ fn main() -> ExitCode {
         }
     }
     if profile {
-        eprintln!("termshot-profile {{\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6},\"font_read_ms\":{:.6},\"font_check_ms\":{:.6},\"font_padding_ms\":{:.6},\"total_ms\":{:.6},\"input_bytes\":{input_bytes}}}", font_timings.read_ms, font_timings.check_ms, font_timings.padding_ms, started.elapsed().as_secs_f64() * 1000.0);
+        // font_* is the --font or built-in font, fallback_* the
+        // --fallback-font; both are inside font_load_ms. docs/performance.md
+        // lists every boundary.
+        let mut fields = format!("\"input_read_ms\":{read_ms:.6},\"parse_ms\":{parse_ms:.6},\"font_load_ms\":{font_load_ms:.6}");
+        for (name, t) in [("font", &font_timings[0]), ("fallback", &font_timings[1])] {
+            fields += &format!(
+                ",\"{name}_allocate_ms\":{:.6},\"{name}_read_ms\":{:.6},\"{name}_check_ms\":{:.6},\"{name}_padding_ms\":{:.6},\"{name}_bytes\":{}",
+                t.allocate_ms, t.read_ms, t.check_ms, t.padding_ms, t.bytes
+            );
+        }
+        let builtin = u8::from(needs_fonts && options.font.is_none());
+        eprintln!(
+            "termshot-profile {{{fields},\"font_builtin\":{builtin},\"face_ms\":{face_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{input_bytes}}}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
     }
     // draw.c has already said what went wrong.
     match code {

@@ -1,0 +1,30 @@
+[1;32muser@host[0m:[1;34m~/src/termshot[0m$ make test LANG=zh_TW.UTF-8
+[2m[build][0m cc -O2 -ffp-contract=off -c src/draw.c -o draw.o
+Résumé naïve façade — coöperate über Ærøskøbing; Øresund ﬁnal “quotes” ‘ok’
+Ελληνικά: Γειά σου κόσμε · Русский: Привет, мир · Українська: Добрий день
+[33m警告[0m：[3m測試字型[0m 東京 台灣 漢字 中文 繁體 簡體 — 骨直角永 龍鬱鑿齉
+日本語のテキスト ひらがな カタカナ · 한국어 텍스트 · emoji 🙂 🚀 ✅ (not in either font)
+╭──────────────┬──────────────────────────────╮
+│ [1mstage[0m        │ [1mresult[0m                       │
+├──────────────┼──────────────────────────────┤
+│ parse        │ [32m✓ ok[0m 中文 測試                 │
+│ render       │ [31m✗ fail[0m Ελληνικά Привет         │
+╰──────────────┴──────────────────────────────╯
+[38;2;255;128;0mtruecolor[0m [48;5;24m 256-colour [0m ░▒▓█ ▁▂▃▄▅▆▇█ ←↑→↓ ∀∂∈∑√∞≠≤≥
+[1;32muser@host[0m:[1;34m~/src/termshot[0m$ make test LANG=zh_TW.UTF-8
+[2m[build][0m cc -O2 -ffp-contract=off -c src/draw.c -o draw.o
+Résumé naïve façade — coöperate über Ærøskøbing; Øresund ﬁnal “quotes” ‘ok’
+Ελληνικά: Γειά σου κόσμε · Русский: Привет, мир · Українська: Добрий день
+[33m警告[0m：[3m測試字型[0m 東京 台灣 漢字 中文 繁體 簡體 — 骨直角永 龍鬱鑿齉
+日本語のテキスト ひらがな カタカナ · 한국어 텍스트 · emoji 🙂 🚀 ✅ (not in either font)
+╭──────────────┬──────────────────────────────╮
+│ [1mstage[0m        │ [1mresult[0m                       │
+├──────────────┼──────────────────────────────┤
+│ parse        │ [32m✓ ok[0m 中文 測試                 │
+│ render       │ [31m✗ fail[0m Ελληνικά Привет         │
+╰──────────────┴──────────────────────────────╯
+[38;2;255;128;0mtruecolor[0m [48;5;24m 256-colour [0m ░▒▓█ ▁▂▃▄▅▆▇█ ←↑→↓ ∀∂∈∑√∞≠≤≥
+[1;32muser@host[0m:[1;34m~/src/termshot[0m$ make test LANG=zh_TW.UTF-8
+[2m[build][0m cc -O2 -ffp-contract=off -c src/draw.c -o draw.o
+Résumé naïve façade — coöperate über Ærøskøbing; Øresund ﬁnal “quotes” ‘ok’
+Ελληνικά: Γειά σου κόσμε · Русский: Привет, мир · Українська: Добрий день
