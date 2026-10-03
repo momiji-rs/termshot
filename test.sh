@@ -145,6 +145,17 @@ check "a CFF font draws CJK" '! cmp -s "$out/cli-cff-font.png" "$out/cli-cff-tof
 expect 1 "$log" "$out/x.png" --font "$out/cff-past-table.otf"
 check "a damaged CFF table is refused with a reason" \
     './termshot --font "$out/cff-past-table.otf" "$log" "$out/x.png" 2>&1 | grep -q "CFF table: INDEX at .* runs past the table"'
+# CFF2 (a variable font, drawn at its default instance), the same ways.
+vf=third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf
+printf '東京' | ./termshot --size 4x1 --cursor none --fallback-font "$vf" - "$out/cli-cff2-fallback.png"
+printf '東京' | ./termshot --size 4x1 --cursor none --font "$vf" - "$out/cli-cff2-font.png"
+check "a CFF2 fallback font draws CJK" '! cmp -s "$out/cli-cff2-fallback.png" "$out/cli-cff-tofu.png"'
+check "a CFF2 font draws CJK" '! cmp -s "$out/cli-cff2-font.png" "$out/cli-cff-tofu.png"'
+check "a CFF2 font draws its default instance, not the CFF font" '! cmp -s "$out/cli-cff2-font.png" "$out/cli-cff-font.png"'
+check "a CFF2 font is quiet on success" '[ -z "$(./termshot --font "$vf" "$log" "$out/cli-cff2-log.png" 2>&1)" ]'
+expect 1 "$log" "$out/x.png" --font "$out/cff2-past-table.otf"
+check "a damaged CFF2 table is refused with a reason" \
+    './termshot --font "$out/cff2-past-table.otf" "$log" "$out/x.png" 2>&1 | grep -q "CFF2 table: INDEX at .* runs past the table"'
 # stdin and stdout.
 ./termshot - - < "$log" > "$out/piped.png"
 check "stdin to stdout matches" 'cmp -s "$out/piped.png" "$out/legacy.png"'

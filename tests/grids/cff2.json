@@ -1,0 +1,6 @@
+{"cols":40,"rows":4,"cursor":{"col":23,"row":3,"shape":"block"},"lines":[
+[{"col":0,"text":"CFF2: 骨直角 東京 台灣 測試字型","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"Italic 漢字 中文","fg":"#dbe7f7","bg":"#111823","italic":true},{"col":16,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":17,"text":"Bold 繁體","fg":"#dbe7f7","bg":"#111823","bold":true}],
+[{"col":0,"text":"龍鬱鑿齉","fg":"#cd0000","bg":"#111823"},{"col":8,"text":" ","fg":"#dbe7f7","bg":"#111823"},{"col":9,"text":"簡體","fg":"#dbe7f7","bg":"#00cd00"},{"col":13,"text":" 永","fg":"#dbe7f7","bg":"#111823"}],
+[{"col":0,"text":"Not in the font: 日本語","fg":"#dbe7f7","bg":"#111823"}]
+]}

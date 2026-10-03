@@ -85,7 +85,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stb's own CFF reader hangs, asserts or reads out of bounds on damaged
   fonts. A damaged CFF table is refused with a reason (exit 1), and a
   glyph that can't be drawn is drawn as the box for a missing glyph.
-  Variable fonts (CFF2) are refused.
+- Variable fonts with CFF2 outlines, such as the variable Noto Sans CJK and
+  Source Han Sans builds, are drawn at their default instance (#51), where
+  they were refused. `src/cff.rs` reads the CFF2 table with the same checks
+  and the same per-glyph limit as CFF; `blend` keeps its default values.
+  Choosing another instance (a weight, say) is not supported yet. A damaged
+  CFF2 table is refused with a reason (exit 1).
 - Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
   is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
   outline is slanted 12 degrees before it is rasterized, so it is as smooth

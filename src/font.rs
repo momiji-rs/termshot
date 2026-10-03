@@ -482,11 +482,15 @@ pub fn cff_outlines(d: &[u8], start: usize) -> Result<Option<cff::Font<'_>>, Str
     if table(d, start, b"glyf")?.is_some() {
         return Ok(None);
     }
-    let Some(cff) = table(d, start, b"CFF ")? else {
+    let glyphs = u16_at(required(d, start, b"maxp")?, 4)? as usize;
+    // stb reads CFF and not CFF2, so CFF wins where a face has both.
+    if let Some(cff) = table(d, start, b"CFF ")? {
+        return cff::Font::parse(cff.data, glyphs).map(Some).map_err(|reason| format!("CFF table: {reason}"));
+    }
+    let Some(cff2) = table(d, start, b"CFF2")? else {
         return Err(no_outlines(d, start)?);
     };
-    let glyphs = u16_at(required(d, start, b"maxp")?, 4)? as usize;
-    cff::Font::parse(cff.data, glyphs).map(Some).map_err(|reason| format!("CFF table: {reason}"))
+    cff::Font::parse_cff2(cff2.data, glyphs).map(Some).map_err(|reason| format!("CFF2 table: {reason}"))
 }
 
 /// Check the loca and glyf tables of a TrueType face.
@@ -517,16 +521,13 @@ fn check_glyf(d: &[u8], start: usize, head: &[u8], glyph_count: usize) -> Result
     check_composite_depth(&components)
 }
 
-/// Why a font with neither glyf nor CFF can't be drawn, from the tables it
-/// has instead.
+/// Why a font with no glyf, CFF or CFF2 table can't be drawn, from the
+/// tables it has instead.
 fn no_outlines(d: &[u8], start: usize) -> Result<String, String> {
-    if table(d, start, b"CFF2")?.is_some() {
-        return Ok("CFF2 (variable) outlines are not supported".into());
-    }
     if let Some(tag) = color_bitmap_at(d, start)? {
         return Ok(format!("a color bitmap font ({tag}) with no outlines; use a monochrome outline font, such as Noto Emoji"));
     }
-    Ok("no glyf table, and no CFF table either".into())
+    Ok("no glyf table, and no CFF or CFF2 table either".into())
 }
 
 fn color_bitmap_at(d: &[u8], start: usize) -> Result<Option<&'static str>, String> {

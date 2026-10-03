@@ -19,10 +19,11 @@ const OUT: &str = "target/test";
 const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 const HEADER: &str = "# sha256 of decoded RGBA pixels, size, log, px. Rewrite with ./test.sh --update-goldens";
 const CJK: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
+const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
 // (log, px, cols, rows, font options). A log is examples/<log>.pty or
 // tests/fixtures/<log>.pty; with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 38] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 40] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -62,6 +63,9 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 38] = [
     // CFF outlines: as the fallback for CJK, and as the only font.
     ("cjk", "24", 40, 4, &["--fallback-font", CJK]),
     ("cjk", "46", 40, 4, &["--font", CJK]),
+    // CFF2 outlines (a variable font, drawn at its default instance), the same ways.
+    ("cff2", "24", 40, 4, &["--fallback-font", CJK_VF]),
+    ("cff2", "46", 40, 4, &["--font", CJK_VF]),
     ("cursor-underline", "24", 8, 2, &[]),
     ("cursor-bar", "24", 8, 2, &[]),
 ];
