@@ -84,6 +84,89 @@ def legacy_workloads(directory):
     return cases
 
 
+def kitty_image(width, height, cols, rows, z, seed):
+    """A kitty direct transmission (a=T, f=32) of a width x height RGBA
+    gradient with some transparency, scaled to cols x rows cells at z, sent in
+    the 4096-byte chunks the protocol allows."""
+    import base64
+    rng = random.Random(seed)
+    pixels = bytearray()
+    for y in range(height):
+        for x in range(width):
+            pixels += bytes((x * 255 // width, y * 255 // height, rng.randrange(256),
+                             255 if (x // 16 + y // 16) % 3 else 128))
+    data = base64.b64encode(bytes(pixels))
+    chunks = [data[i:i + 4096] for i in range(0, len(data), 4096)]
+    out = b''
+    for i, chunk in enumerate(chunks):
+        more = int(i + 1 < len(chunks))
+        keys = f'a=T,f=32,s={width},v={height},c={cols},r={rows},z={z},q=2,m={more}' if i == 0 else f'm={more}'
+        out += b'\x1b_G' + keys.encode() + b';' + chunk + b'\x1b\\'
+    return out
+
+
+def draw_workloads(directory):
+    """Painting and geometry (#22): box, block and rounded grids, the same at
+    other sizes, every geometry character at once, large sparse and colored
+    screens, and an image below, under and over text."""
+    crlf = '\r\n'
+    table = []
+    for row in range(30):
+        kind = row % 3
+        if row % 6 == 0:
+            table.append('┌' + '──────┬' * 13 + '──────┐' + '━━━┳━━━┓')
+        elif row % 6 == 5:
+            table.append('└' + '──────┴' * 13 + '──────┘' + '━━━┻━━━┛')
+        elif kind == 1:
+            table.append('│' + ' cell │' * 14 + '═══╬═══╣')
+        else:
+            table.append('├' + '──────┼' * 13 + '──────┤' + '║  ╠═══╣')
+    blocks = '█▀▄▌▐░▒▓▖▗▘▝▚▞▙▟▁▂▃▅▆▇▏▎▍▋▊▉▔▕'
+    rng = random.Random(22)
+    block_grid = crlf.join(
+        ''.join(f'\x1b[38;5;{rng.randrange(256)}m{blocks[(r * 7 + c) % len(blocks)]}' for c in range(100))
+        for r in range(30))
+    every = [chr(cp) for cp in range(0x2500, 0x25a0)]
+    geometry_all = crlf.join(
+        ''.join(('\x1b[1m' if (r + c) % 2 else '\x1b[22m') + every[(r * 240 + c) % len(every)] for c in range(240))
+        for r in range(80))
+    panes = []
+    for r in range(30):
+        band = r % 10
+        if band == 0:
+            panes.append('╭' + '─' * 23 + '╮' + ('╭' + '─' * 23 + '╮') * 3)
+        elif band == 9:
+            panes.append('╰' + '─' * 23 + '╯' + ('╰' + '─' * 23 + '╯') * 3)
+        else:
+            panes.append(('│ ' + f'item {r:02} value {r * 37 % 1000:4}'.ljust(21) + ' │') * 4)
+    rounded = crlf.join(['╭╮╰╯' * 25] * 30)
+    sparse = crlf.join(['$ termshot --px 48 --size 240x80 large.log out.png', 'done in 42 ms', '$ '] + [''] * 77)
+    colored = crlf.join(
+        ''.join(f'\x1b[48;5;{(r * 3 + c // 10) % 216 + 16}m' + 'Benchmark ' for c in range(0, 240, 10))
+        for r in range(80))
+    text = crlf.join([('The quick brown fox 0123456789! @#$% ' * 3)[:100]] * 30)
+    image = lambda z: ('\x1b[H'.encode() + kitty_image(128, 128, 60, 20, z, 22) + b'\x1b[H' + text.encode())
+    generated = {
+        'box-grid': (crlf.join(table).encode(), 48, 100, 30),
+        'block-grid': (block_grid.encode(), 48, 100, 30),
+        'rounded-panes': (crlf.join(panes).encode(), 48, 100, 30),
+        'rounded-24px': (rounded.encode(), 24, 100, 30),
+        'rounded-128px': (rounded.encode(), 128, 100, 30),
+        'geometry-all': (geometry_all.encode(), 48, 240, 80),
+        'large-sparse': (sparse.encode(), 48, 240, 80),
+        'large-color': (colored.encode(), 48, 240, 80),
+        'image-below': (image(-1073741825), 48, 100, 30),
+        'image-under': (image(-1), 48, 100, 30),
+        'image-over': (image(1), 48, 100, 30),
+    }
+    cases = []
+    for name, (data, px, cols, rows) in generated.items():
+        path = directory / f'{name}.pty'
+        path.write_bytes(data)
+        cases.append(Case(name, path, px, cols, rows, group='draw'))
+    return cases
+
+
 def font_workloads(cjk):
     """The font-path matrix (#19). checks are (counter, op, value) on the
     profile record, verified on every profiled run of a binary that has it."""
@@ -224,7 +307,7 @@ def main():
     p.add_argument('--warmups', type=int, default=2)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--case', action='append')
-    p.add_argument('--suite', choices=('all', 'legacy', 'fonts'), default='all')
+    p.add_argument('--suite', choices=('all', 'legacy', 'fonts', 'draw'), default='all')
     p.add_argument('--cjk-font', type=Path, default=SYSTEM_CJK if SYSTEM_CJK.exists() else None,
                    help=f'full NotoSansCJK-Regular.ttc for the *-full cases (default: {SYSTEM_CJK} if present)')
     p.add_argument('--memory-runs', type=int, default=0, help='separate peak-RSS runs using /usr/bin/time')
@@ -275,6 +358,8 @@ def main():
             cases += font_workloads(args.cjk_font)
         if args.suite in ('all', 'legacy'):
             cases += legacy_workloads(directory)
+        if args.suite in ('all', 'draw'):
+            cases += draw_workloads(directory)
         if args.case:
             unknown = set(args.case) - {case.name for case in cases}
             if unknown:
