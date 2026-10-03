@@ -581,6 +581,21 @@ fn text_and_erasure_leave_kitty_images() {
     assert_eq!(*g.images[0].pixels, [255, 0, 0, 255]);
 }
 
+/// Repeated writes over many overlapping Sixel images clear each once and
+/// then write in place: 1,024 one-pixel images in one cell, and 4,097 writes
+/// there (no autowrap, REP), with a Sixel image stored for each.
+#[test]
+fn repeated_writes_over_overlapping_sixel_images() {
+    let mut log = Vec::new();
+    for _ in 0..1024 {
+        log.extend_from_slice(b"\x1b[1;6H\x1bP0;1q#1;2;100;0;0@\x1b\\");
+    }
+    log.extend_from_slice(b"\x1b[?7l\x1b[1;6Hx\x1b[4096b");
+    let g = replay_sized(&log, 6, 4, Lf::Index, (1, 1));
+    assert_eq!(g.images.len(), 1024);
+    assert!(g.images.iter().all(|p| p.sixel && *p.pixels == [0, 0, 0, 0]));
+}
+
 #[test]
 fn truncated_sequences_do_not_panic() {
     for s in [&b"\x1b"[..], b"\x1b[", b"\x1b[12;", b"\x1b]0;t", b"\x1bPq", b"\x1b]0;\x1b"] {

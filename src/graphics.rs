@@ -870,23 +870,17 @@ impl Graphics {
             if left >= right || rows.iter().all(|&(top, bottom, _)| top >= bottom) {
                 continue;
             }
-            // The image store holds the other reference to the pixels. Drop it
-            // while writing, so they are not copied, and share them again after.
-            let (key, x) = (p.image, p.x);
-            let stored = self.images.iter_mut().find(|img| img.key == key);
-            if let Some(img) = stored {
-                img.pixels = Rc::new(Vec::new());
-            }
+            // The first erase copies the pixels away from the image store's,
+            // which no command can place again (a Sixel image has no id), and
+            // later ones write in place: no search of the store, whatever the
+            // number of images.
+            let x = p.x;
             let pixels = Rc::make_mut(&mut self.placements[i].pixels);
             for (top, bottom, origin) in rows {
                 for y in top..bottom {
                     let start = ((y - origin) * w + left - x) as usize * 4;
                     pixels[start..start + (right - left) as usize * 4].fill(0);
                 }
-            }
-            let shared = Rc::clone(&self.placements[i].pixels);
-            if let Some(img) = self.images.iter_mut().find(|img| img.key == key) {
-                img.pixels = shared;
             }
         }
     }
