@@ -195,11 +195,17 @@ for a compressed one (`initialize_load_data`) and refuses an RGB or RGBA
 payload that would overflow it (`load_image_data`, `EFBIG`); only PNG may
 grow. termshot applies the same cap to compressed RGB and RGBA, over all the
 chunks of an upload and checked as each arrives, so an oversized upload is
-dropped before it is fully buffered. A compressed PNG keeps the 16 MiB
+dropped before it is fully buffered. An uncompressed RGB or RGBA buffer gets
+10 bytes over the decoded size, and kitty uses the first `w*h*3` or `w*h*4`
+bytes of what arrives (`process_image_data`), so termshot accepts a payload
+up to 10 bytes longer than the decoded size and ignores the excess (#55). It used to require the
+exact size. A PNG, compressed or not, keeps the 16 MiB
 payload limit. Raw dimensions are checked against the decoded limits (8,192
 pixels per axis, 16 MiB of RGBA) before inflating, so a stream for an image
 that would be refused anyway is never inflated.
 
+`src/graphics/tests.rs` sends RGB and RGBA payloads one byte short, exact,
+and 1, 10 and 11 bytes long, alone and with the excess in different chunks.
 `src/graphics/zlib_tests.rs` checks the cap at 1,024, 1,027, 1,028 and 1,029
 bytes, alone and chunked; a stream cut at every chunk size, for stored and
 Huffman-coded streams; interrupted uploads; that bytes after the trailer are
