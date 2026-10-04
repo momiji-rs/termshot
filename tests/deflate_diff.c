@@ -1,5 +1,5 @@
-/* Differential test: src/deflate.c must write the same bytes as stock
-   stb_image_write's stbi_zlib_compress for every input and quality.
+/* Differential test: src/deflate.rs, linked as a static library, must write
+   the same bytes as stock stb_image_write's stbi_zlib_compress for every input and quality.
    Inputs are pseudorandom but cover what matters for the search: long runs,
    short repeats, data longer than the 32 KiB window, low- and high-entropy
    bytes, and tiny lengths. Built and run by test.sh. */
