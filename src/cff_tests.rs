@@ -69,6 +69,7 @@ fn hand_made_fonts_match_stb() {
         ("control", craft::control()),
         ("local subrs", craft::local_subrs()),
         ("FDSelect format 0", craft::fdselect_format_0()),
+        ("steps a float rounds away", craft::small_steps_cff()),
     ] {
         assert_eq!(same_as_stb(font), 2, "{name}");
     }
@@ -269,6 +270,27 @@ fn hand_made_cff2_fonts_draw_the_square() {
         assert_eq!(bounds, [100, 100, 600, 600], "{name}");
         assert_eq!(render(&parse(b"AAA", 3, 1), 3, 1, &font, 16.0, "target/test/cff2-square.png"), 0, "{name}");
     }
+}
+
+/// HarfBuzz runs CFF2 charstrings in doubles, so cff.rs does; stb, the
+/// reference for CFF, runs them in floats, where this glyph would stay at
+/// x = 8192. hb-vector draws it as M8192,0 L8192,0 L8191.999511719,0
+/// L8191.999023438,0 L8191.999023438,0 L8191.999023438,500
+/// L8191.999023438,0 L8192,0 Z: the first step and the last point round to
+/// 8192 as floats, so no line closes the contour.
+#[test]
+fn cff2_charstrings_add_in_doubles_as_harfbuzz_does() {
+    let font = craft::cff2_small_steps();
+    fs::write("target/test/cff2-small-steps.otf", &font).unwrap();
+    let font = font::prepare(font).unwrap();
+    let cff = font::cff_outlines(&font.data, font.start).unwrap().unwrap();
+    let (mut out, mut bounds) = (Vec::new(), [0; 4]);
+    assert_eq!(cff.glyph(1, &mut out, &mut bounds), Ok(true));
+    let points: Vec<(u8, i16, i16)> = out.iter().map(|v| (v.kind, v.x, v.y)).collect();
+    let (m, l) = (cff::MOVE, cff::LINE);
+    let steps = [(l, 8192, 0), (l, 8191, 0), (l, 8191, 0), (l, 8191, 0)];
+    assert_eq!(points, [&[(m, 8192, 0)][..], &steps, &[(l, 8191, 500), (l, 8191, 0), (l, 8192, 0)]].concat());
+    assert_eq!(bounds, [8191, 0, 8192, 500]);
 }
 
 #[test]
@@ -927,5 +949,28 @@ pub(crate) mod craft {
 
     pub fn cff2_endchar() -> Vec<u8> {
         sfnt2(&Cff2::new(vec![square2(), square()]))
+    }
+
+    /// A charstring 16.16 fixed-point number.
+    fn fixed(v: i32) -> Vec<u8> {
+        [vec![255], v.to_be_bytes().to_vec()].concat()
+    }
+
+    /// From x = 8192, four steps of -1/4096, up and back down, then 3/4096
+    /// right, without endchar. In f32 each step rounds back to 8192; in f64
+    /// the line ends at 8191.999, and the contour 1/4096 short of its start,
+    /// which is the start once drawn as a float.
+    fn small_steps() -> Vec<u8> {
+        let step = [fixed(-16), num(0)].concat().repeat(4);
+        let back = [num(0), num(-500), fixed(48), num(0), vec![RLINE]].concat();
+        [num(8192), num(0), vec![RMOVE], step, vec![RLINE], num(0), num(500), vec![RLINE], back].concat()
+    }
+
+    pub fn cff2_small_steps() -> Vec<u8> {
+        sfnt2(&Cff2::new(vec![square2(), small_steps()]))
+    }
+
+    pub fn small_steps_cff() -> Vec<u8> {
+        sfnt(&Cff::new(vec![square(), [small_steps(), vec![ENDCHAR]].concat()]).build(), 2)
     }
 }

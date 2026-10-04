@@ -222,6 +222,10 @@ outlines itself (`init_cff2`: metrics tables and the cmap subtable stb would pic
   under them. k is the region count of the ItemVariationData that `vsindex` names, so the
   variation store is read for its region counts, and its region list and data are checked to
   lie inside it. No `fvar` or `avar` is read.
+- **Arithmetic as HarfBuzz's**: CFF charstrings run in f32, as stb runs them; CFF2 ones run
+  in f64, as HarfBuzz runs them, and each point is drawn as the f32 HarfBuzz hands on, then
+  truncated. A contour is closed with a line where its ends differ as f32s. Steps of 1/4096
+  from x = 8192 show the difference: f32 rounds each one away (`cff_tests.rs`).
 - **Strict where CFF follows stb**: with no stb to match, a CFF2 charstring that breaks a CFF2
   rule (a `vsindex` past the store, a `blend` short of operands, a stack past 513, `endchar`)
   is an error for that glyph, which is drawn as the missing-glyph box. Everything else in the

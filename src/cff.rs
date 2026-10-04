@@ -10,9 +10,11 @@
 //! their default instance: `blend` keeps its default values and drops the
 //! deltas. A CFF2 table is checked as strictly. Of its variation store only
 //! the region counts are used, because they say how many operands each
-//! `blend` takes.
+//! `blend` takes. CFF charstrings run in f32, as stb runs them; CFF2 ones in
+//! f64, as HarfBuzz, the reference for CFF2, runs them.
 
 use std::collections::HashMap;
+use std::ops::{Add, Neg, Sub};
 
 /// stb_truetype's vertex kinds.
 pub const MOVE: u8 = 1;
@@ -286,7 +288,68 @@ impl From<Operand> for Count {
 
 impl From<f32> for Count {
     fn from(v: f32) -> Count {
+        Count::from(v as f64)
+    }
+}
+
+impl From<f64> for Count {
+    fn from(v: f64) -> Count {
         Count(if v >= 0.0 && v.fract() == 0.0 { Some(v as usize) } else { None })
+    }
+}
+
+/// A charstring number: f32 for CFF, as stb computes them, and f64 for CFF2,
+/// as HarfBuzz, the reference for CFF2, does.
+trait Num:
+    Copy + PartialOrd + std::fmt::Display + Add<Output = Self> + Sub<Output = Self> + Neg<Output = Self> + Into<Count>
+{
+    const ZERO: Self;
+    fn int(v: i16) -> Self;
+    /// A 16.16 fixed-point number.
+    fn fixed(v: i32) -> Self;
+    fn abs(self) -> Self;
+    /// A subroutine number, truncated.
+    fn to_i32(self) -> i32;
+    /// A coordinate as it is drawn: HarfBuzz hands its doubles to the
+    /// rasterizer as f32.
+    fn to_f32(self) -> f32;
+}
+
+impl Num for f32 {
+    const ZERO: f32 = 0.0;
+    fn int(v: i16) -> f32 {
+        v as f32
+    }
+    fn fixed(v: i32) -> f32 {
+        v as f32 / 65536.0
+    }
+    fn abs(self) -> f32 {
+        f32::abs(self)
+    }
+    fn to_i32(self) -> i32 {
+        self as i32
+    }
+    fn to_f32(self) -> f32 {
+        self
+    }
+}
+
+impl Num for f64 {
+    const ZERO: f64 = 0.0;
+    fn int(v: i16) -> f64 {
+        v as f64
+    }
+    fn fixed(v: i32) -> f64 {
+        v as f64 / 65536.0
+    }
+    fn abs(self) -> f64 {
+        f64::abs(self)
+    }
+    fn to_i32(self) -> i32 {
+        self as i32
+    }
+    fn to_f32(self) -> f32 {
+        self as f32
     }
 }
 
@@ -575,24 +638,12 @@ impl<'a> Font<'a> {
         if glyph >= self.glyphs {
             return Err(format!("glyph {glyph} is out of range"));
         }
-        let mut pen = Pen {
-            out,
-            started: false,
-            first_x: 0.0,
-            first_y: 0.0,
-            x: 0.0,
-            y: 0.0,
-            min_x: 0,
-            max_x: 0,
-            min_y: 0,
-            max_y: 0,
-        };
-        let drawn = run(self, glyph, &mut pen)?;
-        if !drawn || pen.out.is_empty() {
-            pen.out.clear();
+        let (drawn, box_) = if self.cff2 { draw::<f64>(self, glyph, out)? } else { draw::<f32>(self, glyph, out)? };
+        if !drawn || out.is_empty() {
+            out.clear();
             return Ok(false);
         }
-        *bounds = [pen.min_x, pen.min_y, pen.max_x, pen.max_y];
+        *bounds = box_;
         if bounds.iter().any(|&v| i16::try_from(v).is_err()) {
             *bounds = [0; 4];
             return Err(format!("glyph {glyph} reaches past 16-bit coordinates"));
@@ -601,22 +652,45 @@ impl<'a> Font<'a> {
     }
 }
 
+/// Run `glyph`'s charstring in numbers of type N: whether it drew, and its box.
+fn draw<N: Num>(font: &Font, glyph: usize, out: &mut Vec<Vertex>) -> Result<(bool, [i32; 4]), String> {
+    let mut pen = Pen {
+        out,
+        started: false,
+        first_x: N::ZERO,
+        first_y: N::ZERO,
+        x: N::ZERO,
+        y: N::ZERO,
+        min_x: 0,
+        max_x: 0,
+        min_y: 0,
+        max_y: 0,
+    };
+    let drawn = run(font, glyph, &mut pen)?;
+    Ok((drawn, [pen.min_x, pen.min_y, pen.max_x, pen.max_y]))
+}
+
 /// stbtt__csctx, with both of stb's passes in one: the box from the full
 /// 32-bit coordinates, the vertices truncated to 16 bits.
-struct Pen<'v> {
+struct Pen<'v, N> {
     out: &'v mut Vec<Vertex>,
     started: bool,
-    first_x: f32,
-    first_y: f32,
-    x: f32,
-    y: f32,
+    first_x: N,
+    first_y: N,
+    x: N,
+    y: N,
     min_x: i32,
     max_x: i32,
     min_y: i32,
     max_y: i32,
 }
 
-impl Pen<'_> {
+/// A coordinate as a vertex has it.
+fn coord<N: Num>(v: N) -> i32 {
+    v.to_f32() as i32
+}
+
+impl<N: Num> Pen<'_, N> {
     fn track(&mut self, x: i32, y: i32) {
         if x > self.max_x || !self.started {
             self.max_x = x;
@@ -652,35 +726,37 @@ impl Pen<'_> {
         });
     }
 
+    /// Close the contour, with a line back to its start where it ends
+    /// elsewhere. The ends are compared as drawn, as HarfBuzz compares them.
     fn close(&mut self) {
-        if self.first_x != self.x || self.first_y != self.y {
-            self.vertex(LINE, self.first_x as i32, self.first_y as i32, 0, 0, 0, 0);
+        if self.first_x.to_f32() != self.x.to_f32() || self.first_y.to_f32() != self.y.to_f32() {
+            self.vertex(LINE, coord(self.first_x), coord(self.first_y), 0, 0, 0, 0);
         }
     }
 
-    fn move_to(&mut self, dx: f32, dy: f32) {
+    fn move_to(&mut self, dx: N, dy: N) {
         self.close();
-        self.x += dx;
-        self.y += dy;
+        self.x = self.x + dx;
+        self.y = self.y + dy;
         self.first_x = self.x;
         self.first_y = self.y;
-        self.vertex(MOVE, self.x as i32, self.y as i32, 0, 0, 0, 0);
+        self.vertex(MOVE, coord(self.x), coord(self.y), 0, 0, 0, 0);
     }
 
-    fn line_to(&mut self, dx: f32, dy: f32) {
-        self.x += dx;
-        self.y += dy;
-        self.vertex(LINE, self.x as i32, self.y as i32, 0, 0, 0, 0);
+    fn line_to(&mut self, dx: N, dy: N) {
+        self.x = self.x + dx;
+        self.y = self.y + dy;
+        self.vertex(LINE, coord(self.x), coord(self.y), 0, 0, 0, 0);
     }
 
-    fn curve_to(&mut self, dx1: f32, dy1: f32, dx2: f32, dy2: f32, dx3: f32, dy3: f32) {
+    fn curve_to(&mut self, dx1: N, dy1: N, dx2: N, dy2: N, dx3: N, dy3: N) {
         let cx1 = self.x + dx1;
         let cy1 = self.y + dy1;
         let cx2 = cx1 + dx2;
         let cy2 = cy1 + dy2;
         self.x = cx2 + dx3;
         self.y = cy2 + dy3;
-        self.vertex(CUBIC, self.x as i32, self.y as i32, cx1 as i32, cy1 as i32, cx2 as i32, cy2 as i32);
+        self.vertex(CUBIC, coord(self.x), coord(self.y), coord(cx1), coord(cy1), coord(cx2), coord(cy2));
     }
 }
 
@@ -732,10 +808,10 @@ fn subr<'a>(index: &Index<'a>, n: i32) -> Option<&'a [u8]> {
 /// stbtt__run_charstring. Ok(false) where stb returns 0. For CFF2, the same
 /// with its changes: a charstring and a subroutine end where their data
 /// does, as there is no endchar or return, and blend and vsindex.
-fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
+fn run<N: Num>(font: &Font, glyph: usize, c: &mut Pen<N>) -> Result<bool, String> {
     let mut in_header = true;
     let mut maskbits = 0usize;
-    let mut stack = [0f32; MAX_STACK_CFF2];
+    let mut stack = [N::ZERO; MAX_STACK_CFF2];
     let max_stack = if font.cff2 { MAX_STACK_CFF2 } else { MAX_STACK };
     let mut sp = 0usize;
     let mut calls: Vec<Cursor> = Vec::with_capacity(MAX_SUBR_DEPTH);
@@ -789,14 +865,14 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
                 if sp < 1 {
                     return Ok(false);
                 }
-                c.move_to(0.0, s[sp - 1]);
+                c.move_to(N::ZERO, s[sp - 1]);
             }
             0x16 => {
                 in_header = false;
                 if sp < 1 {
                     return Ok(false);
                 }
-                c.move_to(s[sp - 1], 0.0);
+                c.move_to(s[sp - 1], N::ZERO);
             }
             0x05 => {
                 if sp < 2 {
@@ -815,9 +891,9 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
                 let mut horizontal = b0 == 0x06;
                 while i < sp {
                     if horizontal {
-                        c.line_to(s[i], 0.0);
+                        c.line_to(s[i], N::ZERO);
                     } else {
-                        c.line_to(0.0, s[i]);
+                        c.line_to(N::ZERO, s[i]);
                     }
                     horizontal = !horizontal;
                     i += 1;
@@ -830,11 +906,11 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
                 }
                 let mut vertical = b0 == 0x1e;
                 while i + 3 < sp {
-                    let last = if sp - i == 5 { s[i + 4] } else { 0.0 };
+                    let last = if sp - i == 5 { s[i + 4] } else { N::ZERO };
                     if vertical {
-                        c.curve_to(0.0, s[i], s[i + 1], s[i + 2], s[i + 3], last);
+                        c.curve_to(N::ZERO, s[i], s[i + 1], s[i + 2], s[i + 3], last);
                     } else {
-                        c.curve_to(s[i], 0.0, s[i + 1], s[i + 2], last, s[i + 3]);
+                        c.curve_to(s[i], N::ZERO, s[i + 1], s[i + 2], last, s[i + 3]);
                     }
                     vertical = !vertical;
                     i += 4;
@@ -882,18 +958,18 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
                 if sp < 4 {
                     return Ok(false);
                 }
-                let mut f = 0.0;
+                let mut f = N::ZERO;
                 if sp & 1 != 0 {
                     f = s[i];
                     i += 1;
                 }
                 while i + 3 < sp {
                     if b0 == 0x1b {
-                        c.curve_to(s[i], f, s[i + 1], s[i + 2], s[i + 3], 0.0);
+                        c.curve_to(s[i], f, s[i + 1], s[i + 2], s[i + 3], N::ZERO);
                     } else {
-                        c.curve_to(f, s[i], s[i + 1], s[i + 2], 0.0, s[i + 3]);
+                        c.curve_to(f, s[i], s[i + 1], s[i + 2], N::ZERO, s[i + 3]);
                     }
-                    f = 0.0;
+                    f = N::ZERO;
                     i += 4;
                 }
             }
@@ -904,7 +980,7 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
                 }
                 let index = if b0 == 0x0a { *local.get_or_insert_with(|| font.local_subrs(glyph)) } else { font.gsubrs };
                 sp -= 1;
-                let v = stack[sp] as i32;
+                let v = stack[sp].to_i32();
                 if calls.len() >= MAX_SUBR_DEPTH {
                     return Ok(false);
                 }
@@ -924,7 +1000,7 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
                 let Some(&v) = s.last() else {
                     return Err(format!("glyph {glyph}: vsindex with no operand"));
                 };
-                let index = match Count::from(v) {
+                let index = match v.into() {
                     Count(Some(index)) if index < font.regions.len() => index,
                     _ => return Err(format!("glyph {glyph}: vsindex {v}, with {} ItemVariationData", font.regions.len())),
                 };
@@ -952,15 +1028,15 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
             }
             0x0c => {
                 let b1 = b.get8();
-                let at = |k: usize| s.get(k).copied().unwrap_or(0.0);
+                let at = |k: usize| s.get(k).copied().unwrap_or(N::ZERO);
                 match b1 {
                     0x22 => {
                         // hflex
                         if sp < 7 {
                             return Ok(false);
                         }
-                        c.curve_to(at(0), 0.0, at(1), at(2), at(3), 0.0);
-                        c.curve_to(at(4), 0.0, at(5), -at(2), at(6), 0.0);
+                        c.curve_to(at(0), N::ZERO, at(1), at(2), at(3), N::ZERO);
+                        c.curve_to(at(4), N::ZERO, at(5), -at(2), at(6), N::ZERO);
                     }
                     0x23 => {
                         // flex
@@ -975,8 +1051,8 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
                         if sp < 9 {
                             return Ok(false);
                         }
-                        c.curve_to(at(0), at(1), at(2), at(3), at(4), 0.0);
-                        c.curve_to(at(5), 0.0, at(6), at(7), at(8), -(at(1) + at(3) + at(7)));
+                        c.curve_to(at(0), at(1), at(2), at(3), at(4), N::ZERO);
+                        c.curve_to(at(5), N::ZERO, at(6), at(7), at(8), -(at(1) + at(3) + at(7)));
                     }
                     0x25 => {
                         // flex1
@@ -1002,11 +1078,11 @@ fn run(font: &Font, glyph: usize, c: &mut Pen) -> Result<bool, String> {
                     return Ok(false); // reserved operator
                 }
                 let f = match b0 {
-                    255 => b.get(4) as i32 as f32 / 65536.0,
-                    28 => b.get(2) as i16 as f32,
-                    32..=246 => (b0 as i32 - 139) as i16 as f32,
-                    247..=250 => ((b0 as i32 - 247) * 256 + b.get8() as i32 + 108) as i16 as f32,
-                    _ => (-(b0 as i32 - 251) * 256 - b.get8() as i32 - 108) as i16 as f32,
+                    255 => N::fixed(b.get(4) as i32),
+                    28 => N::int(b.get(2) as i16),
+                    32..=246 => N::int((b0 as i32 - 139) as i16),
+                    247..=250 => N::int(((b0 as i32 - 247) * 256 + b.get8() as i32 + 108) as i16),
+                    _ => N::int((-(b0 as i32 - 251) * 256 - b.get8() as i32 - 108) as i16),
                 };
                 if sp >= max_stack {
                     if font.cff2 {
