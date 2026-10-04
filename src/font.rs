@@ -8,6 +8,7 @@
 //! the outlines through a Face.
 
 use crate::cff;
+use crate::variations;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 use std::fs;
@@ -62,13 +63,20 @@ pub struct Font {
     /// Set when a collection of several faces was given without picking one:
     /// what was used and how to pick another.
     pub hint: Option<String>,
+    /// The instance of a CFF2 face drawn: normalized coordinates, as
+    /// cff::Font::parse_cff2 takes them.
+    pub coords: Vec<i32>,
+    /// The axis settings that picked it, for -v.
+    pub instance: Option<String>,
 }
 
-/// A --font value: the file, and the face named after a `#`, if any.
+/// A --font value: the file, the face named after a `#`, if any, and the
+/// axis settings after a last `#`, if any.
 #[derive(Debug, PartialEq)]
 pub struct Spec {
     pub path: String,
     pub face: Option<String>,
+    pub axes: Option<String>,
 }
 
 impl Spec {
@@ -79,9 +87,14 @@ impl Spec {
     /// exist, are refused rather than guessed between. Decided once, before
     /// any output is created, so that creating one can't change what a value
     /// means.
+    ///
+    /// After the path, a last `#` part with a `=` in it is axis settings, as
+    /// in `a.otf#wght=700` or `a.ttc#1#wght=700`, checked here as
+    /// variations::parse reads them. So a face whose name has a `=` in it is
+    /// picked by number, or with axis settings after it.
     pub fn parse(value: &str) -> Result<Spec, String> {
         if Path::new(value).exists() {
-            return Ok(Spec { path: value.into(), face: None });
+            return Ok(Spec { path: value.into(), face: None, axes: None });
         }
         let files: Vec<usize> =
             value.match_indices('#').map(|(at, _)| at).filter(|&at| Path::new(&value[..at]).is_file()).collect();
@@ -93,10 +106,25 @@ impl Spec {
                 return Err(format!("{value:?} could name a face of {first} or of {second}; rename one of them"));
             }
         };
-        Ok(match at {
-            Some(at) => Spec { path: value[..at].into(), face: Some(value[at + 1..].into()) },
-            None => Spec { path: value.into(), face: None },
-        })
+        let Some(at) = at else {
+            return Ok(Spec { path: value.into(), face: None, axes: None });
+        };
+        let (path, rest) = (&value[..at], &value[at + 1..]);
+        let (before, last) = rest.rsplit_once('#').map_or((None, rest), |(before, last)| (Some(before), last));
+        let (face, axes) = if last.contains('=') { (before, Some(last)) } else { (Some(rest), None) };
+        if let Some(axes) = axes {
+            variations::parse(axes).map_err(|reason| format!("{value}: {reason}"))?;
+        }
+        Ok(Spec { path: path.into(), face: face.map(Into::into), axes: axes.map(Into::into) })
+    }
+
+    /// The value as given: the path, then the face and axis settings.
+    pub fn name(&self) -> String {
+        let mut name = self.path.clone();
+        for part in [&self.face, &self.axes].into_iter().flatten() {
+            name += &format!("#{part}");
+        }
+        name
     }
 }
 
@@ -127,7 +155,10 @@ pub fn load_timed(spec: &Spec, timings: &mut LoadTimings) -> Result<Font, String
     timings.read_ms = opened + ms(started);
     timings.bytes = data.len();
     let started = Instant::now();
-    let font = choose(data, spec.face.as_deref(), path)?;
+    let mut font = choose(data, spec.face.as_deref(), path)?;
+    if let Some(axes) = &spec.axes {
+        vary(&mut font, axes, path)?;
+    }
     timings.check_ms = ms(started);
     let started = Instant::now();
     let font = pad(font);
@@ -163,7 +194,7 @@ pub fn prepare_timed(bytes: &[u8], timings: &mut LoadTimings) -> Result<Font, St
 fn check_first(data: Vec<u8>) -> Result<Font, String> {
     let start = faces(&data)?[0].ok_or("face #0 is not a font")?;
     check_at(&data, start)?;
-    Ok(Font { data, start, face: None, hint: None })
+    Ok(Font { data, start, face: None, hint: None, coords: Vec::new(), instance: None })
 }
 
 fn pad(mut font: Font) -> Font {
@@ -193,7 +224,7 @@ impl Font {
             cff,
             font: PhantomData,
         };
-        Ok(match cff_outlines(&self.data, self.start)? {
+        Ok(match cff_outlines(&self.data, self.start, &self.coords)? {
             None => f(&face(None, std::ptr::null())),
             Some(cff) => f(&face(Some(outline), &cff as *const cff::Font as *const c_void)),
         })
@@ -267,7 +298,37 @@ fn choose(data: Vec<u8>, face: Option<&str>, path: &str) -> Result<Font, String>
         )
     });
     let face = collection.then(|| (index, display_name(&data, start)));
-    Ok(Font { data, start, face, hint })
+    Ok(Font { data, start, face, hint, coords: Vec::new(), instance: None })
+}
+
+/// Draw `font`, a checked face, at the instance the axis settings `axes`
+/// pick. Only CFF2 outlines vary here; anything else is refused, as is an
+/// axis the face does not have. `path` is for messages.
+fn vary(font: &mut Font, axes: &str, path: &str) -> Result<(), String> {
+    let settings = variations::parse(axes).map_err(|reason| format!("{path}#{axes}: {reason}"))?;
+    let (d, start) = (&font.data, font.start);
+    let refuse = |reason: &str| format!("{path}: cannot set {axes}: {reason}");
+    if table(d, start, b"glyf")?.is_some() {
+        return Err(refuse("termshot varies CFF2 outlines only, and this face has TrueType (glyf) ones"));
+    }
+    if table(d, start, b"CFF ")?.is_some() {
+        return Err(refuse("termshot varies CFF2 outlines only, and this face has CFF ones, which do not vary"));
+    }
+    let Some(fvar) = table(d, start, b"fvar")? else {
+        return Err(refuse("the face has no axes (no fvar table)"));
+    };
+    let unusable = |table: &str, reason: String| format!("{path}: not a usable font: {table}: {reason}");
+    let all = variations::axes(fvar.data).map_err(|reason| unusable("fvar", reason))?;
+    let maps = match table(d, start, b"avar")? {
+        Some(avar) => variations::segment_maps(avar.data, all.len()).map_err(|reason| unusable("avar", reason))?,
+        None => Vec::new(),
+    };
+    font.coords = variations::coords(&all, &maps, &settings).map_err(|reason| format!("{path}: {reason}"))?;
+    // The store is checked against fvar only at an instance, so check it
+    // again now, at load, rather than when drawing.
+    cff_outlines(&font.data, font.start, &font.coords).map_err(|reason| format!("{path}: not a usable font: {reason}"))?;
+    font.instance = Some(variations::instance(&all, &settings));
+    Ok(())
 }
 
 /// Where each face starts: a single font is one face at 0. The same offsets
@@ -470,15 +531,16 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
         return Err(format!("hmtx is {} bytes, needs {hmtx_needed}", hmtx.len()));
     }
     // stb draws a face without glyf from its CFF table.
-    if cff_outlines(d, start)?.is_none() {
+    if cff_outlines(d, start, &[])?.is_none() {
         check_glyf(d, start, head, glyph_count)?;
     }
     check_cmap(cmap, glyph_count)
 }
 
 /// The CFF outlines of a face without glyf, parsed and checked; None for a
-/// TrueType face.
-pub fn cff_outlines(d: &[u8], start: usize) -> Result<Option<cff::Font<'_>>, String> {
+/// TrueType face. A CFF2 face is drawn at the instance at `coords`, as
+/// cff::Font::parse_cff2 takes them.
+pub fn cff_outlines<'a>(d: &'a [u8], start: usize, coords: &[i32]) -> Result<Option<cff::Font<'a>>, String> {
     if table(d, start, b"glyf")?.is_some() {
         return Ok(None);
     }
@@ -490,7 +552,7 @@ pub fn cff_outlines(d: &[u8], start: usize) -> Result<Option<cff::Font<'_>>, Str
     let Some(cff2) = table(d, start, b"CFF2")? else {
         return Err(no_outlines(d, start)?);
     };
-    cff::Font::parse_cff2(cff2.data, glyphs).map(Some).map_err(|reason| format!("CFF2 table: {reason}"))
+    cff::Font::parse_cff2(cff2.data, glyphs, coords).map(Some).map_err(|reason| format!("CFF2 table: {reason}"))
 }
 
 /// Check the loca and glyf tables of a TrueType face.
@@ -930,11 +992,11 @@ pub mod tests {
         let path = "target/test/hash-names.ttc";
         fs::write(path, collection(&[(&font, "Foo"), (&font, "Foo #1")])).unwrap();
         let spec = Spec::parse(&format!("{path}#Foo #1")).unwrap();
-        assert_eq!(spec, Spec { path: path.into(), face: Some("Foo #1".into()) });
+        assert_eq!(spec, Spec { path: path.into(), face: Some("Foo #1".into()), axes: None });
         assert_eq!(load(&spec).unwrap().face, Some((1, "Foo #1".into())));
         // With no such file, the path ends at the first #.
         let spec = Spec::parse("target/test/absent.ttc#Foo #1").unwrap();
-        assert_eq!(spec, Spec { path: "target/test/absent.ttc".into(), face: Some("Foo #1".into()) });
+        assert_eq!(spec, Spec { path: "target/test/absent.ttc".into(), face: Some("Foo #1".into()), axes: None });
         // Two files that the value could start with: neither is guessed.
         let other = format!("{path}#Foo");
         fs::write(&other, collection(&[(&font, "Bar#1")])).unwrap();

@@ -149,9 +149,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Variable fonts with CFF2 outlines, such as the variable Noto Sans CJK and
   Source Han Sans builds, are drawn at their default instance (#51), where
   they were refused. `src/cff.rs` reads the CFF2 table with the same checks
-  and the same per-glyph limit as CFF; `blend` keeps its default values.
-  Choosing another instance (a weight, say) is not supported yet. A damaged
-  CFF2 table is refused with a reason (exit 1).
+  and the same per-glyph limit as CFF. A damaged CFF2 table is refused with
+  a reason (exit 1).
+- Choose the instance of a CFF2 variable font after a `#` in `--font` or
+  `--fallback-font`: `NotoSansCJKtc-VF.otf#wght=700`, or
+  `FILE.ttc#1#wght=700,wdth=90` with a face (#51). Each setting is clamped to
+  its axis's range, mapped through `avar`, and its outlines blended as
+  HarfBuzz blends them; the outlines of every character of the CFF2 test
+  font match hb-vector's at three weights. `-v` prints the instance. Bad
+  syntax exits 2. An axis the font lacks exits 1 and lists those it has; a
+  font whose outlines don't vary here (TrueType or CFF) exits 1 with that
+  reason. Metrics stay the default instance's (`HVAR` and `MVAR` are not
+  applied yet, #77), so a heavy instance as the main font crowds its cells.
 - Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
   is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
   outline is slanted 12 degrees before it is rasterized, so it is as smooth
