@@ -118,9 +118,24 @@ fn split(body: &[u8]) -> Option<(u32, &[u8])> {
     Some((p2, &body[q + 1..]))
 }
 
-/// Whether any string in the log is a Sixel image that ST commits, so its
-/// placement may move the text cursor by rows of the font's cell height.
+/// Whether this DCS string (its bytes after ESC P, through the terminator
+/// `crate::skip_string` stopped after) is a Sixel image that ST commits, so
+/// its placement may move the text cursor by rows of the font's cell height.
+/// `crate::needs_cell_metrics` hands it every DCS string of a log.
+pub fn string_needs_cell_metrics(s: &[u8]) -> bool {
+    s.strip_suffix(b"\x1b\\").is_some_and(|body| split(body).is_some())
+}
+
+/// The Sixel half of `crate::needs_cell_metrics`, for tests.
+#[cfg(test)]
 pub fn needs_cell_metrics(data: &[u8]) -> bool {
+    crate::any_string(data, |kind, s| kind == b'P' && string_needs_cell_metrics(s))
+}
+
+/// The byte-at-a-time scan `string_needs_cell_metrics` replaced (main
+/// `a8a95e0`), kept as the reference the differential test compares it with.
+#[cfg(test)]
+pub fn needs_cell_metrics_reference(data: &[u8]) -> bool {
     let mut i = 0;
     while i + 1 < data.len() {
         if data[i] == 0x1b && matches!(data[i + 1], b']' | b'P' | b'_' | b'^' | b'X') {

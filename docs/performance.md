@@ -1,6 +1,9 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[text-only pre-scan](#text-only-runs-one-pre-scan-instead-of-two-2026-10-03-macos-only)
+(2026-10-03, after main `a8a95e0`) changed only how a run without a PNG
+decides whether it needs fonts. The
 [painting round](#painting-and-geometry-2026-10-03-721d3fe-22) (2026-10-03,
 `721d3fe`, #22) changed only painting in `src/draw.c` and adds the `draw`
 workloads. The
@@ -22,6 +25,87 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## Text-only runs: one pre-scan instead of two (2026-10-03, macOS only)
+
+A `--text` or `--json` run without a PNG reads fonts only when the log has a
+kitty command or a Sixel image that needs cell metrics. The
+[parser round](#remaining-limits-1) found that deciding this took 5.9 ms on
+`ansi-replay` against 8.1 ms of parsing: `graphics::needs_cell_metrics` and
+`sixel::needs_cell_metrics` each walked the whole log a byte at a time.
+
+Now one pass decides both (`needs_cell_metrics` in `main.rs`). A skipped
+string passes no ESC but an ST's, so the old walks never skipped past an
+`ESC P` or `ESC _`; the pass therefore only looks for those two pairs,
+sixteen bytes at a time and without a branch on where the ESCs fall, and
+hands each DCS and APC string, in order, to the same checks as before
+(`graphics::CellMetricsScan`, `sixel::string_needs_cell_metrics`). The
+decision is the same: `src/prescan_tests.rs` compares it, and each half,
+with the old scans (kept as `needs_cell_metrics_reference`) on every log
+in `tests/fixtures/`, `tests/vt/real/`, `examples/` and `tests/perf/`, on
+every 64th prefix of each, on each with its `C=1` turned into `C=0`, and
+on 20,000 generated or mutated logs (`TERMSHOT_FUZZ_ROUNDS`,
+`TERMSHOT_FUZZ_SEED`). Fifteen deliberate breakages of the new code (the
+numbered-image bound, relative and virtual puts, `C=1`, puts of images
+never sent, ST, the scan's word boundaries and tail) each fail it.
+
+`scripts/bench.py --suite text` (also in `all`) runs seven text-only cases (`--size 100x30
+--text`, built-in font, no PNG); each checks `font_builtin`, so a case
+that reads a font it should not, or skips one it needs, fails. Apple M2 Max,
+macOS 26.6.2, rustc 1.98.1, Apple clang 21.0.0; main `a8a95e0` (sha256
+`345dc4507209…`) against it with this change (`2fb0770600c5…`); 5 warmups,
+40 interleaved rounds, 5 peak-RSS runs, seeds 17 (batch A) and 29 (B); load
+average (1 min) 4.7 → 4.4 in A and 4.4 → 4.1 in B, a shared desktop. Batch
+A, CLI wall time median / p95 (ms), the paired speedup with its 95%
+bootstrap interval, and the `font_load_ms` and `parse_ms` stage medians:
+
+| case | input bytes | main wall | branch wall | wall speedup A | `font_load_ms` | `parse_ms` | font read | peak RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `text-ansi-replay` | 4,716,750 | 18.82 / 19.56 | 13.61 / 14.24 | 1.378 [1.364, 1.393] | 5.941 → 0.663 | 8.17 → 8.22 | no | 6.5 → 6.5 |
+| `text-ascii-overflow` | 4,000,000 | 8.14 / 8.69 | 5.02 / 5.35 | 1.618 [1.591, 1.650] | 3.604 → 0.533 | 0.34 → 0.35 | no | 5.9 → 5.9 |
+| `text-dense-sgr` | 3,940,713 | 22.52 / 23.24 | 16.56 / 17.00 | 1.362 [1.356, 1.371] | 6.483 → 0.523 | 11.83 → 11.83 | no | 5.7 → 5.7 |
+| `text-mixed-unicode` | 4,286,028 | 29.60 / 30.08 | 26.63 / 27.44 | 1.111 [1.108, 1.117] | 3.840 → 0.578 | 21.32 → 21.65 | no | 6.2 → 6.2 |
+| `text-reply-sent` | 18,867 | 3.08 / 3.52 | 3.10 / 3.31 | 0.992 [0.972, 1.019] | 0.027 → 0.005 | 0.05 → 0.05 | no | 2.0 → 2.0 |
+| `text-kitty` | 87,747 | 3.81 / 4.16 | 3.84 / 4.17 | 0.991 [0.959, 1.018] | 0.230 → 0.230 | 0.44 → 0.44 | yes | 3.8 → 3.8 |
+| `text-sixel` | 386 | 3.42 / 3.67 | 3.36 / 3.75 | 1.014 [1.004, 1.031] | 0.231 → 0.233 | 0.04 → 0.05 | yes | 3.6 → 3.6 |
+
+Batch B agrees: wall speedups 1.389, 1.611, 1.359, 1.109, 1.023, 0.971
+and 0.991, `font_load_ms` 5.934 → 0.664 on `text-ansi-replay`. The pass
+now costs 0.13-0.14 ns a byte on these logs, ESC-dense or not; the old walks
+cost 0.9-1.6. A log whose first image needs metrics stops the scan there
+(`text-kitty`, `text-sixel`), so those are unchanged; `text-kitty`'s 0.971
+[0.943, 0.997] in batch B is outside every timer (its `total_ms` median is
+0.863 → 0.851 ms), and its batch A interval holds 1. `text-mixed-unicode`'s `parse_ms`
+is 1.5% higher in both batches although the parser did not change; the
+wall time still falls by 3 ms.
+
+Tried and dropped (`font_load_ms` medians of 31 runs, ms, on `ansi-replay`,
+`dense-sgr` and 4 MB of `x`): the two old checks behind one pass that finds
+each ESC eight bytes at a time and tests the byte after it, 0.79 / 1.84 /
+0.32, slow where ESCs are dense; testing the pair eight bytes at a time,
+0.86 / 0.70 / 0.71; skipping a 32-byte block with no ESC before testing
+pairs, 1.20 / 1.02 / 0.43; four words a step instead of two, 1.44 / 1.16 /
+1.18. The kept version gives 0.65 / 0.54 / 0.53. Deciding during the real
+parse was not tried: the parser needs the cell size before it starts, so it
+would have to replay the log again after the first image, and its answer
+(the image really loaded) is not the conservative one the contract keeps.
+
+Raw results: [batch A](performance-2026-10-03-prescan-macos-a.json),
+[batch B](performance-2026-10-03-prescan-macos-b.json). Linux was not
+measured. These two files predate `output_bytes` and `output_sha256`: their
+`png_bytes` and `png_sha256` are the text file's (`workload.output` is
+`text`); `bench.py` now writes `output_*` for every case and `png_*` only
+for a PNG.
+
+```sh
+./build.sh && cp termshot /tmp/ts/branch   # and main a8a95e0 as /tmp/ts/main
+for batch in a:17 b:29; do
+  python3 scripts/bench.py --suite text \
+    --binary main=/tmp/ts/main --binary branch=/tmp/ts/branch --reference main \
+    --runs 40 --warmups 5 --memory-runs 5 --verify-identical \
+    --seed "${batch#*:}" --output "/tmp/ts/text-${batch%%:*}.json"
+done
+```
 
 ## Painting and geometry (2026-10-03, `721d3fe`, #22)
 
@@ -713,7 +797,8 @@ read-only data. `TERMSHOT_PROFILE` costs the same as before
 
 ### Remaining limits
 
-- **Text-only runs scan the log twice before parsing it.** With `--text` or
+- **Text-only runs scan the log twice before parsing it** (since done in
+  one pass: see [the text-only pre-scan](#text-only-runs-one-pre-scan-instead-of-two-2026-10-03-macos-only)). With `--text` or
   `--json` and no PNG, `graphics::needs_cell_metrics` and
   `sixel::needs_cell_metrics` look for an image that needs font metrics a
   byte at a time: 5.9 ms on `ansi-replay` against 8.1 ms of parsing (M2

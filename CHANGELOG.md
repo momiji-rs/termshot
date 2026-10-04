@@ -192,10 +192,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `face_ms`, and counts glyph cache evictions, missing glyphs and fallback
   lookups and rasterizations (#19). The built-in font's `font_check_ms` no
   longer includes copying and padding it.
-- The README's Speed section quotes the 2026-10-03 baseline (Apple M2 Max
-  and Ryzen 7 8745HS, `22b77e8`) with its workloads, fonts, image sizes and
-  statistic, links the versioned report, and keeps the 2026-10-01 Apple M3
-  rounds and the "~20 ms" figure apart as history (#23).
+- The README's Speed section quotes the latest measured round (Apple M2 Max
+  and Ryzen 7 8745HS, `721d3fe`, after #20, #21 and #22) with its
+  workloads, fonts, image sizes, revision and statistic, adds a text-only
+  run, links the versioned report, and keeps the first 2026-10-03 baseline
+  (`22b77e8`), the 2026-10-01 Apple M3 rounds and the "~20 ms" figure apart
+  as history (#23).
 - PNG compression is faster and writes the same bytes (#20). Adler-32 no
   longer needs a 32-bit vector multiply, which baseline x86-64 lacks, and
   the match loop inlines its per-token helpers and reverses Huffman codes
@@ -225,6 +227,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Apple M2 Max and in 16.1 instead of 19.2 on a Ryzen 7 8745HS, and Thai,
   mixed-script and scrolling logs parse 1.8-2.6 times as fast.
   `docs/performance.md` has the measurements.
+- `--text` and `--json` runs without a PNG decide whether they need fonts in
+  one pass over the log, sixteen bytes at a time, instead of two passes a
+  byte at a time; they read a font for exactly the same logs as before. The
+  4.7 MB ANSI replay's text takes 13.6 ms instead of 18.8 on an Apple M2 Max,
+  and the decision 0.66 ms instead of 5.9. `scripts/bench.py --suite text`
+  measures these runs; `docs/performance.md` has the measurements.
 
 ### Fixed
 

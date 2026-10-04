@@ -12,6 +12,12 @@ import json
 from pathlib import Path
 import statistics
 
+
+def output(entry, field):
+    """A binary's output size or hash: output_* since the text suite, png_*
+    in earlier reports."""
+    return entry.get(f'output_{field}', entry.get(f'png_{field}'))
+
 # Stages that do not overlap (docs/performance.md, "Stage timings"), so
 # their medians can be ranked side by side. foreground_other is foreground
 # minus its three child timers; font_load holds every font_* and fallback_* timer.
@@ -58,13 +64,13 @@ def main():
     print()
     head = ' | '.join(f'{label} wall med / p95' for label in labels)
     print(f'| case | {head} | ' + ' | '.join(f'{label} CPU' for label in labels)
-          + ' | ' + ' | '.join(f'{label} RSS MiB' for label in labels) + ' | PNG bytes |')
+          + ' | ' + ' | '.join(f'{label} RSS MiB' for label in labels) + ' | output bytes |')
     print('| --- |' + ' ---: |' * (3 * len(labels) + 1))
     for name, case in first['cases'].items():
         walls = ' | '.join(f"{fmt(case[l]['wall_ms']['median'])} / {fmt(case[l]['wall_ms']['p95'])}" for l in labels)
         cpus = ' | '.join(fmt(case[l]['child_cpu_ms']['median']) for l in labels)
         rss = ' | '.join(fmt(case[l]['peak_rss_bytes']['median'] / 2**20) if case[l]['peak_rss_bytes'] else '-' for l in labels)
-        print(f"| {name} | {walls} | {cpus} | {rss} | {case[labels[0]]['png_bytes']:,} |")
+        print(f"| {name} | {walls} | {cpus} | {rss} | {output(case[labels[0]], 'bytes'):,} |")
     print()
     others = [l for l in labels if l != ref]
     if ref and others:
@@ -101,12 +107,12 @@ def main():
     print()
     hashes = {}
     for name, case in first['cases'].items():
-        hashes.setdefault(case[labels[0]]['png_sha256'], []).append(name)
+        hashes.setdefault(output(case[labels[0]], 'sha256'), []).append(name)
     same = [names for names in hashes.values() if len(names) > 1]
-    print('Identical PNGs across cases: ' + ('; '.join(' = '.join(n) for n in same) or 'none'))
-    agree = all(b['cases'][n][l]['png_sha256'] == first['cases'][n][labels[0]]['png_sha256']
+    print('Identical outputs across cases: ' + ('; '.join(' = '.join(n) for n in same) or 'none'))
+    agree = all(output(b['cases'][n][l], 'sha256') == output(first['cases'][n][labels[0]], 'sha256')
                 for b in batches for n in first['cases'] for l in labels)
-    print(f'All binaries and batches give the same PNG per case: {agree}')
+    print(f'All binaries and batches give the same output per case: {agree}')
     for b, path in zip(batches, a.results):
         for name, cold in b.get('cold', {}).items():
             warm = b['cases'][name]
