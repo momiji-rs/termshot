@@ -188,9 +188,9 @@ fn compressed_payloads_are_capped_at_their_decoded_size_plus_1_kib() {
     assert_eq!(cap("o=z,s=2,v=3"), 24 + COMPRESSION_SLACK);
     assert_eq!(cap("o=z,f=32,s=8192,v=8192"), MAX_BYTES + COMPRESSION_SLACK);
     assert_eq!(cap("o=z,f=32,s=4294967295,v=4294967295"), MAX_BYTES);
-    // A compressed PNG, and anything uncompressed, keep the payload limit.
+    // A compressed PNG keeps the payload limit; uncompressed RGB gets 10 bytes.
     assert_eq!(cap("o=z,f=100,S=80"), MAX_BYTES);
-    assert_eq!(cap("f=24,s=1,v=1"), MAX_BYTES);
+    assert_eq!(cap("f=24,s=1,v=1"), 3 + RAW_SLACK);
 }
 
 #[test]

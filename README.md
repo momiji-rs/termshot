@@ -382,9 +382,10 @@ without a placement, then the least recently placed ones, as kitty's storage
 quota does; a placement past its limit is discarded. Each upload is limited to 16 MiB of decoded payload and 8,192 pixels per source
 axis (at most 4,194,304 source pixels). A display rectangle is limited to
 16,777,216 pixels per axis. The PNG decoder has a separate 64 MiB allocation
-budget, including inflation. A compressed (`o=z`) RGB or RGBA payload may be
-at most 1,024 bytes over its decoded size, as in kitty; a compressed PNG at
-most 16 MiB. Over-limit commands are discarded.
+budget, including inflation. As in kitty, an RGB or RGBA payload may be at
+most 10 bytes over its decoded size, which are ignored, or 1,024 bytes if
+compressed (`o=z`); a PNG payload at most 16 MiB. Over-limit commands are
+discarded.
 
 ## Samples
 
