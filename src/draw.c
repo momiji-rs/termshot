@@ -1584,9 +1584,9 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     STBIW_PNG_PROFILE(0);
     unsigned char *png = stbiw__write_png_from_filtered(cv->filtered, cv->w, cv->h, BPP, &png_len);
     double encoded = now_ms();
-    int ok = 0;
+    int ok = 0, encode_failed = !png;
     /* stb returns NULL only when an allocation failed, its own or the compressor's. */
-    if (!png) {
+    if (encode_failed) {
         fprintf(stderr, "termshot: out of memory encoding a %lldx%lld PNG\n", width, height);
     } else {
         FILE *out = fopen(out_path, "wb");
@@ -1609,7 +1609,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
             encoded - foreground, written - encoded, now_ms() - written, stamps.hits, stamps.misses, stamps.uncached, stamps.bytes, g.glyphs, g.cache_hits, g.evictions, g.missing, g.fallback_lookups, g.fallback_glyphs, png_len, (size_t)(width * height * BPP));
     }
-    if (!png) return 2;
+    if (encode_failed) return 2;
     if (!ok) {
         fprintf(stderr, "termshot: png write failed: %s\n", out_path);
         return 3;
