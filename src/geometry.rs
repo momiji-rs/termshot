@@ -149,25 +149,35 @@ pub unsafe extern "C" fn termshot_geometry_stats(geometry: *const Geometry, out:
 pub unsafe extern "C" fn termshot_paint_geometry(cv: *const Canvas, col: c_int, row: c_int, cell_w: c_int,
                                                  cell_h: c_int, cp: u32, bold: c_int, r: u8, g: u8, b: u8)
                                                  -> c_int {
-    if !(0x2500..=0x259F).contains(&cp) {
-        return 0;
+    match paint_cell(&*cv, col, row, cell_w, cell_h, cp, bold != 0, [r, g, b]) {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
     }
-    let cv = &*cv;
+}
+
+/// termshot_paint_geometry, for src/glyphs.rs: Some(true) when painted,
+/// Some(false) for other characters, and None if painting panicked (a bug),
+/// which termshot_paint_failed then reports too.
+///
+/// # Safety
+/// As termshot_paint_geometry.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn paint_cell(cv: &Canvas, col: i32, row: i32, cell_w: i32, cell_h: i32, cp: u32, bold: bool,
+                                c: Rgb) -> Option<bool> {
+    if !(0x2500..=0x259F).contains(&cp) {
+        return Some(false);
+    }
     let geometry = cv.geometry.as_mut();
-    let painted = guarded(|| {
+    guarded(|| {
         let px = Pixels::of(cv);
         let (arcs, stamps) = match geometry {
             Some(g) => (Some(&mut g.arc_offsets), g.stamps.as_mut()),
             None => (None, None),
         };
         let mut p = Painter { px, arcs, stamps };
-        p.paint_geometry(col, row, cell_w, cell_h, cp, bold != 0, [r, g, b])
-    });
-    match painted {
-        Some(true) => 1,
-        Some(false) => 0,
-        None => -1,
-    }
+        p.paint_geometry(col, row, cell_w, cell_h, cp, bold, c)
+    })
 }
 
 /// Fills [x0, x1) x [y0, y1), clipped to the canvas, with (r, g, b).
@@ -178,10 +188,18 @@ pub unsafe extern "C" fn termshot_paint_geometry(cv: *const Canvas, col: c_int, 
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn termshot_fill_rect(cv: *const Canvas, x0: c_int, y0: c_int, x1: c_int, y1: c_int, r: u8,
                                             g: u8, b: u8) {
-    let cv = &*cv;
+    fill_rect(&*cv, x0, y0, x1, y1, [r, g, b]);
+}
+
+/// termshot_fill_rect, for src/glyphs.rs (underlines and the box of a
+/// missing glyph).
+///
+/// # Safety
+/// As termshot_fill_rect.
+pub(crate) unsafe fn fill_rect(cv: &Canvas, x0: i32, y0: i32, x1: i32, y1: i32, c: Rgb) {
     // It writes only inside the rectangle it clipped, so it shouldn't panic;
     // if it does, termshot_paint_failed says so.
-    guarded(|| Pixels::of(cv).fill_rect(x0, y0, x1, y1, [r, g, b]));
+    guarded(|| Pixels::of(cv).fill_rect(x0, y0, x1, y1, c));
 }
 
 thread_local! {
@@ -209,7 +227,7 @@ pub extern "C" fn termshot_paint_failed() -> c_int {
     PANICKED.with(|p| p.get()) as c_int
 }
 
-type Rgb = [u8; 3];
+pub(crate) type Rgb = [u8; 3];
 
 /// Bytes in 16 pixels: shades blend that many at a time, against the
 /// colour repeated as often, so the blend vectorizes on x86-64 too (a pixel

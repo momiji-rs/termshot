@@ -33,7 +33,6 @@ typedef struct {
     size_t image_count;
     int32_t cols, rows, cell_w, cell_h;
     int32_t done, whole;
-    double ms;
 } RustBackdrop;
 void termshot_backdrop_init(RustBackdrop *bd, const Canvas *cv, const Cell *cells, int cols, int rows, int cell_w,
                             int cell_h, const ImageView *images, size_t image_count, size_t row_bytes);

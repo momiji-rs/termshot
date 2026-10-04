@@ -32,8 +32,10 @@ static void backdrop_rows(void) {
         termshot_backdrop_init(&bd, &cv, cells, COLS, ROWS, CW, CH, views, 3, BACKDROP_ROW_BYTES);
         assert(!bd.whole && bd.done == 0 && bd.cells == cells && bd.images == views && bd.image_count == 3);
         bd.whole = mode;
-        for (int y = 1; y <= H; y += 3) backdrop_through(&cv, &bd, y);
-        backdrop_through(&cv, &bd, H);
+        int bad = 0;
+        for (int y = 1; y <= H; y += 3) bad |= termshot_backdrop_through(&cv, &bd, y) < 0;
+        bad |= termshot_backdrop_through(&cv, &bd, H) < 0;
+        assert(!bad);
         assert(bd.done == ROWS);
     }
     assert(memcmp(rows, whole, sizeof rows) == 0);

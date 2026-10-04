@@ -182,6 +182,10 @@ pub struct Face<'a> {
     font: PhantomData<&'a Font>,
 }
 
+// As draw.c and src/glyphs.rs (its Face, which reads the outline callback)
+// assert.
+const _: () = assert!(std::mem::size_of::<Face>() == 32);
+
 impl Font {
     /// Call `f` with the face to draw with. The CFF table, checked at load,
     /// is parsed again here, as what it parses into borrows the data.
