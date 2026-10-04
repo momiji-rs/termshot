@@ -135,7 +135,7 @@ This builds termshot, runs the parser unit tests, checks box drawing (`tests/box
 
 When a change is meant to move pixels, look at the renders in `target/test/`, then run `./test.sh --update-goldens`. `SANITIZE=1 ./test.sh` builds draw.c with ASan and UBSan; this works on macOS only.
 
-A test for a known bug describes the correct behaviour and is marked `#[ignore = "#N: ..."]` with its issue. None are open now. Run them with `./target/test/unit --ignored`. The other ignored test, `poc_workloads`, writes inputs for `bench/c-vs-rust/` and checks nothing.
+A test for a known bug describes the correct behaviour and is marked `#[ignore = "#N: ..."]` with its issue. None are open now. Run them with `./target/test/unit --ignored`. Two other tests are ignored. `poc_workloads` writes inputs for `bench/c-vs-rust/` and checks nothing. `any_cff2_font_matches_harfbuzz` checks a CFF2 font of your own, at any instance, against the outlines `tools/cff2-outlines.sh` recorded from HarfBuzz; its doc comment gives the commands.
 
 ## Run
 
@@ -224,7 +224,7 @@ so a mark takes no column of its own. Colours are as drawn: reverse video and di
 
 | option | |
 |---|---|
-| `-f`, `--font FILE` | TrueType or OpenType (CFF or CFF2) font (default: built-in JetBrains Mono); `FILE#N` or `FILE#NAME` picks a face of a collection |
+| `-f`, `--font FILE` | TrueType or OpenType (CFF or CFF2) font (default: built-in JetBrains Mono); `FILE#N` or `FILE#NAME` picks a face of a collection, `FILE#wght=700` an instance of a CFF2 variable font |
 | `--fallback-font FILE` | TrueType or OpenType (CFF or CFF2) font for characters the first lacks, such as CJK; faces as for `--font` |
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default: a cast's size, else 100x30) |
@@ -235,7 +235,7 @@ so a mark takes no column of its own. Colours are as drawn: reverse video and di
 | `--cursor-shape block`, `underline` or `bar` | draw the cursor as that shape (default: the one the log sets with DECSCUSR, or a block) |
 | `--text FILE` | write the screen as text, a line per row with trailing spaces trimmed; the PNG is then optional |
 | `--json FILE` | write the screen as JSON: the cursor and its shape, and per row the runs of cells alike in colour and attributes; the PNG is then optional |
-| `-v`, `--verbose` | print the cell and image size to stderr |
+| `-v`, `--verbose` | print the cell and image size, the face of each collection and the instance of each variable font to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 
 It prints nothing on success, except a hint on stderr when the log (for a cast, its output) has line feeds but no CR,
@@ -251,7 +251,7 @@ The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, sti
 
 `M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces, the line and paragraph separators, and the blank Braille pattern U+2800. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both (on a one-column screen, where no row can hold two, they take the one cell); a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é); otherwise the cell keeps up to four marks, and each is drawn over the character in its colours, from the font or else `--fallback-font` (a mark neither has is left out, not boxed). Without shaping (no GPOS anchors), a mark its font draws left of its origin, as most fonts do, is drawn from where the character ends; one drawn right of its origin, as in right-to-left fonts, is centered over the character. Joiners, variation selectors, Hangul fillers and the other default-ignorable characters are kept in `--text` and `--json` but draw nothing. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
 
-The font may have TrueType (`glyf`), CFF or CFF2 outlines, so `.ttf`, `.otf` and collections such as Noto Sans CJK's `.ttc` all work. A variable font with CFF2 outlines (such as `NotoSansCJKtc-VF.otf`) is drawn at its default instance, which for Noto Sans CJK is the Thin weight; choosing another instance is not supported yet. Color emoji fonts are bitmaps, not outlines, so emoji need a monochrome outline font such as Noto Emoji. A glyph with no outline counts as missing, so the emoji of a color font that has `glyf` (Apple Color Emoji) go on to `--fallback-font` or are drawn as boxes rather than left blank, with a warning. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`), and runs CFF and CFF2 charstrings itself (`src/cff.rs`), with a limit on the work a glyph may take; stb only rasterizes the outline. A damaged or hostile font is refused with a reason, and the run exits 1.
+The font may have TrueType (`glyf`), CFF or CFF2 outlines, so `.ttf`, `.otf` and collections such as Noto Sans CJK's `.ttc` all work. A variable font with CFF2 outlines (such as `NotoSansCJKtc-VF.otf`) is drawn at its default instance, which for Noto Sans CJK is the Thin weight, unless you choose another after a `#` (see below). Color emoji fonts are bitmaps, not outlines, so emoji need a monochrome outline font such as Noto Emoji. A glyph with no outline counts as missing, so the emoji of a color font that has `glyf` (Apple Color Emoji) go on to `--fallback-font` or are drawn as boxes rather than left blank, with a warning. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`), and runs CFF and CFF2 charstrings itself (`src/cff.rs`), with a limit on the work a glyph may take; stb only rasterizes the outline. A damaged or hostile font is refused with a reason, and the run exits 1.
 
 A font collection (`.ttc`) holds several faces, often one per script or region, and termshot
 draws with one. Pick it after a `#`: `FILE#3` by number, counting from 0 as
@@ -260,6 +260,15 @@ case. Without a `#`, the first face is used and a hint on stderr lists the other
 uses the first without the hint. A face that doesn't exist, or a name that two faces share, is
 refused with the list (exit 1), and `-v` prints the face used. If the file's own name has a
 `#` in it, it is read as that file.
+
+A variable font with CFF2 outlines can be drawn at another instance: give its axis settings in a
+last `#` part, `TAG=VALUE` separated by commas, as in `NotoSansCJKtc-VF.otf#wght=700` or
+`FILE.ttc#1#wght=700,wdth=90`. Values are in the axis's own units (`hb-info --list-variations
+FILE` lists them), clamped to its range, and the outlines match HarfBuzz's (`hb-view
+--variations`). An axis left out stays at its default, and `-v` prints the instance. Bad syntax
+exits 2. An axis the font doesn't have exits 1 and lists those it has; a TrueType or CFF
+font, whose outlines don't vary here, exits 1 with that reason. Glyph metrics stay the default
+instance's: `HVAR` and `MVAR` are not applied yet (#77).
 
 ## Images in PTY logs
 

@@ -637,6 +637,9 @@ impl<'a> Font<'a> {
     /// normalized coordinates of each fvar axis in F2Dot14 units, or at the
     /// default instance for none.
     pub fn parse_cff2(cff: &'a [u8], glyphs: usize, coords: &[i32]) -> Result<Font<'a>, String> {
+        // HarfBuzz draws coordinates that are all 0 as the default instance,
+        // blending nothing, even where a region would count at 0.
+        let coords = if coords.iter().all(|&c| c == 0) { &[][..] } else { coords };
         let major = *cff.first().ok_or("header truncated")?;
         if major != 2 {
             return Err(format!("header says version {major}"));
@@ -683,7 +686,8 @@ impl<'a> Font<'a> {
             at => read_fdselect(cff, at, glyphs, dicts.count, true)?,
         };
         let (subrs, vsindex) = (fd_subrs[0], fd_vsindex[0]);
-        let blending = !coords.is_empty();
+        // A blend whose scalars are all 0 adds nothing, so skip the work.
+        let blending = store.scalars.iter().flatten().any(|&scalar| scalar != 0.0);
         Ok(Font { glyphs, charstrings, gsubrs, subrs, fd_subrs, fdselect, cff2: true, store, blending, fd_vsindex, vsindex })
     }
 

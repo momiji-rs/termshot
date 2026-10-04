@@ -169,6 +169,22 @@ check "a CFF2 font is quiet on success" '[ -z "$(./termshot --font "$vf" "$log" 
 expect 1 "$log" "$out/x.png" --font "$out/cff2-past-table.otf"
 check "a damaged CFF2 table is refused with a reason" \
     './termshot --font "$out/cff2-past-table.otf" "$log" "$out/x.png" 2>&1 | grep -q "CFF2 table: INDEX at .* runs past the table"'
+# Another instance of it, after a #: its weight axis runs from 100, the default, to 900.
+printf '東京' | ./termshot --size 4x1 --cursor none --font "$vf#wght=900" - "$out/cli-cff2-900.png"
+printf '東京' | ./termshot --size 4x1 --cursor none --font "$vf#wght=100" - "$out/cli-cff2-100.png"
+printf '東京' | ./termshot --size 4x1 --cursor none --fallback-font "$vf#wght=900" - "$out/cli-cff2-fallback-900.png"
+check "a CFF2 instance draws differently" '! cmp -s "$out/cli-cff2-900.png" "$out/cli-cff2-font.png"'
+check "the default's own setting draws the default" 'cmp -s "$out/cli-cff2-100.png" "$out/cli-cff2-font.png"'
+check "a CFF2 fallback font takes an instance" '! cmp -s "$out/cli-cff2-fallback-900.png" "$out/cli-cff2-fallback.png"'
+check "-v names the instance, clamped" \
+    './termshot -v --font "$vf#wght=1000" "$log" "$out/cli-cff2-v.png" 2>&1 | grep -qx -- "--font instance wght=900 (1000 clamped)"'
+expect 2 "$log" "$out/x.png" --font "$vf#wght=bold"
+expect 1 "$log" "$out/vary-fail.png" --font "$vf#wdth=50"
+check "an unknown axis is refused with the axes, and leaves no output" \
+    './termshot --font "$vf#wdth=50" "$log" "$out/vary-fail.png" 2>&1 | grep -q "no axis .wdth.; its axis is wght 100 to 900, default 100" &&
+     [ ! -e "$out/vary-fail.png" ]'
+expect 1 "$log" "$out/x.png" --font "$font#wght=700"
+expect 1 "$log" "$out/x.png" --font "$cjk#wght=700"
 # stdin and stdout.
 ./termshot - - < "$log" > "$out/piped.png"
 check "stdin to stdout matches" 'cmp -s "$out/piped.png" "$out/legacy.png"'

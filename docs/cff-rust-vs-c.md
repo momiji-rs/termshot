@@ -246,3 +246,46 @@ outlines itself (`init_cff2`: metrics tables and the cmap subtable stb would pic
   counts past the table, a cut table, a Top DICT past it, `blend` outside a Private DICT or
   short of operands, bad `vsindex`, a damaged store, FDSelect gaps and huge range counts,
   subroutine bombs and recursion without `return`) and mutates the subset's CFF2 table.
+
+## CFF2: other instances (#51)
+
+Added 2026-10-04. `--font FILE#wght=700` (or `FILE.ttc#1#wght=700,wdth=90`) picks an instance.
+`src/variations.rs` turns the settings into normalized coordinates and `cff.rs` blends at them.
+HarfBuzz is the reference throughout, so each step is done as `hb_font_set_variations` does it:
+
+- **Normalizing**: in f32, each setting clamped to its axis's range (widened to hold the default,
+  as HarfBuzz widens it), scaled to -1..1 on its side of the default, and rounded to 16.16.
+  Then avar's segment map for the axis is applied, ported from `SegmentMaps::map_float`, with
+  its answers for maps that OpenType calls malformed: none or one pair, repeated or unsorted
+  `from` values, and the skipped (-1, -1) and (1, 1) ends. Last, it is rounded to 2.14 with
+  `(c + 2) >> 2`. `variations_tests.rs` has an axis for each case, 27 in one font: hb-vector,
+  `hb_font_get_var_coords_normalized` and termshot give the same 27 coordinates. Two cases,
+  found by search, are there because their f32 details are each 1/16384 off if missed.
+- **Coordinates of 0 are the default**: HarfBuzz draws a font whose coordinates are all 0
+  as it draws one with none, blending nothing, even where a region that peaks at 0 would
+  count 1 there. So does `parse_cff2`, and a setting at the default draws the default's
+  pixels (`test.sh` checks `wght=100`).
+- **What is refused**: fvar is checked as HarfBuzz checks it (version 1, 20-byte axis records,
+  instance records of at least 4 × axes + 4 bytes, arrays inside the table). Where HarfBuzz
+  would quietly read a bad fvar as no axes, termshot refuses the font, as it does an avar of
+  another version (avar 2 is not read) or of a different axis count. An axis the font lacks
+  is refused with the axes it has, where HarfBuzz ignores the setting, and a TrueType or CFF
+  face with that reason: `glyf` variations (gvar) are not read.
+- **Metrics stay the default's** ([#77](https://github.com/momiji-rs/termshot/issues/77)):
+  HVAR, VVAR and MVAR are not applied, so the cell size, the centering of wide and fallback
+  glyphs, and the baseline come from the default instance. For
+  CJK as the fallback that changes nothing: in Noto Sans CJK VF an ideograph advances 1000 at
+  every weight. Its Latin letters do not: at wght=900 HarfBuzz advances `M` 877 units, and
+  the cell, sized from the default's `M`, stays 770, so with it as the main font at a heavy
+  weight the Latin letters crowd their cells (checked with `hb-shape`, 2026-10-04).
+- **Cost**: the coordinates are worked out once, when the font loads, and the region scalars
+  once per font, when the store is read. A `blend` at an instance costs its k multiply-adds
+  per value; at the default, where every scalar is 0, it costs nothing extra.
+- **Checked against HarfBuzz 14.4.0** (`hb-vector`), outline for outline, on starship. The
+  repository keeps the subset at wght=350.5, 700 and 900 (`tests/fixtures/cff2-outlines-*.txt`).
+  The ignored `any_cff2_font_matches_harfbuzz` checks any font at any instance; with it, the
+  full `NotoSansCJKtc-VF.otf` at wght=700 (44,801 compared), Source Serif 4 Variable Roman at
+  wght=650,opsz=12 (two axes and an avar; 906 compared) and Adobe's prototype at
+  wght=700,CNTR=60 (248 compared) matched. `tools/cff2-outlines.sh` draws by glyph id, since
+  shaping a character can substitute another glyph at an instance (the prototype's dollar sign
+  does, through GSUB FeatureVariations) or move a combining mark (Noto's U+302E).

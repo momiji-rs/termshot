@@ -18,6 +18,7 @@ mod graphics;
 mod rowcolumn_diacritics;
 mod sixel;
 mod unicode;
+mod variations;
 #[rustfmt::skip]
 mod unicode_tables;
 #[cfg(test)]
@@ -30,6 +31,8 @@ mod draw_tests;
 mod prescan_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod variations_tests;
 
 const DEFAULT_COLS: usize = 100;
 const DEFAULT_ROWS: usize = 30;
@@ -1973,14 +1976,17 @@ options:
       --json FILE   write the screen as JSON: the cursor and its shape, and for
                     each row the runs of cells alike in colour (#rrggbb)
                     and attributes, with the column each starts at
-  -v, --verbose     print the cell and image size, and the face of each
-                    collection, to stderr
+  -v, --verbose     print the cell and image size, the face of each
+                    collection and the instance of each variable font,
+                    to stderr
   -h, --help        show this help
   -V, --version     show the version
 
 The second form is the original one and still works.
 For a font collection (.ttc), FILE#N picks face N, from 0, and FILE#NAME the
 face with that full or family name; without either, the first is used.
+For a variable font with CFF2 outlines, a last #TAG=VALUE,... picks the
+instance, as in FILE#wght=700 or FILE.ttc#1#wght=700,wdth=90.
 An SGR reset uses foreground #dbe7f7 on background #111823.
 
 A cast replays its output events in order, on the grid of the size it ends
@@ -2220,10 +2226,7 @@ fn empty_glyph_warning(
     }
     let mut color = false;
     let mut name = |flag: &str, spec: Option<&font::Spec>, font: &font::Font| {
-        let mut name = spec.map_or("the built-in font".to_owned(), |spec| match &spec.face {
-            Some(face) => format!("{flag} {}#{face}", spec.path),
-            None => format!("{flag} {}", spec.path),
-        });
+        let mut name = spec.map_or("the built-in font".to_owned(), |spec| format!("{flag} {}", spec.name()));
         if let Some(tag) = font::color_bitmap(font) {
             color = true;
             name += &format!(" (a color bitmap font, {tag}, which termshot cannot draw)");
@@ -2465,6 +2468,9 @@ fn main() -> ExitCode {
         }
         if let (true, Some((index, name))) = (options.verbose, &font.face) {
             eprintln!("{flag} face #{index} {name}");
+        }
+        if let (true, Some(instance)) = (options.verbose, &font.instance) {
+            eprintln!("{flag} instance {instance}");
         }
     }
 
