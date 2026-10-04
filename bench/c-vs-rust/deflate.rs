@@ -7,7 +7,8 @@
 //!   deflate <input dir> [rounds]   <name>.raw are deflate inputs (run.sh
 //!                                  writes them with deflate_inputs.py)
 //!
-//! Five variants run in every round, in an order that rotates each round:
+//! Five variants run in every round, in a seeded random order per round, so
+//! each one follows every other about equally often:
 //! the C as built by the default compiler, the C with TERMSHOT_PORTABLE_ADLER,
 //! the safe Rust, the Rust with two unchecked reads in the match loop
 //! (`unchecked`, the 2026-10-01 POC's `--cfg unchecked`, here a const
@@ -548,6 +549,19 @@ fn synthetic() -> Vec<(String, Vec<u8>)> {
     vec![("7-random-uniform".into(), uniform), ("8-random-4sym-skewed".into(), skewed)]
 }
 
+/// A seeded shuffle of the five variants for each round (Fisher-Yates).
+struct Order(Rng);
+
+impl Order {
+    fn next(&mut self) -> [usize; 5] {
+        let mut o = [0, 1, 2, 3, 4];
+        for i in (1..o.len()).rev() {
+            o.swap(i, self.0.next() as usize % (i + 1));
+        }
+        o
+    }
+}
+
 fn stats(v: &mut [f64]) -> (f64, f64) {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p95 = ((v.len() as f64 * 0.95).ceil() as usize).max(1) - 1;
@@ -557,6 +571,7 @@ fn stats(v: &mut [f64]) -> (f64, f64) {
 fn main() {
     let dir = std::env::args().nth(1).expect("input dir");
     let rounds: usize = std::env::args().nth(2).map_or(61, |s| s.parse().unwrap());
+    let mut order = Order(Rng(0x5851_f42d_4c95_7f2d));
     let cases = check_corpus(3000);
     println!("checked: {cases} deflate_diff-style and random cases byte-identical across all five variants");
 
@@ -593,9 +608,8 @@ fn main() {
         };
         check(&name, &data, QUALITY);
         let mut t: [Vec<f64>; 5] = Default::default();
-        for round in 0..rounds {
-            for k in 0..5 {
-                let v = (round + k) % 5;
+        for _ in 0..rounds {
+            for v in order.next() {
                 let (out, ms) = variant(v, &mut data, QUALITY);
                 std::hint::black_box(out);
                 t[v].push(ms);
@@ -617,9 +631,8 @@ fn main() {
     println!("{:<22} {:>10} {:>15} {:>15} {:>15} {:>6} {:>6}", "input", "bytes", "C", "C portable", "Rust", "Cp/C", "R/C");
     for (name, data) in adler_inputs {
         let mut t: [Vec<f64>; 3] = Default::default();
-        for round in 0..rounds {
-            for k in 0..3 {
-                let v = (round + k) % 3;
+        for _ in 0..rounds {
+            for v in order.next().into_iter().filter(|&v| v < 3) {
                 let s = Instant::now();
                 std::hint::black_box(adler_variant(v, std::hint::black_box(&data)));
                 t[v].push(s.elapsed().as_secs_f64() * 1e3);

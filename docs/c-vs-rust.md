@@ -42,7 +42,8 @@ compiler.
   comparing 16 bytes, then 8, then single bytes, the newest-first bucket scan with the same
   early exits, lazy matching, and the carried hash. The output buffer appends four bytes per token and keeps
   the complete ones, as the C does. It does not port the `TERMSHOT_PROFILE` timers, which are off in this
-  bench, so the C pays only four thread-local `enabled` checks per call. It is built with `build.sh`'s
+  bench, so the C pays only five thread-local `enabled` checks per call (four `profile_now()` calls and the final
+  `if`). It is built with `build.sh`'s
   `-C opt-level=2`.
   - **Rust unchecked**: the 2026-10-01 POC's `--cfg unchecked` with the same two
     `unsafe` reads, the candidate-rejection byte and `countm`'s loads. Here it is a const

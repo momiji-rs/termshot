@@ -168,10 +168,14 @@ fn main() {
         }
         assert_eq!(f(&data), reference(&data), "{name}: 67 MB");
     }
+    // A seeded random order each round, so each form follows every other.
     let mut t: Vec<Vec<f64>> = vec![Vec::new(); forms.len()];
-    for round in 0..rounds {
-        for k in 0..forms.len() {
-            let v = (round + k) % forms.len();
+    for _ in 0..rounds {
+        let mut order: Vec<usize> = (0..forms.len()).collect();
+        for i in (1..order.len()).rev() {
+            order.swap(i, next() as usize % (i + 1));
+        }
+        for v in order {
             let s = Instant::now();
             std::hint::black_box(forms[v].1(std::hint::black_box(&data)));
             t[v].push(s.elapsed().as_secs_f64() * 1e3);
