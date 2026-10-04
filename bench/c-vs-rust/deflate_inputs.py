@@ -8,7 +8,9 @@ scanlines (a 0 filter byte, then RGB, per row).
   deflate_inputs.py <termshot> <poc dir> <out dir>
 
 <poc dir> holds <name>.pty and <name>.meta ("cols rows px") from the
-tests::poc_workloads helper. The 2026-10-03 compression round's image cases
+tests::poc_workloads helper. They are rendered as the CLI renders them by
+default, cursor included, so 1-reply-px48's input is the one a plain
+reply-sent run (docs/performance.md) compresses. The 2026-10-03 compression round's image cases
 (docs/performance.md, #20) come from scripts/bench.py.
 """
 import struct
@@ -47,7 +49,7 @@ with tempfile.TemporaryDirectory() as tmp:
     for meta in sorted(poc_dir.glob('*.meta')):
         cols, rows, px = meta.read_text().split()
         log = meta.with_suffix('.pty')
-        command = [binary, '--raw', '--cursor', 'none', '--px', str(int(float(px))),
+        command = [binary, '--raw', '--px', str(int(float(px))),
                    '--size', f'{cols}x{rows}', str(log), str(png)]
         subprocess.run(command, check=True)
         raw = idat(png.read_bytes())

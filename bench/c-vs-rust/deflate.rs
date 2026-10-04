@@ -7,17 +7,19 @@
 //!   deflate <input dir> [rounds]   <name>.raw are deflate inputs (run.sh
 //!                                  writes them with deflate_inputs.py)
 //!
-//! Four variants run in every round, in an order that rotates each round:
+//! Five variants run in every round, in an order that rotates each round:
 //! the C as built by the default compiler, the C with TERMSHOT_PORTABLE_ADLER,
-//! the safe Rust, and the Rust with two unchecked reads in the match loop
+//! the safe Rust, the Rust with two unchecked reads in the match loop
 //! (`unchecked`, the 2026-10-01 POC's `--cfg unchecked`, here a const
-//! generic so both Rust variants share the process and the rounds).
+//! generic so both Rust variants share the process and the rounds), and the
+//! default C with its hash table zeroed as the safe Rust's is.
 
 use std::time::Instant;
 
 extern "C" {
     fn cdef_zlib_compress(data: *mut u8, len: i32, out_len: *mut i32, quality: i32) -> *mut u8;
     fn cport_zlib_compress(data: *mut u8, len: i32, out_len: *mut i32, quality: i32) -> *mut u8;
+    fn czero_zlib_compress(data: *mut u8, len: i32, out_len: *mut i32, quality: i32) -> *mut u8;
     fn cdef_adler32(d: *const u8, len: usize) -> u32;
     fn cport_adler32(d: *const u8, len: usize) -> u32;
     fn free(p: *mut u8);
@@ -387,13 +389,14 @@ fn c_compress(f: CCompress, data: &mut [u8], quality: usize) -> (Vec<u8>, f64) {
     (v, ms)
 }
 
-const NAMES: [&str; 4] = ["C", "C portable", "Rust safe", "Rust unchecked"];
+const NAMES: [&str; 5] = ["C", "C portable", "Rust safe", "Rust unchecked", "C zeroed table"];
 
 /// Variant v on data: the output and the time of the compression alone.
 fn variant(v: usize, data: &mut [u8], quality: usize) -> (Vec<u8>, f64) {
     match v {
         0 => c_compress(cdef_zlib_compress, data, quality),
         1 => c_compress(cport_zlib_compress, data, quality),
+        4 => c_compress(czero_zlib_compress, data, quality),
         _ => {
             let t = Instant::now();
             let out = if v == 2 { rust_compress::<false>(data, quality) } else { rust_compress::<true>(data, quality) };
@@ -415,7 +418,7 @@ fn adler_variant(v: usize, data: &[u8]) -> u32 {
 fn check(what: &str, data: &[u8], quality: usize) {
     let mut copy = data.to_vec();
     let (want, _) = variant(0, &mut copy, quality);
-    for v in 1..4 {
+    for v in 1..NAMES.len() {
         let (got, _) = variant(v, &mut copy, quality);
         assert!(got == want, "{what}: {} writes {} bytes that differ from the C's {}", NAMES[v], got.len(), want.len());
     }
@@ -555,7 +558,20 @@ fn main() {
     let dir = std::env::args().nth(1).expect("input dir");
     let rounds: usize = std::env::args().nth(2).map_or(61, |s| s.parse().unwrap());
     let cases = check_corpus(3000);
-    println!("checked: {cases} deflate_diff-style and random cases byte-identical across all four variants");
+    println!("checked: {cases} deflate_diff-style and random cases byte-identical across all five variants");
+
+    // Safe Rust zeroes its hash table (vec! is calloc); the C mallocs it
+    // and writes each entry before reading it. Time that part alone.
+    let mut z = Vec::new();
+    for _ in 0..rounds.max(101) {
+        let t = Instant::now();
+        let tab = vec![0u32; ZHASH * 2 * QUALITY];
+        std::hint::black_box(&tab);
+        drop(tab);
+        z.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    let (m, p) = stats(&mut z);
+    println!("Rust's zeroed hash table alone ({} KiB, allocate and free): {m:.3} / {p:.3} ms", ZHASH * 2 * QUALITY * 4 / 1024);
 
     let mut paths: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |e| e == "raw")).collect();
     paths.sort();
@@ -564,10 +580,10 @@ fn main() {
     inputs.push(("7-random-uniform".into(), None));
     inputs.push(("8-random-4sym-skewed".into(), None));
 
-    println!("deflate, time per call in ms, median / p95 of {rounds} rounds; R/C = Rust median / C median");
+    println!("deflate, time per call in ms, median / p95 of {rounds} rounds; ratios are medians over the C's");
     println!(
-        "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>6} {:>6} {:>6}",
-        "input", "bytes", "C", "C portable", "Rust safe", "Rust unchecked", "Cp/C", "safe", "unchk"
+        "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>15} {:>6} {:>6} {:>6} {:>6}",
+        "input", "bytes", "C", "C portable", "Rust safe", "Rust unchecked", "C zeroed table", "Cp/C", "safe", "unchk", "Cz/C"
     );
     let mut adler_inputs = Vec::new();
     for (name, path) in inputs {
@@ -576,10 +592,10 @@ fn main() {
             None => synth.next().unwrap().1,
         };
         check(&name, &data, QUALITY);
-        let mut t: [Vec<f64>; 4] = Default::default();
+        let mut t: [Vec<f64>; 5] = Default::default();
         for round in 0..rounds {
-            for k in 0..4 {
-                let v = (round + k) % 4;
+            for k in 0..5 {
+                let v = (round + k) % 5;
                 let (out, ms) = variant(v, &mut data, QUALITY);
                 std::hint::black_box(out);
                 t[v].push(ms);
@@ -588,9 +604,9 @@ fn main() {
         let s: Vec<(f64, f64)> = t.iter_mut().map(|v| stats(v)).collect();
         let cell = |(m, p): (f64, f64)| format!("{m:.3} / {p:.3}");
         println!(
-            "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>6.2} {:>6.2} {:>6.2}",
-            name, data.len(), cell(s[0]), cell(s[1]), cell(s[2]), cell(s[3]),
-            s[1].0 / s[0].0, s[2].0 / s[0].0, s[3].0 / s[0].0
+            "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>15} {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
+            name, data.len(), cell(s[0]), cell(s[1]), cell(s[2]), cell(s[3]), cell(s[4]),
+            s[1].0 / s[0].0, s[2].0 / s[0].0, s[3].0 / s[0].0, s[4].0 / s[0].0
         );
         if name.starts_with("1-") || name.starts_with("2-") {
             adler_inputs.push((name, data));

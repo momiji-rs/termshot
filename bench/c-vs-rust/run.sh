@@ -7,8 +7,9 @@
 #                                             of $rev and with their Rust ports
 #   bench/c-vs-rust/run.sh deflate [rounds]   2026-10-03: deflate.c as of
 #                                             $deflate_rev against its Rust port
-#                                             (deflate.rs), default and portable
-#                                             Adler-32 C, safe and unchecked Rust
+#                                             (deflate.rs): default, portable-Adler
+#                                             and zeroed-table C, safe and
+#                                             unchecked Rust
 #
 # Both check that the outputs are byte-identical before timing both sides in
 # one process. Default 61 rounds. CC picks the C compiler of the deflate
@@ -42,18 +43,20 @@ if [ "$mode" = deflate ]; then
     mkdir -p "$work/snapshot" "$work/logs" "$work/inputs"
     git archive "$deflate_rev" src/deflate.c src/deflate_profile.h | tar -x -C "$work/snapshot"
     snap="$work/snapshot"
-    # build.sh's flags. Two builds of the same snapshot under different
-    # names: the default, and the plain Adler-32 loop clang otherwise skips.
-    for build in cdef cport; do
+    # build.sh's flags. Three builds of the same snapshot under different
+    # names: the default, the plain Adler-32 loop clang otherwise skips, and
+    # the default with its hash table zeroed as the safe Rust's is.
+    for build in cdef cport czero; do
         extra=''
         [ "$build" = cport ] && extra=-DTERMSHOT_PORTABLE_ADLER
+        [ "$build" = czero ] && extra=-DSHIM_ZEROED_TABLE
         # shellcheck disable=SC2086
         $cc -c bench/c-vs-rust/deflate_shim.c -o "$work/$build.o" -O2 $extra -I "$snap/src" \
             -Dtermshot_zlib_compress=${build}_zlib_compress \
             -Dtermshot_deflate_profile=${build}_deflate_profile \
             -DSHIM_ADLER32=${build}_adler32
     done
-    ar rcs "$work/libdeflate_c.a" "$work/cdef.o" "$work/cport.o"
+    ar rcs "$work/libdeflate_c.a" "$work/cdef.o" "$work/cport.o" "$work/czero.o"
     workloads "$work" "$work/logs"
     python3 bench/c-vs-rust/deflate_inputs.py ./termshot "$work/logs" "$work/inputs" > /dev/null
     # shellcheck disable=SC2086
