@@ -110,17 +110,19 @@ def draw_workloads(directory):
     other sizes, every geometry character at once, large sparse and colored
     screens, and an image below, under and over text."""
     crlf = '\r\n'
+    # Every row fits its screen exactly, so none wraps.
     table = []
     for row in range(30):
         kind = row % 3
         if row % 6 == 0:
-            table.append('┌' + '──────┬' * 13 + '──────┐' + '━━━┳━━━┓')
+            table.append('┌' + '──────┬' * 12 + '──────┐' + '━━━┳━━━┓')
         elif row % 6 == 5:
-            table.append('└' + '──────┴' * 13 + '──────┘' + '━━━┻━━━┛')
+            table.append('└' + '──────┴' * 12 + '──────┘' + '━━━┻━━━┛')
         elif kind == 1:
-            table.append('│' + ' cell │' * 14 + '═══╬═══╣')
+            table.append('│' + ' cell │' * 13 + '═══╬═══╣')
         else:
-            table.append('├' + '──────┼' * 13 + '──────┤' + '║  ╠═══╣')
+            table.append('├' + '──────┼' * 12 + '──────┤' + '║  ╠═══╣')
+    assert all(len(line) == 100 for line in table)
     blocks = '█▀▄▌▐░▒▓▖▗▘▝▚▞▙▟▁▂▃▅▆▇▏▎▍▋▊▉▔▕'
     rng = random.Random(22)
     block_grid = crlf.join(
@@ -139,6 +141,7 @@ def draw_workloads(directory):
             panes.append('╰' + '─' * 23 + '╯' + ('╰' + '─' * 23 + '╯') * 3)
         else:
             panes.append(('│ ' + f'item {r:02} value {r * 37 % 1000:4}'.ljust(21) + ' │') * 4)
+    assert all(len(line) == 100 for line in panes)
     rounded = crlf.join(['╭╮╰╯' * 25] * 30)
     sparse = crlf.join(['$ termshot --px 48 --size 240x80 large.log out.png', 'done in 42 ms', '$ '] + [''] * 77)
     colored = crlf.join(
