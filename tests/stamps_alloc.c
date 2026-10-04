@@ -1,7 +1,9 @@
 /* Fail each allocation of the geometry caches in turn (the arc offsets and
    the Stamps of rounded corners and diagonals): a stroke whose cache can't
    grow is stamped afresh, so every pixel is the same as with no cache, and
-   free_geometry leaves nothing allocated. */
+   free_geometry leaves nothing allocated. Then shrink the cache's budget,
+   STAMP_MAX_BYTES, from its default to nothing: the cache never holds more,
+   and the pixels stay the same. */
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -32,6 +34,8 @@ static void checked_free(void *p) {
     if (p) live--;
     free(p);
 }
+static size_t budget = (size_t)4 << 20;
+#define STAMP_MAX_BYTES budget
 #define malloc checked_malloc
 #define calloc checked_calloc
 #define realloc checked_realloc
@@ -70,6 +74,23 @@ int main(void) {
         assert(live == 0);
         assert(memcmp(got, want, sizeof want) == 0);
     }
-    printf("%d geometry cache allocation failures painted the same pixels\n", allocations);
+    calls = 0, fail_at = 0;
+    size_t full = 0;
+    int budgets = 0;
+    for (size_t limit = budget; ; limit = limit * 3 / 4) {
+        budget = limit;
+        stamps = (Stamps){0};
+        paint_grid(got, &stamps);
+        assert(live == 0 && memcmp(got, want, sizeof want) == 0);
+        /* bytes counts what was held when the render ended; peak tracks the
+           most at any time. */
+        assert(stamps.peak <= limit);
+        if (!full) full = stamps.peak;
+        budgets++;
+        if (!limit) break;
+    }
+    assert(full > 0);
+    printf("%d geometry cache allocation failures and %d budgets (%zu bytes needed) painted the same pixels\n",
+           allocations, budgets, full);
     return 0;
 }

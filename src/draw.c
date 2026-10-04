@@ -154,13 +154,16 @@ static int glyph_empty(const stbtt_fontinfo *info, const Face *face, int glyph, 
    points. Stamps keeps which pixels of its cell a stroke covered, to paint
    the next one like it as runs; stamp_points says when two are alike. A
    render of the largest screen finds well under STAMP_SEQUENCES sequences
-   per shape and axis (tests/boxes.c checks), and STAMP_MAX_BYTES bounds
-   what is kept; past either, strokes are stamped afresh. */
+   per shape and axis (tests/boxes.c checks), and every allocation of the
+   cache stays within STAMP_MAX_BYTES in all (tests/stamps_alloc.c checks);
+   past either, strokes are stamped afresh. */
 #define STAMP_SHAPES 6 /* the four corners, then the two diagonals */
 #define STAMP_SEQUENCES 64
 #define STAMP_MASKS 1024
 #define STAMP_MAX_POINTS 4096
-#define STAMP_MAX_BYTES (4u << 20)
+#ifndef STAMP_MAX_BYTES
+#define STAMP_MAX_BYTES ((size_t)4 << 20)
+#endif
 
 typedef struct {
     uint32_t key; /* 0 for an empty slot */
@@ -182,7 +185,7 @@ typedef struct {
     float *points; /* the stroke being stamped: x, y */
     int capacity;
     uint8_t *mask; /* a cell's coverage, on a miss */
-    size_t hits, misses, uncached, bytes;
+    size_t hits, misses, uncached, bytes, peak; /* bytes held now, and at most */
 } Stamps;
 
 /* The image being painted. Passed explicitly so draw_png is reentrant. */
@@ -255,6 +258,16 @@ static void hbar(Canvas *cv, int x0, int x1, int mid, int thick, uint8_t r, uint
 
 static void vbar(Canvas *cv, int mid, int y0, int y1, int thick, uint8_t r, uint8_t g, uint8_t b) {
     fill_rect(cv, mid - thick / 2, y0, mid - thick / 2 + thick, y1, r, g, b);
+}
+
+static void stamp_hold(Stamps *st, size_t bytes) {
+    st->bytes += bytes;
+    if (st->bytes > st->peak) st->peak = st->bytes;
+}
+
+/* Whether the cache may allocate bytes more. */
+static int stamp_budget(const Stamps *st, size_t bytes) {
+    return bytes <= STAMP_MAX_BYTES && st->bytes <= STAMP_MAX_BYTES - bytes;
 }
 
 /* a - b, and whether that is exact: Knuth's TwoSum error is zero. */
@@ -338,12 +351,14 @@ static int stamp_find(Canvas *cv, int shape, int n, int thick, uint8_t r, uint8_
         }
     }
     if (n > st->capacity) {
-        float *points = (float *)realloc(st->points, (size_t)n * 2 * sizeof(float));
+        float *points = stamp_budget(st, (size_t)(n - st->capacity) * 2 * sizeof(float))
+                            ? (float *)realloc(st->points, (size_t)n * 2 * sizeof(float))
+                            : NULL;
         if (!points) {
             st->uncached++;
             return -1;
         }
-        st->bytes += (size_t)(n - st->capacity) * 2 * sizeof(float);
+        stamp_hold(st, (size_t)(n - st->capacity) * 2 * sizeof(float));
         st->points = points;
         st->capacity = n;
     }
@@ -360,11 +375,12 @@ static int stamp_sequence(Stamps *st, int axis, int shape, const float *points, 
         /* Room for one more row than is kept, for the one being compared. */
         int more = room ? 2 * room : 4;
         if (more > STAMP_SEQUENCES + 1) more = STAMP_SEQUENCES + 1;
+        if (!stamp_budget(st, (size_t)(more - room) * (size_t)n * sizeof(float))) return -1;
         seen = (float *)realloc(seen, (size_t)more * (size_t)n * sizeof(float));
         if (!seen) return -1;
         st->sequences[axis][shape] = seen;
         st->sequence_room[axis][shape] = more;
-        st->bytes += (size_t)(more - room) * (size_t)n * sizeof(float);
+        stamp_hold(st, (size_t)(more - room) * (size_t)n * sizeof(float));
     }
     float *d = seen + (size_t)count * n;
     for (int i = 0; i < n; i++)
@@ -396,12 +412,13 @@ static int stamp_points(Canvas *cv, int shape, int n, int thick, float rad, floa
     for (int axis = 0; axis < 2; axis++) {
         int16_t **ids = &st->ids[axis][shape];
         if (!*ids) {
-            *ids = (int16_t *)calloc((size_t)st->lines[axis], sizeof(int16_t));
+            if (stamp_budget(st, (size_t)st->lines[axis] * sizeof(int16_t)))
+                *ids = (int16_t *)calloc((size_t)st->lines[axis], sizeof(int16_t));
             if (!*ids) {
                 st->uncached++;
                 return 0;
             }
-            st->bytes += (size_t)st->lines[axis] * sizeof(int16_t);
+            stamp_hold(st, (size_t)st->lines[axis] * sizeof(int16_t));
         }
         int line = axis ? row : col;
         if (!(*ids)[line]) {
@@ -415,12 +432,13 @@ static int stamp_points(Canvas *cv, int shape, int n, int thick, float rad, floa
         return 0;
     }
     if (!st->masks) {
-        st->masks = (StampMask *)calloc(STAMP_MASKS, sizeof(StampMask));
+        if (stamp_budget(st, STAMP_MASKS * sizeof(StampMask)))
+            st->masks = (StampMask *)calloc(STAMP_MASKS, sizeof(StampMask));
         if (!st->masks) {
             st->uncached++;
             return 0;
         }
-        st->bytes += STAMP_MASKS * sizeof(StampMask);
+        stamp_hold(st, STAMP_MASKS * sizeof(StampMask));
     }
     StampMask *m = stamp_slot(st, (uint32_t)key);
     if (m->key == (uint32_t)key) {
@@ -430,12 +448,12 @@ static int stamp_points(Canvas *cv, int shape, int n, int thick, float rad, floa
     }
     size_t size = (size_t)w * (size_t)h;
     if (!st->mask) {
-        st->mask = (uint8_t *)malloc(size);
+        if (stamp_budget(st, size)) st->mask = (uint8_t *)malloc(size);
         if (!st->mask) {
             st->uncached++;
             return 0;
         }
-        st->bytes += size;
+        stamp_hold(st, size);
     }
     /* Stamp into a mask of the cell what the caller would into the canvas. */
     uint8_t *mask = st->mask;
@@ -464,7 +482,7 @@ static int stamp_points(Canvas *cv, int shape, int n, int thick, float rad, floa
     }
     size_t bytes = (size_t)(count ? count : 1) * 3 * sizeof(uint16_t);
     uint16_t *runs = NULL;
-    if (st->bytes + bytes <= STAMP_MAX_BYTES) runs = (uint16_t *)malloc(bytes);
+    if (stamp_budget(st, bytes)) runs = (uint16_t *)malloc(bytes);
     StampMask fresh = {(uint32_t)key, count, runs};
     if (!runs) {
         /* Not kept: paint from the mask's runs all the same. */
@@ -499,7 +517,7 @@ static int stamp_points(Canvas *cv, int shape, int n, int thick, float rad, floa
         free(m->runs);
     }
     *m = fresh;
-    st->bytes += bytes;
+    stamp_hold(st, bytes);
     st->misses++;
     paint_runs(cv, m, r, g, b);
     return 1;
