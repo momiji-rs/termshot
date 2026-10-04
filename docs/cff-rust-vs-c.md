@@ -260,7 +260,9 @@ HarfBuzz is the reference throughout, so each step is done as `hb_font_set_varia
   `from` values, and the skipped (-1, -1) and (1, 1) ends. Last, it is rounded to 2.14 with
   `(c + 2) >> 2`. `variations_tests.rs` has an axis for each case, 27 in one font: hb-vector,
   `hb_font_get_var_coords_normalized` and termshot give the same 27 coordinates. Two cases,
-  found by search, are there because their f32 details are each 1/16384 off if missed.
+  found by search, are there because their f32 details are each 1/16384 off if missed. A
+  setting sets every axis with its tag, as `hb_font_set_variations` does, should fvar repeat
+  one (hb-vector agrees).
 - **Coordinates of 0 are the default**: HarfBuzz draws a font whose coordinates are all 0
   as it draws one with none, blending nothing, even where a region that peaks at 0 would
   count 1 there. So does `parse_cff2`, and a setting at the default draws the default's

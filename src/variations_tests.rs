@@ -280,6 +280,21 @@ fn coordinates_of_0_are_the_default_instance() {
     assert_eq!((first_x(&font), &font.coords[..]), (16384, &[8192][..]));
 }
 
+/// A setting sets every axis with its tag, as hb_font_set_variations does:
+/// with two axes `ax0 `, `ax0=0.5` puts both of the region's axes at 0.5,
+/// and hb-vector moves to 16384 × 0.5 × 0.5 = 4096 (14.4.0), not to 0 as
+/// for the first axis alone.
+#[test]
+fn a_setting_sets_every_axis_with_its_tag() {
+    let up = [0, 0x4000, 0x4000];
+    let fvar = craft::fvar(&[(b"ax0 ", -1.0, 0.0, 1.0), (b"ax0 ", -1.0, 0.0, 1.0)]);
+    let font = load_with("two-ax0.otf", &craft::cff2_scalars_with(&fvar, 2, &[vec![up, up]]), "ax0=0.5").unwrap();
+    let cff = font::cff_outlines(&font.data, font.start, &font.coords).unwrap().unwrap();
+    let (mut out, mut bounds) = (Vec::new(), [0; 4]);
+    assert_eq!(cff.glyph(1, &mut out, &mut bounds), Ok(true));
+    assert_eq!((&font.coords[..], out[0].x), (&[8192, 8192][..], 4096));
+}
+
 /// HarfBuzz reads a region list axis that fvar lacks as 0, and ignores an
 /// fvar axis past the list's; termshot refuses either at an instance, and
 /// draws the default instance, which reads no axes, as before.
