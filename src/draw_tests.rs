@@ -135,6 +135,34 @@ fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
     empty
 }
 
+/// A bug in the image layers (here a crop outside its image, which
+/// termshot never makes) fails the render, in every layer: draw.c returns 2,
+/// which main makes exit 2, and writes no PNG.
+#[test]
+fn a_failed_image_layer_fails_the_render() {
+    let font = font::prepare(fs::read(FONT).unwrap()).unwrap();
+    let cells = parse(b"ab\r\ncd", 4, 2);
+    let path = "target/test/failed-image-layer.png";
+    let out = CString::new(path).unwrap();
+    let pixels = [255u8; 16];
+    for z in [i32::MIN, -1, 0] {
+        for src_y in [0, 2] {
+            let mut view = composite::ImageView::solid(&[0; 4], 1, 1, 9, 9);
+            (view.pixels, view.width, view.height, view.src_w, view.src_h, view.src_y, view.z) =
+                (pixels.as_ptr(), 2, 2, 2, 2, src_y, z);
+            let _ = fs::remove_file(path);
+            let code = font
+                .with_face(|face| unsafe {
+                    draw_png_images(cells.as_ptr(), std::ptr::null(), 0, 4, 2, face, std::ptr::null(), 16.0,
+                        out.as_ptr(), 0, &view, 1, std::ptr::null_mut())
+                })
+                .unwrap();
+            assert_eq!(code, if src_y == 0 { 0 } else { 2 }, "z {z}, src_y {src_y}");
+            assert_eq!(fs::metadata(path).is_ok(), src_y == 0);
+        }
+    }
+}
+
 #[test]
 fn draw_png_reports_cells_drawn_as_boxes_for_an_empty_glyph() {
     // The vendored font maps U+16910 (Bamum) to an empty glyph.

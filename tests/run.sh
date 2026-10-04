@@ -84,6 +84,26 @@ if [ "$n" -le 8 ]; then
 fi
 echo "ok, each of $((n - 1)) geometry allocation failures draws the same PNG"
 
+# The image layers and the backdrop (src/composite.rs) allocate nothing; the
+# raster they paint is draw.c's one allocation for them. When it fails the
+# run exits 2, says so, and leaves no output. Linux only, where ulimit -v
+# caps the address space: 300x80 cells at --px 100 are a 321 MB raster.
+if [ "$(uname)" = Linux ]; then
+    rm -f "$scratch/fault.png" "$scratch/fault.txt"
+    set +e
+    (ulimit -v 262144 && exec ./termshot --text "$scratch/fault.txt" --px 100 --size 300x80 \
+        tests/fixtures/kitty-png-alpha-z.pty "$scratch/fault.png") 2>"$scratch/fault.err"
+    code=$?
+    set -e
+    if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
+        ! grep -q "out of memory for a 13500x7920 image" "$scratch/fault.err"; then
+        echo "FAIL raster allocation: exit $code, want 2 with no output left" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    echo "ok, a raster allocation failure exits 2 and leaves no output"
+fi
+
 rustc --edition 2021 --test src/main.rs -o "$scratch/unit" \
     -L native="$PWD" -l static=termshot_c
 rustc --edition 2021 tests/profile.rs -o "$scratch/profile"
