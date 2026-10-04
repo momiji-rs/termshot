@@ -8,7 +8,7 @@ use super::*;
 use crate::geometry::termshot_paint_failed;
 use std::ptr;
 
-/// A canvas of w x h RGB pixels with draw.c's layout: each scanline a filter
+/// A canvas of w x h RGB pixels with the render's layout: each scanline a filter
 /// byte then the pixels, 3 * w + 1 bytes apart.
 struct Raster {
     buf: Vec<u8>,

@@ -61,7 +61,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: draw.c under ASan + UBSan
+      - name: the C (stb_glue.c) under ASan + UBSan
         run: SANITIZE=1 ./test.sh
 
   msrv:

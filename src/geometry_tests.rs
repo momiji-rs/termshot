@@ -344,7 +344,7 @@ fn fill_rect_clips_to_the_canvas() {
             assert_eq!(&grid.px[(y * 5 + x) * 3..][..3], want, "({x}, {y})");
         }
     }
-    // A stride past the pixels (draw.c's has a filter byte) leaves the rest.
+    // A stride past the pixels (the render's has a filter byte) leaves the rest.
     let mut buffer = vec![0xeeu8; 3 * 7];
     let cv = Canvas { px: buffer[1..].as_mut_ptr(), filtered: buffer.as_mut_ptr(), w: 2, h: 3, stride: 7,
                       geometry: ptr::null_mut() };
