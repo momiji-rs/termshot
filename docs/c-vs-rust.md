@@ -3,10 +3,11 @@
 This file holds dated comparisons, newest first, for
 [#12](https://github.com/momiji-rs/termshot/issues/12): should termshot's own C
 (`src/draw.c` painting and `src/deflate.c` compression) move to Rust? It is
-moving: compression, box drawing and the image layers are Rust now. The vendored stb
+moving: compression, box drawing, the image layers and the text are Rust now. The vendored stb
 libraries are not part of it. Each comparison ports the C as of one commit to Rust,
 checks that both write the same bytes, and times both in one process.
 
+- [Step 2c shipped: the text is Rust (2026-10-04)](#step-2c-shipped-the-text-is-rust-2026-10-04).
 - [Step 2b shipped: the image layers are Rust (2026-10-04)](#step-2b-shipped-the-image-layers-are-rust-2026-10-04).
 - [Step 2a shipped: box drawing is Rust (2026-10-04)](#step-2a-shipped-box-drawing-is-rust-2026-10-04).
 - [Step 1 shipped: deflate is Rust (2026-10-04)](#step-1-shipped-deflate-is-rust-2026-10-04).
@@ -15,6 +16,90 @@ checks that both write the same bytes, and times both in one process.
 - [Painting and deflate POC (2026-10-01, `bd726a6`), history](#painting-and-deflate-poc-2026-10-01-bd726a6-history):
   the first port of both files. Its deflate C is two optimization rounds old and its
   painting C predates #61, #66 and #69, so do not compare its numbers with the current code.
+
+## Step 2c shipped: the text is Rust (2026-10-04)
+
+Step 2c moves what draw.c painted from the fonts to `src/glyphs.rs`: the
+glyph cache (`Glyph`, `Glyphs::find`, 1024 slots, key and conflict policy
+unchanged), the lookup in the font and then the fallback, empty and missing
+glyphs (`is_blank`, `is_ignorable`, the outlined box, the `EmptyGlyphs`
+report), the fallback's scale, centering and shrinking (#27/#47), the italic
+slant (`slant_outline`), bold, combining marks (`paint_marks`, #66),
+underlines and strike-through, the glyph blend, and the backdrop calls
+between them. draw.c keeps the fonts' setup, the cell metrics, the order of
+the passes, the PNG write and the profile record (step 2d), and stb_truetype
+(step 3).
+
+- **FFI surface**, once per render: `termshot_paint_text(canvas, backdrop,
+  marks, mark_count, fonts, profiling, empty, stats)` returns 0, 1 when a
+  glyph allocation failed ("glyph allocation failed"), 2 when the box
+  painter panicked ("box drawing failed") or 3 for any other panic
+  ("painting failed"); draw.c fails the render with exit 2 for each.
+  `TextFonts` (152 bytes) holds two `GlyphFace`s (56: stb's font, the
+  `Face`, the scale, and stb's four outline readers), the italic pivot, the
+  baseline, and the stb functions any face may be asked:
+  `stbtt_FindGlyphIndex`, `stbtt_GetGlyphHMetrics`, `stbtt_Rasterize`,
+  `stbtt_FreeShape`. `TextStats` (80) brings back the stage times and the
+  cache's counters. All are `#[repr(C)]` and asserted on both sides, as are
+  `Face` (32) and `Backdrop`, which lost `ms` (48).
+- **stb by pointer**: the Rust never names a C function of termshot's; it
+  calls the stb functions draw.c put in `TextFonts`. So the harnesses'
+  static library has no undefined symbols, and links into harnesses that
+  don't include draw.c.
+- **The CFF rule** holds in both languages. draw.c's `glyph_face` sets
+  `stbtt_IsGlyphEmpty`, `GetGlyphShape`, `GetGlyphBitmapBox` and
+  `MakeGlyphBitmap` only for a face with no `Face.outline` and a `glyf`
+  table; a CFF or CFF2 face gets NULL. `Source::new` refuses a face with both
+  the callback and the readers, or neither (a panic, so exit 2), and only
+  `Outlines::TrueType` holds the readers, so no path can call them on a CFF
+  face. A CFF face's outline comes from its callback into `Outline` (512
+  vertices, doubling), shared by the empty check and the drawing, and goes
+  to `stbtt_Rasterize`; slanting it in place invalidates it. The callback is
+  `font::outline`, so the vertices are what the C got.
+- **Floats**: f32 where the C had float, in its order, no `mul_add`. The C
+  calls no rounded libm function here: `floorf`, `ceilf` and `lroundf` (on a
+  value clamped to i16) are exact, and tan(12°) is a constant. Apple clang
+  emitted them as `fcvtms`, `fcvtps` and `fcvtas` (and one `frintm`), with
+  no FMA. GCC 16 called `floorf` and `ceilf`, which the linked binary binds
+  to its own copies (none comes from glibc), and glibc's `lroundf`. The Rust
+  calls nothing: `fcvtms`, `fcvtps` and `fcvtas` on arm64, and on x86-64
+  LLVM folds each rounding and its conversion into `cvttss2si` with a
+  correction. Being exact, all of them agree. Float-to-int casts are pixel
+  and vertex coordinates, in range, where C's `(int)` and Rust's `as` agree.
+- **Memory**: the cache's slots (a new allocation; the C's were on its
+  stack), the outline scratch and each bitmap use `try_reserve_exact`; a
+  failure returns 1. Unit tests fail each in turn with fake fonts, and with
+  the vendored ones through draw.c, and `tests/run.sh` does it in the CLI:
+  exit 2, no output left. A bitmap starts zeroed, which fixes a C bug: for a
+  glyph with a box but no points (a composite of an empty glyph), stb writes
+  nothing into the bitmap, and the C blended what malloc returned. On macOS
+  that was zeros; on glibc another glyph's leftovers.
+- **The clock**: the stage times read `CLOCK_MONOTONIC`, as draw.c's
+  `now_ms`, so the spans draw.c subtracts them from use the same clock. std's
+  `Instant` cost enough more per read to inflate the profiled foreground of
+  cache-hit screens by up to 15% at the same wall time.
+- **Evidence**: `bench/c-vs-rust/run.sh glyphs` (CI, all three hosts)
+  renders every fixture, `tests/vt/real/`, `examples/`, `tests/perf/` and
+  generated logs (each vendored font's whole cmap upright, italic and bold;
+  random cells; all of CJK Unified Ideographs; 1,500 distinct ideographs;
+  marks) with 12 font setups (TrueType, CFF, CFF2 and its instances, the
+  marks font, a font with an empty 'A', as primary and as fallback; and the
+  system Noto CJK where there is one) at `--px` 9, 24, 46, 47.5 and 128,
+  through the CLI at `c0b7b02` and now: 3,640 renders, the same PNG, exit
+  code and stderr on both hosts, the glibc malloc made to zero blocks for the
+  old C. See
+  [docs/performance.md](performance.md#glyph-painting-in-rust-2026-10-04-ab924ca-12-step-2c)
+  for the time.
+
+For 2d (the driver, the cursor, the PNG write, font setup): draw.c's frame
+now holds only the canvas, the `Backdrop`, `TextFonts` and `TextStats`, and
+the profile record's arithmetic (`background_ms` adds `TextStats.backdrop_ms`,
+`foreground_ms` subtracts it). The cursor is already an `ImageView` or a cell
+attribute, painted by composite.rs or glyphs.rs. stb_truetype's
+`stbtt_fontinfo` is opaque to Rust; moving font setup means either keeping
+`init_font`/`init_cff2`/`cell_metrics` as C glue that fills one in, or
+step 3. `termshot_paint_failed` is still reset by `termshot_geometry_new`,
+so the render must begin there.
 
 ## Step 2b shipped: the image layers are Rust (2026-10-04)
 

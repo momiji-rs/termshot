@@ -6,8 +6,8 @@
 //! (tests/draw.c), and src/glyphs.rs, the text (tests/glyphs.c), with
 //! src/cell.rs, the cell they read, and src/cff.rs for its vertex. The
 //! harnesses that include src/draw.c need all of them. glyphs.rs calls stb
-//! only through the functions draw.c hands it, so the library has no
-//! undefined symbols of its own and links into harnesses without draw.c.
+//! only through the functions draw.c hands it, so the library needs no
+//! symbol of draw.c's and links into harnesses without it.
 //! test.sh and tests/run.sh build it with build.sh's -C opt-level=2 and link
 //! it as the binary links the modules.
 
