@@ -109,10 +109,111 @@ fn base64_validation() {
     assert_eq!(base64(b"/wAA", MAX_BYTES), Some(vec![255, 0, 0]));
     assert_eq!(base64(b"/w==", MAX_BYTES), Some(vec![255]));
     assert_eq!(base64(b"/wA=", MAX_BYTES), Some(vec![255, 0]));
+    // Unpadded, as kitten icat sends small PNGs.
+    assert_eq!(base64(b"/w", MAX_BYTES), Some(vec![255]));
+    assert_eq!(base64(b"/wA", MAX_BYTES), Some(vec![255, 0]));
+    assert_eq!(base64(b"", MAX_BYTES), Some(vec![]));
     for bad in [
-        "/wA", "!!!!", "=AAA", "/x==", "/wB=", "/w==AAAA", "AA=A", "AA\nA",
+        "/", "/wAA/", "!!!!", "/w!", "=AAA", "=", "==", "A===", "====", "/x==", "/x", "/wB=", "/wB", "/w=",
+        "/wA==", "/w==AAAA", "/w==A", "/w=A", "AA=A", "AA\nA", "/wAA\n",
     ] {
         assert!(base64(bad.as_bytes(), MAX_BYTES).is_none(), "{bad}");
+    }
+}
+
+/// `b64` without its `=` padding.
+fn b64_unpadded(data: &[u8]) -> String {
+    b64(data).trim_end_matches('=').to_string()
+}
+
+#[test]
+fn base64_decodes_every_length_padded_or_not() {
+    for n in 0..=10 {
+        let data: Vec<u8> = (0..n).map(|i| (i * 37 + 200) as u8).collect();
+        let padded = b64(&data);
+        let unpadded = b64_unpadded(&data);
+        assert_eq!(unpadded.len() % 4, [0, 2, 3][n % 3], "{n}");
+        assert_eq!(base64(padded.as_bytes(), MAX_BYTES).as_ref(), Some(&data), "{padded}");
+        assert_eq!(base64(unpadded.as_bytes(), MAX_BYTES).as_ref(), Some(&data), "{unpadded}");
+        // One more character never makes a byte: a length of 4n+1 is refused.
+        assert!(base64(format!("{}A", b64(&data[..n / 3 * 3])).as_bytes(), MAX_BYTES).is_none(), "{n}");
+        // Nor does anything after the padding.
+        if padded != unpadded {
+            assert!(base64(format!("{padded}AAAA").as_bytes(), MAX_BYTES).is_none(), "{n}");
+        }
+    }
+}
+
+#[test]
+fn unpadded_payload_limit_is_exact() {
+    // Whole groups, then the 2 or 3 characters of an unpadded last group.
+    let encoded = vec![b'A'; MAX_BYTES / 3 * 4 + [0, 2, 3][MAX_BYTES % 3]];
+    assert_ne!(encoded.len() % 4, 0);
+    assert_eq!(base64(&encoded, MAX_BYTES).unwrap().len(), MAX_BYTES);
+    assert!(base64(&encoded, MAX_BYTES - 1).is_none());
+}
+
+/// Transmits `data` as 2x1 RGB in chunks of the given byte lengths, each
+/// base64'd on its own, padded or not.
+fn chunked(data: &[u8], cuts: &[usize], pad: bool) -> Option<Vec<u8>> {
+    let mut g = Graphics::default();
+    let mut rest = data;
+    for (i, &len) in cuts.iter().enumerate() {
+        let (chunk, tail) = rest.split_at(len);
+        rest = tail;
+        let text = if pad { b64(chunk) } else { b64_unpadded(chunk) };
+        let more = u8::from(i + 1 < cuts.len());
+        let head = if i == 0 { "a=t,i=1,f=24,s=2,v=1," } else { "" };
+        run(&mut g, (0, 0), &format!("{head}m={more};{text}"));
+    }
+    g.images.first().map(|img| img.pixels.to_vec())
+}
+
+#[test]
+fn every_chunk_is_decoded_on_its_own_padded_or_not() {
+    // kitty decodes each chunk's base64 separately, so a chunk may end in the
+    // middle of a 4-character group, with or without padding, and the next
+    // starts a fresh group. Every split of 6 bytes into chunks, whatever
+    // their lengths mod 3.
+    let data = [255, 0, 0, 0, 255, 0];
+    let pixels = Some(vec![255, 0, 0, 255, 0, 255, 0, 255]);
+    let mut splits = vec![vec![6]];
+    for a in 0..=6 {
+        for b in 0..=6 - a {
+            splits.push(vec![a, 6 - a]);
+            splits.push(vec![a, b, 6 - a - b]);
+        }
+    }
+    for cuts in &splits {
+        for pad in [false, true] {
+            assert_eq!(chunked(&data, cuts, pad), pixels, "{cuts:?} pad={pad}");
+        }
+    }
+    // Not the same as decoding the chunks' text joined. "/w" + "AAAA/wA" is
+    // 255 then 0, 0, 0, 255, 0; joined, "/wAAAA/wA" is 9 characters, refused.
+    assert!(base64(b"/wAAAA/wA", MAX_BYTES).is_none());
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), "a=t,i=1,f=24,s=2,v=1,m=1;/w");
+    run(&mut g, (0, 0), "m=0;AAAA/wA");
+    assert_eq!(g.images[0].pixels.to_vec(), pixels.clone().unwrap());
+    // And "/w" + "AAAP8A" is 255 then 0, 0, 15, 240: 5 bytes, too few, though
+    // joined, "/wAAAP8A" would be the same 6 bytes.
+    assert_eq!(base64(b"/wAAAP8A", MAX_BYTES), Some(data.to_vec()));
+    let mut g = Graphics::default();
+    run(&mut g, (0, 0), "a=t,i=1,f=24,s=2,v=1,m=1;/w");
+    run(&mut g, (0, 0), "m=0;AAAP8A");
+    assert!(g.images.is_empty());
+}
+
+#[test]
+fn a_malformed_chunk_aborts_the_upload() {
+    for bad in ["/", "/wA!", "/x", "/w=", "/w==A"] {
+        let mut g = Graphics::default();
+        run(&mut g, (0, 0), "a=t,i=1,f=24,s=2,v=1,m=1;/wAA");
+        run(&mut g, (0, 0), &format!("m=1;{bad}"));
+        assert!(g.pending.is_none(), "{bad}");
+        run(&mut g, (0, 0), "m=0;AP8A");
+        assert!(g.images.is_empty(), "{bad}");
     }
 }
 
@@ -422,9 +523,10 @@ fn alternate_1047_clears_images_on_exit() {
 }
 
 #[test]
-fn padded_intermediate_chunk_is_rejected() {
+fn padded_intermediate_chunk_is_accepted_as_kitty_does() {
+    // kitty decodes each chunk on its own, so padding may end any chunk.
     let g = replay(b"\x1b_Ga=T,f=32,s=1,v=1,m=1;/wAAgA==\x1b\\\x1b_Gm=0;\x1b\\");
-    assert!(g.images.is_empty());
+    assert_eq!(*g.images[0].pixels, [255, 0, 0, 128]);
 }
 
 #[test]
