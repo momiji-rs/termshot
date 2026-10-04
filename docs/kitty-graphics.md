@@ -484,10 +484,46 @@ scales the image to 60x30 itself and sends it as compressed RGB with
 `38:2:0:0:42`. Two goldens render it at 20x6; they were checked by eye, not
 against a kitty window: no kitty terminal was run.
 
-Not supported, found with that client: without `--place`, kitten sends a
-small PNG as base64 without `=` padding, which termshot's decoder refuses,
-so that image is dropped (its placeholders then draw nothing). That is the
-base64 decoder's limit, not the placeholders'.
+Found with that client: without `--place`, kitten sends a small PNG as
+base64 without `=` padding (103 characters for a 77-byte PNG), which
+termshot's decoder used to refuse, so the image was dropped. See
+[Unpadded base64](#unpadded-base64).
+
+
+## Unpadded base64
+
+kitty 0.49.2 decodes each chunk's payload on its own, in
+`parse-graphics-command.h`, with `base64_decode8` (`kitty/base64.h`) over
+the vendored aklomp base64 stream decoder, starting a fresh state per
+chunk. It ignores the decoder's return value ("it returns non-zero when it
+is waiting for padding bytes"), so it keeps every whole byte decoded so far:
+
+- a chunk may end in a partial group, padded or not, whether or not more
+  chunks follow; the next chunk starts a new group, so the result is the
+  chunks' decoded bytes joined, not the decoding of their joined text;
+- a lone last character (length 4n+1) adds nothing; leftover bits in the
+  last group are dropped unchecked;
+- an invalid character, a stray `=`, or data after the padding ends the
+  chunk's output there, silently.
+
+termshot follows the first point: `base64` in `src/graphics.rs` decodes one
+chunk, accepting `xx`, `xxx`, `xx==` and `xxx=` as its last group, and a
+padded chunk may now come before more chunks (it used to abort the upload).
+Everything in the other two points is refused instead of truncated, as it
+was before: a character outside the alphabet, a length of 4n+1, partial
+padding such as `xx=`, data after the padding, nonzero leftover bits. A
+refused chunk aborts the upload. Sixel images reach the store through the
+same command, but `sixel::kitty_command` writes one padded payload, so they
+are unaffected.
+
+`src/graphics/tests.rs` decodes 0 to 10 bytes padded and unpadded, refuses
+each length 4n+1 and data after padding, splits 6 bytes into two and three
+chunks of every length, padded and not, and checks a split inside a group
+against the joined text's decoding. `tests/fixtures/kitty-icat-unpadded.pty`
+is real client output, recorded like `kitty-icat-placeholder.pty` but
+without `--place`, from a 77-byte 4x2 PNG: once with `--unicode-placeholder
+--image-id 42` and once direct, both `f=100` with 103 base64 characters.
+Two goldens render it at 20x6; the existing goldens are unchanged.
 
 
 ## ASCII autowrap regression

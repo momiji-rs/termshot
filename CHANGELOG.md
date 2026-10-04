@@ -234,6 +234,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - An output that names the log or a font overwrote it, and two outputs
   that name one file overwrote each other. Both are refused with exit 2,
   however the paths are spelled (`a`, `./a`, a symlink).
+- A kitty graphics payload in base64 without its `=` padding was refused, so
+  `kitten icat` without `--place`, which sends small PNGs that way, drew
+  nothing. As in kitty, each chunk is decoded on its own and may end in a
+  partial group, padded or not; a padded chunk no longer has to be the last.
+  Invalid characters, a length of 4n+1, wrong padding and data after it are
+  still refused.
 
 ## [0.1.0] - 2026-10-01
 

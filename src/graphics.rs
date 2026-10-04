@@ -130,6 +130,7 @@ pub struct Placement {
 }
 
 /// Borrowed only for the duration of draw_png_images; pixels remain Rust-owned.
+/// As ImageView in src/draw.c, which asserts the same size.
 #[repr(C)]
 pub struct ImageView {
     pixels: *const u8,
@@ -153,6 +154,10 @@ pub struct ImageView {
     /// from 0 over both.
     z: i32,
 }
+
+// 104 bytes on the 64-bit targets termshot supports: a pointer, two u32, eight
+// i64, five 32-bit fields and 4 bytes of tail padding. Checked in src/draw.c too.
+const _: () = assert!(std::mem::size_of::<ImageView>() == 104);
 
 /// A visible vertical part of a placement. `y` is the translated origin of
 /// the full source image, preserving sampling after a partial-region scroll.
@@ -435,10 +440,21 @@ fn payload_limit(cmd: &Command) -> usize {
     }
 }
 
+/// Decodes one chunk's payload. Like kitty, which decodes each chunk on its
+/// own, a chunk may end in a partial group with or without its `=` padding:
+/// `kitten icat` sends small PNGs unpadded. Unlike kitty, which stops quietly
+/// at the first bad character, anything else is refused: a character outside
+/// the alphabet, a lone character in the last group (a length of 4n+1), wrong
+/// padding, data after it, and nonzero bits left over in the last group.
 fn base64(data: &[u8], limit: usize) -> Option<Vec<u8>> {
-    if data.len() % 4 != 0 || data.len() > (limit + 2) / 3 * 4 {
+    if data.len() > (limit + 2) / 3 * 4 {
         return None;
     }
+    let pad = data.iter().rev().take(2).take_while(|&&c| c == b'=').count();
+    if pad > 0 && data.len() % 4 != 0 {
+        return None;
+    }
+    let body = &data[..data.len() - pad];
     let value = |c| match c {
         b'A'..=b'Z' => Some(c - b'A'),
         b'a'..=b'z' => Some(c - b'a' + 26),
@@ -447,26 +463,30 @@ fn base64(data: &[u8], limit: usize) -> Option<Vec<u8>> {
         b'/' => Some(63),
         _ => None,
     };
-    let mut out = Vec::with_capacity(data.len() / 4 * 3);
-    for (i, q) in data.chunks_exact(4).enumerate() {
-        let a = value(q[0])?;
-        let b = value(q[1])?;
-        out.push(a << 2 | b >> 4);
-        if q[2] == b'=' {
-            if q[3] != b'=' || b & 15 != 0 || (i + 1) * 4 != data.len() {
+    let mut out = Vec::with_capacity(body.len() / 4 * 3 + 2);
+    let groups = body.chunks_exact(4);
+    let tail = groups.remainder();
+    for q in groups {
+        let n = q.iter().try_fold(0u32, |n, &c| Some(n << 6 | u32::from(value(c)?)))?;
+        out.extend_from_slice(&n.to_be_bytes()[1..]);
+    }
+    match *tail {
+        [] => {}
+        [a, b] => {
+            let (a, b) = (value(a)?, value(b)?);
+            if b & 15 != 0 {
                 return None;
             }
-        } else {
-            let c = value(q[2])?;
-            out.push(b << 4 | c >> 2);
-            if q[3] == b'=' {
-                if c & 3 != 0 || (i + 1) * 4 != data.len() {
-                    return None;
-                }
-            } else {
-                out.push(c << 6 | value(q[3])?);
-            }
+            out.push(a << 2 | b >> 4);
         }
+        [a, b, c] => {
+            let (a, b, c) = (value(a)?, value(b)?, value(c)?);
+            if c & 3 != 0 {
+                return None;
+            }
+            out.extend_from_slice(&[a << 2 | b >> 4, b << 4 | c >> 2]);
+        }
+        _ => return None,
     }
     (out.len() <= limit).then_some(out)
 }
@@ -689,11 +709,6 @@ impl Graphics {
             self.abort();
             return None;
         };
-        // A padded chunk can only finish a transmission.
-        if cmd.more && payload.contains(&b'=') {
-            self.abort();
-            return None;
-        }
         let mut data = chunk;
         if let Some((first, mut previous)) = self.pending.take() {
             if cmd.continuation {

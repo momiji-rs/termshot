@@ -728,6 +728,9 @@ typedef struct {
     int32_t z;
 } ImageView;
 
+/* As ImageView in src/graphics.rs, which asserts the same size. */
+_Static_assert(sizeof(ImageView) == 104, "ImageView ABI must match the Rust side");
+
 /* kitty's three image layers, by z-index: under the cell backgrounds that are
    not the default (z below INT32_MIN / 2), over every background but under
    the text (other negative z), and over the text. */
