@@ -246,8 +246,9 @@ eight.
    a 5% gap when unchecked, sliced `a[i..i + 8]` at every step.
 5. **The compiler still matters as much as the language,** but it matters differently from 2026-10-01. #20's
    per-compiler C closed the GCC gap that made Rust 5-26% faster then. On clang hosts, the plain loop that clang
-   does not vectorize costs the C up to 1.92× in the whole compressor (C portable / C, most where the
-   checksum is a large share) and 2.35-3.23× in the Adler-32 alone.
+   does not vectorize costs the C up to 1.92× in the whole compressor on the M2 and up to 1.99× on
+   the aarch64 runner with clang 18 (C portable / C, most where the checksum is a large share),
+   and 2.35-3.23× in the Adler-32 alone.
 
 ### End-to-end context
 
