@@ -1,6 +1,10 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[deflate-in-Rust round](#png-compression-in-rust-2026-10-04-6396b8d-12-step-1)
+(2026-10-04, `6396b8d`, #12 step 1) replaced `src/deflate.c` with
+`src/deflate.rs` and remeasured every case against main `63d6de8` on the same
+two machines; nothing else changed. The
 [text-only pre-scan](#text-only-runs-one-pre-scan-instead-of-two-2026-10-03-macos-only)
 (2026-10-03, after main `a8a95e0`) changed only how a run without a PNG
 decides whether it needs fonts. The
@@ -25,6 +29,268 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## PNG compression in Rust (2026-10-04, `6396b8d`, #12 step 1)
+
+#12 step 1 moves the compressor from `src/deflate.c` to `src/deflate.rs`.
+stb_image_write, still C, calls it through `STBIW_ZLIB_COMPRESS`. The bar was
+no regression beyond noise on `reply-sent`. The stream is the same for every
+input and quality (`tests/deflate_diff.c` against stock stb, now linked with
+the Rust), so every PNG is byte-identical: all 48 cases below, on both binaries,
+both batches and both hosts, gave one output each, and every PNG `./test.sh`
+writes (399 files) hashes the same as on main.
+
+### Result
+
+| | macOS arm64 (M2 Max) | Linux x86-64 (Ryzen 7 8745HS) |
+| --- | --- | --- |
+| end to end, 48 cases, paired wall speedup (main/branch) | 0.965-1.052 (A), 0.980-1.047 (B) | 0.961-1.167 (A), 0.989-1.173 (B) |
+| `reply-sent` wall median, main → branch | 8.96 → 8.87 ms, 1.014 [1.002, 1.028] / 1.004 [0.991, 1.029] | 7.71 → 7.29 ms, 1.052 [1.032, 1.073] / 1.060 [1.026, 1.082] |
+| Adler-32, `reply-128px` (stage median) | 3.51 → 3.50 ms | 3.55 → 2.74 ms |
+| matching and emission, `reply-128px` | 11.48 → 11.13 ms | 10.98 → 10.40 ms |
+| slower with confidence in both batches | `cjk-cff-primary` 0.984 / 0.980, `cjk-overflow-full` 0.988 / 0.989, `large-color` 0.991 / 0.992 | none |
+
+`reply-sent` is not slower on either host. On Linux it is 5-6% faster: the
+SSE2 Adler-32 (0.50 → 0.38 ms) and the matcher. On macOS three cases are 1-2%
+slower in both batches. All three are dominated by matching on glyph-heavy
+images (`deflate_match_emit` +1.3-2.8%: 3.94 → 4.05, 7.73 → 7.91, 117.71 →
+119.23 ms), which is the LLVM-against-LLVM matching gap of
+[docs/c-vs-rust.md](c-vs-rust.md) that this round narrowed but did not
+close. It is accepted: it is at most 2% of a run, it does not reach
+`reply-sent`, and the geometry-heavy cases gain more (`geometry-all` 1.052 / 1.047,
+`rounded-128px` 1.031 / 1.034).
+
+### What was measured
+
+- **main**: `63d6de8` (main after #72), built with `./build.sh`.
+- **branch**: `6396b8d`, the compressor commits on top of it. The later
+  commits change only `cfg`-gated test code (the fault hook's visibility for
+  rustc 1.70), scripts and documentation, so the shipped binary is the one
+  measured.
+
+Each host built both binaries itself (on Linux from fresh clones of the
+pushed branch and main in a temp dir, since removed). Method and harness are
+those of the [#20 round](#png-compression-adler-32-and-deflate-matching-2026-10-03-3bf2ffc-20):
+`bench.py` with every suite, 5 warmups and 40 shuffled rounds of plain and
+profiled runs per case and binary, 5 peak-RSS runs, seeds 17 (batch A) and 29
+(batch B), `--verify-identical`, and the full CJK collection (same sha256,
+`b76b0433…`) on both hosts.
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, macOS 26.6.2 | `starship`, kernel 7.2.5-3-omarchy, glibc 2.44, governor `performance` |
+| compilers | rustc 1.98.1, Apple clang 21.0.0 (clang-2100.3.34.2) | rustc 1.98.1, GCC 16.2.1 20260810 |
+| main / branch sha256 | `2fb0770600c5…` / `1df1d063be27…` | `e6512e8675b7…` / `a922cbe41e1c…` |
+| load average (1 min), start → end | A 3.42 → 5.88, B 5.88 → 4.48: a shared desktop, other sessions busy | A 1.08 → 1.30, B 1.30 → 1.38 |
+
+Raw results: macOS [batch A](performance-2026-10-04-deflate-rust-macos-a.json)
+and [batch B](performance-2026-10-04-deflate-rust-macos-b.json); Linux
+[batch A](performance-2026-10-04-deflate-rust-linux-a.json) and
+[batch B](performance-2026-10-04-deflate-rust-linux-b.json). They hold every
+sample; none was discarded. Peak RSS medians differ by at most 1.4 MiB
+(-1.36 MiB `cjk-overflow-full`, Linux batch A); the compressor allocates as
+the C did.
+
+### End-to-end results
+
+Wall median / p95 (ms) from batch A, paired speedup (main/branch, above 1 is
+faster) with its 95% bootstrap interval for both batches, and the PNG stages
+(batch A medians, main → branch). `png_encode` holds the other two. Text-only
+cases write no PNG.
+
+macOS arm64:
+
+| case | main wall | branch wall | speedup A | speedup B | match_emit | checksum | png_encode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `font-builtin` | 9.29 / 10.07 | 9.23 / 10.02 | 0.997 [0.976, 1.028] | 1.012 [0.990, 1.029] | 2.80 → 2.74 | 0.48 → 0.48 | 3.40 → 3.35 |
+| `font-file` | 8.89 / 9.48 | 8.96 / 9.84 | 0.996 [0.981, 1.006] | 1.001 [0.987, 1.017] | 2.72 → 2.71 | 0.47 → 0.48 | 3.31 → 3.33 |
+| `cjk-none` | 5.12 / 5.66 | 5.09 / 5.67 | 1.004 [0.971, 1.036] | 1.007 [0.997, 1.019] | 0.90 → 0.86 | 0.12 → 0.12 | 1.06 → 1.01 |
+| `cjk-subset` | 9.64 / 10.35 | 9.85 / 10.33 | 0.995 [0.967, 1.011] | 0.987 [0.968, 0.997] | 4.09 → 4.22 | 0.12 → 0.12 | 4.39 → 4.51 |
+| `cjk-cff-primary` | 9.19 / 9.70 | 9.34 / 9.71 | 0.984 [0.969, 0.997] | 0.980 [0.970, 1.000] | 3.94 → 4.05 | 0.13 → 0.13 | 4.25 → 4.37 |
+| `mixed-subset` | 7.74 / 7.94 | 7.80 / 8.17 | 0.990 [0.972, 1.015] | 1.002 [0.988, 1.014] | 2.28 → 2.29 | 0.12 → 0.12 | 2.50 → 2.51 |
+| `glyph-overflow` | 16.63 / 17.57 | 16.82 / 17.24 | 0.991 [0.984, 1.001] | 0.994 [0.985, 1.003] | 6.04 → 6.04 | 0.12 → 0.12 | 6.39 → 6.37 |
+| `cjk-full` | 12.99 / 13.40 | 13.11 / 13.53 | 0.987 [0.977, 1.002] | 0.994 [0.982, 1.004] | 4.09 → 4.20 | 0.12 → 0.12 | 4.40 → 4.50 |
+| `mixed-full` | 11.50 / 11.95 | 11.43 / 11.88 | 1.008 [0.997, 1.018] | 1.005 [0.989, 1.018] | 2.46 → 2.45 | 0.12 → 0.12 | 2.68 → 2.66 |
+| `cjk-overflow-full` | 27.06 / 27.54 | 27.39 / 28.21 | 0.988 [0.978, 0.994] | 0.989 [0.981, 0.995] | 7.73 → 7.91 | 0.12 → 0.12 | 8.16 → 8.34 |
+| `reply-sent` | 8.96 / 9.57 | 8.87 / 9.22 | 1.014 [1.002, 1.028] | 1.004 [0.991, 1.029] | 2.73 → 2.74 | 0.47 → 0.48 | 3.33 → 3.35 |
+| `draft-ready` | 9.02 / 9.69 | 9.04 / 9.97 | 1.001 [0.979, 1.017] | 1.000 [0.977, 1.020] | 2.73 → 2.70 | 0.48 → 0.48 | 3.34 → 3.31 |
+| `reply-24px` | 5.78 / 6.18 | 5.77 / 6.13 | 1.013 [0.990, 1.024] | 1.003 [0.985, 1.041] | 1.25 → 1.25 | 0.12 → 0.12 | 1.42 → 1.42 |
+| `reply-128px` | 29.56 / 30.32 | 29.24 / 29.79 | 1.019 [1.005, 1.028] | 1.021 [1.008, 1.028] | 11.48 → 11.13 | 3.51 → 3.50 | 15.56 → 15.16 |
+| `real-shell` | 6.55 / 6.89 | 6.51 / 7.00 | 0.994 [0.979, 1.023] | 1.010 [0.991, 1.019] | 1.32 → 1.27 | 0.31 → 0.30 | 1.70 → 1.64 |
+| `real-less` | 6.02 / 6.80 | 6.10 / 6.43 | 1.007 [0.990, 1.026] | 0.998 [0.982, 1.029] | 1.00 → 0.97 | 0.31 → 0.31 | 1.36 → 1.33 |
+| `real-vi` | 8.03 / 8.43 | 8.06 / 8.37 | 1.000 [0.983, 1.009] | 0.996 [0.985, 1.013] | 2.53 → 2.51 | 0.30 → 0.31 | 2.95 → 2.93 |
+| `blank` | 6.14 / 6.43 | 5.95 / 6.30 | 1.027 [0.997, 1.044] | 1.009 [0.988, 1.038] | 0.76 → 0.70 | 0.48 → 0.48 | 1.30 → 1.25 |
+| `color-grid` | 18.03 / 18.76 | 18.20 / 18.79 | 0.991 [0.982, 0.997] | 1.001 [0.993, 1.008] | 11.65 → 11.89 | 0.12 → 0.12 | 12.19 → 12.39 |
+| `ascii-overflow` | 6.05 / 6.33 | 6.01 / 6.33 | 1.005 [0.988, 1.024] | 1.013 [1.001, 1.040] | 0.40 → 0.38 | 0.12 → 0.12 | 0.55 → 0.53 |
+| `rounded-boxes` | 10.44 / 11.22 | 10.37 / 10.80 | 1.011 [0.993, 1.037] | 1.028 [1.017, 1.043] | 3.57 → 3.34 | 0.48 → 0.48 | 4.15 → 3.92 |
+| `dense` | 12.05 / 12.49 | 12.08 / 12.49 | 0.993 [0.983, 1.002] | 1.012 [0.998, 1.016] | 5.19 → 5.16 | 0.49 → 0.48 | 5.90 → 5.85 |
+| `ansi-replay` | 18.79 / 19.35 | 18.88 / 19.29 | 0.996 [0.987, 1.007] | 1.004 [0.997, 1.007] | 2.78 → 2.74 | 0.48 → 0.48 | 3.40 → 3.37 |
+| `large` | 38.45 / 39.23 | 38.16 / 38.98 | 1.012 [1.006, 1.020] | 1.015 [1.003, 1.019] | 18.35 → 17.94 | 3.15 → 3.15 | 22.36 → 21.95 |
+| `unicode` | 7.99 / 8.49 | 7.95 / 8.36 | 1.010 [0.990, 1.024] | 1.006 [0.988, 1.024] | 2.55 → 2.50 | 0.12 → 0.12 | 2.76 → 2.73 |
+| `box-grid` | 7.75 / 8.22 | 7.54 / 7.74 | 1.030 [1.020, 1.052] | 1.026 [1.009, 1.046] | 1.82 → 1.66 | 0.49 → 0.49 | 2.38 → 2.24 |
+| `block-grid` | 10.75 / 11.19 | 10.69 / 11.14 | 0.999 [0.986, 1.020] | 1.015 [1.005, 1.034] | 4.20 → 4.09 | 0.47 → 0.47 | 4.81 → 4.71 |
+| `rounded-panes` | 10.11 / 10.79 | 10.05 / 10.52 | 1.008 [0.996, 1.032] | 1.019 [1.009, 1.035] | 3.42 → 3.31 | 0.49 → 0.49 | 4.05 → 3.93 |
+| `rounded-24px` | 5.80 / 6.06 | 5.70 / 6.06 | 1.013 [0.993, 1.031] | 1.025 [0.980, 1.038] | 1.25 → 1.19 | 0.12 → 0.12 | 1.40 → 1.34 |
+| `rounded-128px` | 33.00 / 33.55 | 31.99 / 32.78 | 1.031 [1.023, 1.036] | 1.034 [1.027, 1.037] | 12.66 → 11.80 | 3.49 → 3.48 | 16.73 → 15.80 |
+| `geometry-all` | 95.10 / 97.36 | 90.54 / 92.60 | 1.052 [1.047, 1.057] | 1.047 [1.044, 1.051] | 75.48 → 70.85 | 3.15 → 3.19 | 79.59 → 75.03 |
+| `large-sparse` | 21.31 / 21.90 | 20.71 / 21.39 | 1.026 [1.011, 1.040] | 1.015 [1.009, 1.024] | 5.88 → 5.58 | 3.12 → 3.14 | 9.37 → 9.10 |
+| `large-color` | 145.63 / 148.19 | 146.96 / 149.50 | 0.991 [0.990, 0.995] | 0.992 [0.989, 0.996] | 117.71 → 119.23 | 3.25 → 3.28 | 124.86 → 126.45 |
+| `image-below` | 22.60 / 23.76 | 22.69 / 25.55 | 0.995 [0.983, 1.006] | 0.996 [0.986, 1.002] | 12.36 → 12.54 | 0.50 → 0.51 | 13.32 → 13.51 |
+| `image-under` | 27.03 / 40.18 | 27.14 / 35.90 | 0.995 [0.981, 1.009] | 0.995 [0.986, 1.000] | 15.79 → 16.11 | 0.52 → 0.53 | 16.95 → 17.27 |
+| `image-over` | 25.65 / 32.83 | 26.74 / 33.00 | 0.965 [0.937, 1.013] | 0.990 [0.984, 0.999] | 10.48 → 10.66 | 0.50 → 0.49 | 11.48 → 11.62 |
+| `dense-sgr` | 31.35 / 32.43 | 31.50 / 32.47 | 0.998 [0.993, 1.004] | 0.998 [0.992, 1.001] | 12.51 → 12.68 | 0.12 → 0.12 | 13.02 → 13.17 |
+| `cursor-moves` | 27.81 / 29.02 | 27.82 / 28.32 | 0.998 [0.992, 1.004] | 0.998 [0.993, 1.000] | 5.79 → 5.89 | 0.12 → 0.12 | 6.14 → 6.24 |
+| `scrolling` | 9.50 / 9.89 | 9.63 / 9.91 | 0.987 [0.974, 1.005] | 0.993 [0.988, 1.005] | 1.43 → 1.40 | 0.12 → 0.12 | 1.60 → 1.58 |
+| `mixed-unicode` | 29.58 / 30.67 | 29.56 / 30.13 | 1.004 [0.999, 1.008] | 1.000 [0.994, 1.007] | 2.32 → 2.32 | 0.12 → 0.12 | 2.53 → 2.51 |
+| `thai-combining` | 24.01 / 24.72 | 24.05 / 25.46 | 0.999 [0.992, 1.007] | 1.001 [0.994, 1.007] | 0.94 → 0.88 | 0.12 → 0.12 | 1.09 → 1.04 |
+| `text-ansi-replay` | 13.44 / 13.80 | 13.40 / 13.71 | 1.003 [0.992, 1.009] | 1.001 [0.985, 1.009] | — | — | — |
+| `text-ascii-overflow` | 4.89 / 5.31 | 4.93 / 5.22 | 0.996 [0.981, 1.012] | 1.015 [0.994, 1.031] | — | — | — |
+| `text-dense-sgr` | 16.49 / 16.97 | 16.47 / 16.85 | 1.000 [0.994, 1.007] | 0.992 [0.982, 1.002] | — | — | — |
+| `text-mixed-unicode` | 26.70 / 27.28 | 26.64 / 27.06 | 1.006 [1.000, 1.010] | 1.000 [0.995, 1.006] | — | — | — |
+| `text-reply-sent` | 3.12 / 3.33 | 3.13 / 3.60 | 0.997 [0.973, 1.037] | 1.014 [0.977, 1.030] | — | — | — |
+| `text-kitty` | 3.84 / 4.31 | 3.89 / 4.26 | 0.989 [0.973, 1.011] | 1.009 [0.983, 1.032] | — | — | — |
+| `text-sixel` | 3.36 / 3.64 | 3.31 / 3.57 | 1.013 [0.997, 1.033] | 1.037 [0.999, 1.059] | — | — | — |
+
+Linux x86-64:
+
+| case | main wall | branch wall | speedup A | speedup B | match_emit | checksum | png_encode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `font-builtin` | 7.55 / 8.21 | 7.23 / 7.78 | 1.047 [1.009, 1.087] | 1.037 [1.011, 1.063] | 3.43 → 2.93 | 0.50 → 0.38 | 4.18 → 3.56 |
+| `font-file` | 7.64 / 8.28 | 7.42 / 7.90 | 1.041 [1.013, 1.067] | 1.063 [1.026, 1.081] | 3.28 → 2.94 | 0.50 → 0.38 | 4.02 → 3.54 |
+| `cjk-none` | 4.24 / 4.80 | 4.18 / 4.65 | 1.006 [0.950, 1.098] | 1.087 [1.010, 1.143] | 1.14 → 1.08 | 0.12 → 0.10 | 1.37 → 1.26 |
+| `cjk-subset` | 9.75 / 10.55 | 9.47 / 10.22 | 1.029 [1.009, 1.057] | 1.015 [0.998, 1.041] | 4.58 → 4.33 | 0.12 → 0.10 | 4.92 → 4.71 |
+| `cjk-cff-primary` | 8.45 / 9.37 | 8.51 / 9.28 | 0.986 [0.953, 1.033] | 1.049 [1.010, 1.079] | 4.60 → 4.22 | 0.14 → 0.11 | 5.02 → 4.62 |
+| `mixed-subset` | 7.45 / 8.07 | 7.14 / 7.82 | 1.041 [0.998, 1.065] | 1.029 [1.008, 1.065] | 2.70 → 2.47 | 0.12 → 0.10 | 2.96 → 2.74 |
+| `glyph-overflow` | 15.29 / 16.02 | 14.74 / 15.32 | 1.048 [1.025, 1.063] | 1.033 [1.002, 1.055] | 6.34 → 5.89 | 0.12 → 0.10 | 6.74 → 6.27 |
+| `cjk-full` | 13.74 / 14.49 | 13.56 / 14.57 | 1.002 [0.976, 1.022] | 1.036 [0.989, 1.062] | 4.59 → 4.35 | 0.12 → 0.09 | 4.95 → 4.71 |
+| `mixed-full` | 11.56 / 12.29 | 11.70 / 12.54 | 0.984 [0.953, 1.009] | 1.015 [0.992, 1.038] | 2.82 → 2.60 | 0.12 → 0.09 | 3.10 → 2.85 |
+| `cjk-overflow-full` | 26.64 / 27.78 | 26.28 / 27.56 | 1.019 [1.002, 1.030] | 1.007 [0.998, 1.025] | 8.16 → 7.80 | 0.12 → 0.10 | 8.65 → 8.28 |
+| `reply-sent` | 7.71 / 8.35 | 7.29 / 8.01 | 1.052 [1.032, 1.073] | 1.060 [1.026, 1.082] | 3.16 → 2.91 | 0.50 → 0.38 | 3.90 → 3.62 |
+| `draft-ready` | 7.70 / 8.53 | 7.34 / 7.95 | 1.041 [1.026, 1.089] | 1.055 [1.017, 1.074] | 3.15 → 2.94 | 0.50 → 0.38 | 3.92 → 3.65 |
+| `reply-24px` | 5.11 / 5.68 | 4.74 / 5.50 | 1.064 [1.007, 1.128] | 1.060 [0.996, 1.119] | 1.58 → 1.44 | 0.12 → 0.09 | 1.88 → 1.66 |
+| `reply-128px` | 24.11 / 24.89 | 22.53 / 23.19 | 1.066 [1.057, 1.075] | 1.067 [1.056, 1.086] | 10.98 → 10.40 | 3.55 → 2.74 | 15.50 → 14.06 |
+| `real-shell` | 5.42 / 6.12 | 5.26 / 6.04 | 1.033 [1.003, 1.077] | 1.050 [1.023, 1.069] | 1.57 → 1.50 | 0.32 → 0.24 | 2.05 → 1.89 |
+| `real-less` | 4.94 / 5.54 | 4.74 / 5.17 | 1.041 [1.012, 1.069] | 1.038 [0.993, 1.084] | 1.23 → 1.22 | 0.32 → 0.24 | 1.69 → 1.61 |
+| `real-vi` | 7.15 / 7.69 | 6.79 / 7.29 | 1.054 [1.032, 1.090] | 1.066 [1.033, 1.098] | 3.02 → 2.71 | 0.32 → 0.24 | 3.51 → 3.15 |
+| `blank` | 4.10 / 4.52 | 4.19 / 4.51 | 0.983 [0.955, 1.041] | 1.034 [0.981, 1.087] | 0.66 → 0.68 | 0.50 → 0.38 | 1.26 → 1.16 |
+| `color-grid` | 16.77 / 17.74 | 16.10 / 16.98 | 1.032 [1.014, 1.051] | 1.033 [1.011, 1.049] | 11.61 → 11.19 | 0.12 → 0.10 | 12.20 → 11.77 |
+| `ascii-overflow` | 6.14 / 7.14 | 6.10 / 6.63 | 1.002 [0.971, 1.045] | 0.993 [0.965, 1.000] | 0.49 → 0.46 | 0.12 → 0.09 | 0.66 → 0.64 |
+| `rounded-boxes` | 8.38 / 9.27 | 7.83 / 8.28 | 1.076 [1.046, 1.101] | 1.099 [1.081, 1.123] | 3.68 → 3.09 | 0.50 → 0.39 | 4.27 → 3.59 |
+| `dense` | 10.71 / 11.21 | 10.30 / 10.94 | 1.049 [1.022, 1.068] | 1.046 [1.030, 1.072] | 5.95 → 5.20 | 0.50 → 0.39 | 6.75 → 5.92 |
+| `ansi-replay` | 15.88 / 16.83 | 15.52 / 17.08 | 1.021 [1.006, 1.036] | 1.033 [1.016, 1.050] | 3.06 → 2.79 | 0.50 → 0.38 | 3.65 → 3.31 |
+| `large` | 33.96 / 35.36 | 31.87 / 33.22 | 1.076 [1.060, 1.086] | 1.073 [1.054, 1.085] | 17.72 → 16.43 | 3.24 → 2.50 | 22.22 → 20.11 |
+| `unicode` | 7.18 / 7.94 | 6.99 / 7.64 | 1.038 [0.998, 1.077] | 1.022 [0.991, 1.069] | 2.90 → 2.73 | 0.12 → 0.09 | 3.17 → 3.04 |
+| `box-grid` | 6.01 / 6.82 | 5.62 / 6.10 | 1.074 [1.026, 1.102] | 1.085 [1.070, 1.115] | 1.87 → 1.75 | 0.50 → 0.38 | 2.56 → 2.30 |
+| `block-grid` | 9.55 / 10.16 | 8.87 / 9.44 | 1.083 [1.046, 1.106] | 1.078 [1.058, 1.102] | 4.79 → 4.23 | 0.50 → 0.39 | 5.66 → 4.87 |
+| `rounded-panes` | 8.63 / 9.35 | 8.24 / 9.12 | 1.057 [1.016, 1.082] | 1.086 [1.067, 1.113] | 3.80 → 3.39 | 0.50 → 0.38 | 4.49 → 4.01 |
+| `rounded-24px` | 4.66 / 5.38 | 4.59 / 4.97 | 1.022 [0.969, 1.089] | 1.057 [1.009, 1.101] | 1.37 → 1.07 | 0.12 → 0.10 | 1.58 → 1.22 |
+| `rounded-128px` | 25.68 / 27.12 | 23.16 / 25.32 | 1.100 [1.088, 1.122] | 1.086 [1.075, 1.104] | 10.72 → 9.47 | 3.55 → 2.74 | 14.98 → 13.07 |
+| `geometry-all` | 90.16 / 92.30 | 77.15 / 78.65 | 1.167 [1.157, 1.172] | 1.173 [1.165, 1.182] | 75.06 → 62.92 | 3.23 → 2.50 | 79.52 → 66.65 |
+| `large-sparse` | 15.48 / 16.17 | 14.70 / 15.53 | 1.051 [1.042, 1.070] | 1.042 [1.020, 1.050] | 5.00 → 5.06 | 3.24 → 2.50 | 8.77 → 8.13 |
+| `large-color` | 134.90 / 137.04 | 126.73 / 127.81 | 1.065 [1.060, 1.071] | 1.062 [1.055, 1.065] | 110.42 → 102.93 | 3.25 → 2.50 | 117.17 → 108.84 |
+| `image-below` | 21.49 / 22.44 | 20.08 / 20.98 | 1.056 [1.046, 1.084] | 1.069 [1.061, 1.081] | 12.95 → 11.90 | 0.50 → 0.39 | 14.05 → 12.87 |
+| `image-under` | 24.34 / 25.62 | 22.99 / 23.75 | 1.072 [1.054, 1.081] | 1.049 [1.037, 1.061] | 15.42 → 14.49 | 0.50 → 0.39 | 16.62 → 15.59 |
+| `image-over` | 19.74 / 20.94 | 18.69 / 20.21 | 1.056 [1.039, 1.076] | 1.046 [1.039, 1.060] | 11.13 → 10.22 | 0.50 → 0.39 | 12.16 → 11.14 |
+| `dense-sgr` | 29.12 / 30.36 | 28.38 / 29.26 | 1.024 [1.015, 1.051] | 1.032 [1.013, 1.049] | 12.52 → 11.55 | 0.12 → 0.10 | 12.87 → 11.91 |
+| `cursor-moves` | 26.35 / 27.33 | 26.26 / 27.31 | 1.008 [0.987, 1.018] | 1.009 [1.000, 1.028] | 6.19 → 5.67 | 0.12 → 0.10 | 6.45 → 5.95 |
+| `scrolling` | 9.16 / 9.78 | 9.02 / 9.68 | 1.003 [0.973, 1.047] | 1.043 [1.020, 1.075] | 1.69 → 1.55 | 0.12 → 0.10 | 1.87 → 1.75 |
+| `mixed-unicode` | 26.25 / 28.25 | 25.88 / 28.08 | 1.023 [1.012, 1.035] | 1.025 [1.010, 1.040] | 2.65 → 2.36 | 0.12 → 0.10 | 2.85 → 2.58 |
+| `thai-combining` | 22.38 / 23.70 | 21.96 / 23.03 | 1.024 [1.013, 1.037] | 1.023 [1.011, 1.038] | 1.11 → 0.98 | 0.12 → 0.10 | 1.26 → 1.15 |
+| `text-ansi-replay` | 10.39 / 11.09 | 10.52 / 11.21 | 0.982 [0.961, 1.013] | 0.992 [0.967, 1.020] | — | — | — |
+| `text-ascii-overflow` | 3.64 / 4.22 | 3.70 / 4.20 | 0.991 [0.954, 1.035] | 0.989 [0.944, 1.050] | — | — | — |
+| `text-dense-sgr` | 13.99 / 15.19 | 13.81 / 14.65 | 1.019 [0.994, 1.037] | 1.008 [0.982, 1.023] | — | — | — |
+| `text-mixed-unicode` | 22.64 / 23.53 | 22.10 / 23.62 | 1.017 [1.013, 1.033] | 1.013 [0.997, 1.033] | — | — | — |
+| `text-reply-sent` | 0.90 / 1.01 | 0.91 / 0.99 | 1.030 [0.981, 1.076] | 1.030 [0.982, 1.066] | — | — | — |
+| `text-kitty` | 2.03 / 2.41 | 2.00 / 2.39 | 1.070 [0.980, 1.096] | 1.015 [0.928, 1.055] | — | — | — |
+| `text-sixel` | 1.54 / 1.77 | 1.55 / 1.78 | 0.961 [0.913, 1.118] | 1.042 [0.985, 1.178] | — | — | — |
+
+### The compressor alone
+
+`bench/c-vs-rust/run.sh deflate 61` now times a sixth variant, the shipped
+`src/deflate.rs` through its C entry point, against `deflate.c` as of
+`a8a95e0` (the C this replaced; the newest change to it). Every variant writes
+the same bytes on 3,260 cases first. Medians of 61 rounds, ms; **ship** is
+shipped Rust ÷ that C, and **safe** is the 2026-10-03 port without this
+round's changes, from the same runs.
+
+| input | Apple clang 21 C | shipped | ship | safe | GCC 16 C | shipped | ship | safe | clang 22 C | shipped | ship | safe |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1-reply-px48 | 3.132 | 3.112 | 0.99 | 1.05 | 3.155 | 2.807 | 0.89 | 0.99 | 2.983 | 2.774 | 0.93 | 1.05 |
+| 2-reply-px128 | 13.319 | 13.178 | 0.99 | 1.03 | 13.569 | 12.003 | 0.88 | 1.03 | 13.521 | 11.889 | 0.88 | 1.03 |
+| 3-attrs-px24 | 0.219 | 0.226 | 1.03 | 1.07 | 0.226 | 0.212 | 0.94 | 1.01 | 0.211 | 0.210 | 1.00 | 1.09 |
+| 4-boxes-px48 | 1.758 | 1.734 | 0.99 | 0.99 | 1.685 | 1.466 | 0.87 | 1.03 | 1.697 | 1.453 | 0.86 | 1.03 |
+| 5-dense-200x60-px16 | 24.737 | 25.521 | 1.03 | 1.08 | 24.117 | 22.673 | 0.94 | 1.00 | 21.577 | 22.078 | 1.02 | 1.10 |
+| 6-blank | 1.158 | 1.145 | 0.99 | 1.03 | 1.132 | 1.012 | 0.89 | 1.11 | 1.204 | 1.000 | 0.83 | 1.04 |
+| 6-color-grid | 11.536 | 11.877 | 1.03 | 1.07 | 11.167 | 10.510 | 0.94 | 1.01 | 10.302 | 10.292 | 1.00 | 1.08 |
+| 6-large | 19.911 | 19.531 | 0.98 | 1.03 | 19.694 | 17.509 | 0.89 | 0.99 | 18.418 | 16.970 | 0.92 | 1.05 |
+| 7-random-uniform | 59.323 | 59.945 | 1.01 | 1.06 | 56.280 | 53.853 | 0.96 | 1.08 | 49.635 | 49.695 | 1.00 | 1.13 |
+| 8-random-4sym-skewed | 53.447 | 51.955 | 0.97 | 1.01 | 47.840 | 45.877 | 0.96 | 0.99 | 46.677 | 46.180 | 0.99 | 1.03 |
+| Adler-32 alone, reply-px48 | 0.483 | 0.483 | 1.00 | 1.01 | 0.499 | 0.386 | 0.77 | 1.21 | 0.532 | 0.375 | 0.70 | 1.14 |
+| Adler-32 alone, reply-px128 | 3.411 | 3.429 | 1.01 | 1.01 | 3.551 | 2.748 | 0.77 | 1.21 | 3.775 | 2.706 | 0.72 | 1.14 |
+
+macOS ran at a load of 5.96 → 3.90; Linux at 2.58 → 1.81 (GCC) and 1.68 →
+1.42 (clang). The two changes:
+
+1. **SSE2 Adler-32 on x86-64.** The safe 16-lane loop loads 4 bytes per `movd`
+   there (docs/c-vs-rust.md). `adler32_sse2` keeps the same block sums with
+   one 16-byte `movdqu` per chunk: `psadbw` adds the chunk's bytes, `pmaddwd`
+   weights them 16..1, and the sum of earlier byte sums is kept as before.
+   SSE2 is baseline on x86-64, so there is no detection; the arithmetic is
+   integer, so the value is exact. It is 23% faster than GCC 16's C and 28-30%
+   faster than clang 22's, where the safe form was 14-21% slower. arm64 keeps
+   the safe form, which matches Apple clang's NEON.
+2. **Two-phase bucket scan** (`6396b8d`). Until a first match the scan takes
+   any match of 3 or more with no rejection test; after it, only a longer one.
+   Splitting the loop there removes a per-candidate branch on which phase it is
+   in, and the current position's slice is cut once per step. Same matches, same
+   bytes. On the M2 it took the match-heavy inputs from 1.06-1.08 of Apple
+   clang's C to 1.01-1.03; against clang 22 on x86-64, from 1.08-1.13 to
+   1.00-1.02. The rest of that gap is still unexplained.
+
+### Validation
+
+- `./test.sh`, `SANITIZE=1 ./test.sh`, `SANITIZE=1 ./tests/run.sh` and
+  `./test.sh` under rustc 1.70.0 on macOS; `./test.sh` and `./tests/run.sh` on
+  starship (x86-64, GCC 16), where `deflate_diff` also runs against a build with
+  `--cfg termshot_portable_adler`, the safe Adler-32 form. Both forms agree with
+  stb on all 3,060 cases.
+- The x86-64 unit tests and `deflate_diff` also ran on the Mac under Rosetta
+  (`--target x86_64-apple-darwin`): every Adler-32 form agrees with the
+  definition.
+- `tests/run.sh` builds a termshot with `--cfg termshot_alloc_faults` and fails
+  each compressor allocation of a `reply-sent` run in turn (5: the hash table,
+  its counts, the output buffer and two growths). Each exits 2, says it ran
+  out of memory, and leaves neither the PNG nor `--text` output.
+- `scripts/release.sh macos-universal` on the Mac: both slices render the
+  samples byte for byte like the host build (x86_64 under Rosetta).
+
+### Remaining limits
+
+- Matching against Apple clang's C is still 1-3% slower on match-heavy inputs,
+  and the cause is not known. Bounds checks are not it (the `unchecked`
+  variant buys 0-2 points).
+- One batch pair per host, the Mac under a load of 3.4-5.9.
+- The musl release builds were not run locally; `release.yml` builds and checks
+  them on this pull request (it runs when `build.sh` or `scripts/release.sh`
+  changes).
+
+### Reproduce
+
+```sh
+git worktree add /tmp/termshot-main 63d6de8 && (cd /tmp/termshot-main && ./build.sh)
+./build.sh && cp termshot /tmp/termshot-branch
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
+    --describe main=63d6de8 --describe branch=6396b8d \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 \
+    --verify-identical --cjk-font "$cjk" \
+    --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
+done
+python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+bench/c-vs-rust/run.sh deflate 61        # CC=gcc or CC=clang on Linux
+```
 
 ## Text-only runs: one pre-scan instead of two (2026-10-03, macOS only)
 

@@ -208,7 +208,7 @@ smaller, near and exact images. `tests/image.c` inflates a hand-built
 104 KiB fixed-Huffman stream of 16,908,289 zeros into heap buffers of exactly
 12 bytes, 16 MiB, and the exact size and one either side under ASan, and
 inflates with the allocation quota spent. `kitty-rgb-z-chunks.pty` is
-`src/deflate.c`'s compression of `kitty-rgb`'s pixels, cut across three
+termshot's own compression of `kitty-rgb`'s pixels (made by `src/deflate.c`; `src/deflate.rs` writes the same bytes), cut across three
 chunks inside the DEFLATE data. Goldens for it and the four `-z` fixtures hash
 the same as the uncompressed renders; the existing goldens are unchanged.
 

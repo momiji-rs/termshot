@@ -482,7 +482,7 @@ def main():
               'binary_sha256': {label: sha256(path) for label, path in binaries.items()},
               'describe': dict(item.split('=', 1) for item in args.describe),
               'toolchain': {tool: first_line([tool, '--version']) for tool in ('rustc', 'cc', 'python3')},
-              'build_flags': {'c': '-O2 -ffp-contract=off (draw.c); -O2 (deflate.c, image.c)',
+              'build_flags': {'c': '-O2 -ffp-contract=off (draw.c); -O2 (image.c)',
                               'rust': '--edition 2021 -C opt-level=2'},
               'runs': args.runs, 'warmups': args.warmups, 'memory_runs': args.memory_runs,
               'cold_runs': args.cold_runs, 'verify_identical': args.verify_identical,

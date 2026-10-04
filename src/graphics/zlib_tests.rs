@@ -2,7 +2,7 @@
 //! and the checks made before inflating. `tests.rs` covers the exact sizes,
 //! S and the 16 MiB limit. Streams come from two encoders that share no code
 //! with the inflater: stored blocks built here, with an Adler-32 computed
-//! here, and the renderer's own DEFLATE compressor (src/deflate.c).
+//! here, and the renderer's own DEFLATE compressor (src/deflate.rs).
 use super::*;
 use crate::{replay_sized, Lf};
 

@@ -65,7 +65,7 @@ fn main() {
             ("rgba-z", 128),
             ("png-z", 255),
             ("png-alpha-z", 128),
-            // kitty-rgb compressed by src/deflate.c, cut across three chunks.
+            // kitty-rgb compressed by src/deflate.rs, cut across three chunks.
             ("rgb-z-chunks", 255),
         ] {
             let log = fs::read(format!("tests/fixtures/kitty-{kind}.pty")).unwrap();

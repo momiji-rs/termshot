@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "deflate_profile.h"
 
 /* PNG hooks have no context argument; keep timings independent per thread. */
 static _Thread_local int profiling;
@@ -25,9 +24,17 @@ static double now_ms(void) {
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
-/* stb's deflate, with faster search/emission and identical bytes (deflate.c). */
+/* stb's deflate, with faster search/emission and identical bytes, in Rust
+   (src/deflate.rs). It returns a malloc'd buffer, which stb frees, or NULL
+   when memory runs out. */
 unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality);
 #define STBIW_ZLIB_COMPRESS termshot_zlib_compress
+/* Its stage timings, per thread: profiling on or off, then the last call's. */
+typedef struct {
+    double allocate_ms, match_emit_ms, finalize_ms, checksum_ms;
+} DeflateTimings;
+void termshot_deflate_profiling(int enabled);
+void termshot_deflate_timings(DeflateTimings *out);
 #include "png_crc.h"
 #define STBIW_CRC32 termshot_png_crc
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -1427,7 +1434,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                     size_t image_count, EmptyGlyphs *empty) {
     if (empty) *empty = (EmptyGlyphs){0};
     profiling = getenv("TERMSHOT_PROFILE") != NULL;
-    termshot_deflate_profile.enabled = profiling;
+    termshot_deflate_profiling(profiling);
     double started = now_ms();
     stbtt_fontinfo font, fallback;
     if (!init_face(&font, font_face) || (fallback_face && !init_face(&fallback, fallback_face))) {
@@ -1577,8 +1584,11 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     STBIW_PNG_PROFILE(0);
     unsigned char *png = stbiw__write_png_from_filtered(cv->filtered, cv->w, cv->h, BPP, &png_len);
     double encoded = now_ms();
-    int ok = 0;
-    if (png) {
+    int ok = 0, encode_failed = !png;
+    /* stb returns NULL only when an allocation failed, its own or the compressor's. */
+    if (encode_failed) {
+        fprintf(stderr, "termshot: out of memory encoding a %lldx%lld PNG\n", width, height);
+    } else {
         FILE *out = fopen(out_path, "wb");
         if (out) {
             ok = fwrite(png, 1, (size_t)png_len, out) == (size_t)png_len;
@@ -1590,14 +1600,16 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     free(cv->filtered);
     cv->px = NULL;
     if (profiling) {
+        DeflateTimings deflate;
+        termshot_deflate_timings(&deflate);
         fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"geometry_cache_hits\":%zu,\"geometry_cache_misses\":%zu,\"geometry_cache_uncached\":%zu,\"geometry_cache_bytes\":%zu,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"glyph_cache_evictions\":%zu,\"glyph_missing\":%zu,\"fallback_lookups\":%zu,\"fallback_rasterizations\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
-            termshot_deflate_profile.allocate_ms, termshot_deflate_profile.match_emit_ms,
-            termshot_deflate_profile.finalize_ms, termshot_deflate_profile.checksum_ms,
+            deflate.allocate_ms, deflate.match_emit_ms, deflate.finalize_ms, deflate.checksum_ms,
             font_setup - started, allocated - font_setup,
             background - allocated + backdrop.ms, foreground - background - backdrop.ms, geometry_ms, glyph_ms, blend_ms,
             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
             encoded - foreground, written - encoded, now_ms() - written, stamps.hits, stamps.misses, stamps.uncached, stamps.bytes, g.glyphs, g.cache_hits, g.evictions, g.missing, g.fallback_lookups, g.fallback_glyphs, png_len, (size_t)(width * height * BPP));
     }
+    if (encode_failed) return 2;
     if (!ok) {
         fprintf(stderr, "termshot: png write failed: %s\n", out_path);
         return 3;

@@ -10,15 +10,22 @@
 //!                                  CLI and inflate its PNG's IDAT (run.sh
 //!                                  does this first; see make_inputs)
 //!
-//! Five variants run in every round, in a seeded random order per round, so
+//! Six variants run in every round, in a seeded random order per round, so
 //! each one follows every other about equally often:
 //! the C as built by the default compiler, the C with TERMSHOT_PORTABLE_ADLER,
 //! the safe Rust, the Rust with two unchecked reads in the match loop
 //! (`unchecked`, the 2026-10-01 POC's `--cfg unchecked`, here a const
-//! generic so both Rust variants share the process and the rounds), and the
-//! default C with its hash table zeroed as the safe Rust's is.
+//! generic so both Rust variants share the process and the rounds), the
+//! default C with its hash table zeroed as the safe Rust's is, and the
+//! compressor termshot ships since #12 step 1 (src/deflate.rs, through its C
+//! entry point, as stb calls it; on x86-64 with its SSE2 Adler-32).
 
 use std::time::Instant;
+
+/// What termshot ships.
+#[path = "../../src/deflate.rs"]
+#[allow(dead_code)]
+mod shipped;
 
 extern "C" {
     fn cdef_zlib_compress(data: *mut u8, len: i32, out_len: *mut i32, quality: i32) -> *mut u8;
@@ -26,7 +33,7 @@ extern "C" {
     fn czero_zlib_compress(data: *mut u8, len: i32, out_len: *mut i32, quality: i32) -> *mut u8;
     fn cdef_adler32(d: *const u8, len: usize) -> u32;
     fn cport_adler32(d: *const u8, len: usize) -> u32;
-    fn free(p: *mut u8);
+    fn free(p: *mut std::ffi::c_void);
 }
 
 const ZHASH: usize = 16384;
@@ -389,11 +396,11 @@ fn c_compress(f: CCompress, data: &mut [u8], quality: usize) -> (Vec<u8>, f64) {
     let ms = t.elapsed().as_secs_f64() * 1e3;
     assert!(!p.is_null(), "C compressor failed");
     let v = unsafe { std::slice::from_raw_parts(p, out_len as usize).to_vec() };
-    unsafe { free(p) };
+    unsafe { free(p as *mut std::ffi::c_void) };
     (v, ms)
 }
 
-const NAMES: [&str; 5] = ["C", "C portable", "Rust safe", "Rust unchecked", "C zeroed table"];
+const NAMES: [&str; 6] = ["C", "C portable", "Rust safe", "Rust unchecked", "C zeroed table", "Rust shipped"];
 
 /// Variant v on data: the output and the time of the compression alone.
 fn variant(v: usize, data: &mut [u8], quality: usize) -> (Vec<u8>, f64) {
@@ -401,6 +408,7 @@ fn variant(v: usize, data: &mut [u8], quality: usize) -> (Vec<u8>, f64) {
         0 => c_compress(cdef_zlib_compress, data, quality),
         1 => c_compress(cport_zlib_compress, data, quality),
         4 => c_compress(czero_zlib_compress, data, quality),
+        5 => c_compress(shipped::termshot_zlib_compress, data, quality),
         _ => {
             let t = Instant::now();
             let out = if v == 2 { rust_compress::<false>(data, quality) } else { rust_compress::<true>(data, quality) };
@@ -414,7 +422,8 @@ fn adler_variant(v: usize, data: &[u8]) -> u32 {
     match v {
         0 => unsafe { cdef_adler32(data.as_ptr(), data.len()) },
         1 => unsafe { cport_adler32(data.as_ptr(), data.len()) },
-        _ => adler32(data),
+        2 => adler32(data),
+        _ => shipped::adler32(data),
     }
 }
 
@@ -427,8 +436,8 @@ fn check(what: &str, data: &[u8], quality: usize) {
         assert!(got == want, "{what}: {} writes {} bytes that differ from the C's {}", NAMES[v], got.len(), want.len());
     }
     let a = adler_variant(0, data);
-    for v in 1..3 {
-        assert_eq!(adler_variant(v, data), a, "{what}: {} Adler-32 differs", NAMES[v]);
+    for v in 1..4 {
+        assert_eq!(adler_variant(v, data), a, "{what}: {} Adler-32 differs", ["C", "C portable", "Rust", "Rust shipped"][v]);
     }
 }
 
@@ -552,12 +561,12 @@ fn synthetic() -> Vec<(String, Vec<u8>)> {
     vec![("7-random-uniform".into(), uniform), ("8-random-4sym-skewed".into(), skewed)]
 }
 
-/// A seeded shuffle of the five variants for each round (Fisher-Yates).
+/// A seeded shuffle of the six variants for each round (Fisher-Yates).
 struct Order(Rng);
 
 impl Order {
-    fn next(&mut self) -> [usize; 5] {
-        let mut o = [0, 1, 2, 3, 4];
+    fn next(&mut self) -> [usize; 6] {
+        let mut o = [0, 1, 2, 3, 4, 5];
         for i in (1..o.len()).rev() {
             o.swap(i, self.0.next() as usize % (i + 1));
         }
@@ -802,7 +811,7 @@ fn main() {
     let rounds: usize = std::env::args().nth(2).map_or(61, |s| s.parse().unwrap());
     let mut order = Order(Rng(0x5851_f42d_4c95_7f2d));
     let cases = check_corpus(3000);
-    println!("checked: {cases} deflate_diff-style and random cases byte-identical across all five variants");
+    println!("checked: {cases} deflate_diff-style and random cases byte-identical across all six variants");
 
     // Safe Rust zeroes its hash table (vec! is calloc); the C mallocs it
     // and writes each entry before reading it. Time that part alone.
@@ -826,8 +835,8 @@ fn main() {
 
     println!("deflate, time per call in ms, median / p95 of {rounds} rounds; ratios are medians over the C's");
     println!(
-        "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>15} {:>6} {:>6} {:>6} {:>6}",
-        "input", "bytes", "C", "C portable", "Rust safe", "Rust unchecked", "C zeroed table", "Cp/C", "safe", "unchk", "Cz/C"
+        "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>15} {:>15} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "input", "bytes", "C", "C portable", "Rust safe", "Rust unchecked", "C zeroed table", "Rust shipped", "Cp/C", "safe", "unchk", "Cz/C", "ship"
     );
     let mut adler_inputs = Vec::new();
     for (name, path) in inputs {
@@ -836,7 +845,7 @@ fn main() {
             None => synth.next().unwrap().1,
         };
         check(&name, &data, QUALITY);
-        let mut t: [Vec<f64>; 5] = Default::default();
+        let mut t: [Vec<f64>; 6] = Default::default();
         for _ in 0..rounds {
             for v in order.next() {
                 let (out, ms) = variant(v, &mut data, QUALITY);
@@ -847,9 +856,9 @@ fn main() {
         let s: Vec<(f64, f64)> = t.iter_mut().map(|v| stats(v)).collect();
         let cell = |(m, p): (f64, f64)| format!("{m:.3} / {p:.3}");
         println!(
-            "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>15} {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
-            name, data.len(), cell(s[0]), cell(s[1]), cell(s[2]), cell(s[3]), cell(s[4]),
-            s[1].0 / s[0].0, s[2].0 / s[0].0, s[3].0 / s[0].0, s[4].0 / s[0].0
+            "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>15} {:>15} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
+            name, data.len(), cell(s[0]), cell(s[1]), cell(s[2]), cell(s[3]), cell(s[4]), cell(s[5]),
+            s[1].0 / s[0].0, s[2].0 / s[0].0, s[3].0 / s[0].0, s[4].0 / s[0].0, s[5].0 / s[0].0
         );
         if name.starts_with("1-") || name.starts_with("2-") {
             adler_inputs.push((name, data));
@@ -857,11 +866,11 @@ fn main() {
     }
 
     println!("Adler-32 alone, ms, median / p95 of {rounds} rounds");
-    println!("{:<22} {:>10} {:>15} {:>15} {:>15} {:>6} {:>6}", "input", "bytes", "C", "C portable", "Rust", "Cp/C", "R/C");
+    println!("{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>6} {:>6} {:>6}", "input", "bytes", "C", "C portable", "Rust", "Rust shipped", "Cp/C", "R/C", "ship");
     for (name, data) in adler_inputs {
-        let mut t: [Vec<f64>; 3] = Default::default();
+        let mut t: [Vec<f64>; 4] = Default::default();
         for _ in 0..rounds {
-            for v in order.next().into_iter().filter(|&v| v < 3) {
+            for v in order.next().into_iter().filter(|&v| v < 4) {
                 let s = Instant::now();
                 std::hint::black_box(adler_variant(v, std::hint::black_box(&data)));
                 t[v].push(s.elapsed().as_secs_f64() * 1e3);
@@ -870,8 +879,8 @@ fn main() {
         let s: Vec<(f64, f64)> = t.iter_mut().map(|v| stats(v)).collect();
         let cell = |(m, p): (f64, f64)| format!("{m:.3} / {p:.3}");
         println!(
-            "{:<22} {:>10} {:>15} {:>15} {:>15} {:>6.2} {:>6.2}",
-            name, data.len(), cell(s[0]), cell(s[1]), cell(s[2]), s[1].0 / s[0].0, s[2].0 / s[0].0
+            "{:<22} {:>10} {:>15} {:>15} {:>15} {:>15} {:>6.2} {:>6.2} {:>6.2}",
+            name, data.len(), cell(s[0]), cell(s[1]), cell(s[2]), cell(s[3]), s[1].0 / s[0].0, s[2].0 / s[0].0, s[3].0 / s[0].0
         );
     }
 }
