@@ -84,9 +84,13 @@ def legacy_workloads(directory):
     return cases
 
 
+PARSER_CASES = ('dense-sgr', 'cursor-moves', 'scrolling', 'mixed-unicode', 'thai-combining')
+
+
 def parser_logs():
     """Long logs for the parser (#21), each about 4-5 MB so parsing is a
-    large part of the run. Deterministic: the same bytes on every host."""
+    large part of the run. Deterministic: the same bytes on every host. The
+    logs share one random sequence, so they are made together, in order."""
     rng = random.Random(21)
     pick = rng.randrange
 
@@ -166,11 +170,17 @@ def parser_logs():
             'mixed-unicode': mixed_unicode(), 'thai-combining': thai_combining()}
 
 
-def parser_workloads(directory):
+def parser_workloads(directory, wanted=None):
     """The parser matrix (#21), at 24 px. With ansi-replay and ascii-overflow
-    from the legacy suite it covers each kind of input the parser handles."""
+    from the legacy suite it covers each kind of input the parser handles.
+    Making the logs takes seconds, so when --case names none of them
+    (wanted), they are not made."""
+    if wanted and not set(wanted) & set(PARSER_CASES):
+        return []
     cases = []
-    for name, data in parser_logs().items():
+    logs = parser_logs()
+    assert tuple(logs) == PARSER_CASES
+    for name, data in logs.items():
         path = directory / f'{name}.pty'
         path.write_bytes(data)
         cases.append(Case(name, path, 24, 100, 30, legacy=True, group='parser'))
@@ -369,7 +379,7 @@ def main():
         if args.suite in ('all', 'legacy'):
             cases += legacy_workloads(directory)
         if args.suite in ('all', 'parser'):
-            cases += parser_workloads(directory)
+            cases += parser_workloads(directory, args.case)
         if args.case:
             unknown = set(args.case) - {case.name for case in cases}
             if unknown:
