@@ -209,9 +209,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on rasters over 16 MiB, backgrounds are painted a row of cells ahead of the
   text over them, while the row is in the cache; and images find their
   source columns without a division per pixel. The 3,000-corner benchmark
-  takes 10.0 ms instead of 15.2 at 48 px and 32.4 instead of 68.9 at 128 px
-  on an Apple M2 Max, and 8.9 instead of 14.0 and 26.1 instead of 63.1 on a
-  Ryzen 7 8745HS, where 5280×3840 screens are also up to 10% faster;
+  takes 10.1 ms instead of 15.3 at 48 px and 32.8 instead of 69.9 at 128 px
+  on an Apple M2 Max, and 8.7 instead of 14.1 and 25.6 instead of 63.2 on a
+  Ryzen 7 8745HS, where 5280×3840 screens are also up to 9% faster;
   `docs/performance.md` has the measurements.
 - Replaying a log is faster and leaves the same screen (#21). Character
   widths come from a two-level table instead of two binary searches, marks
