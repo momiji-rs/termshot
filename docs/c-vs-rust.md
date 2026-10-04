@@ -6,11 +6,38 @@ This file holds dated comparisons, newest first, for
 libraries are not part of it. Each comparison ports the C as of one commit to Rust,
 checks that both write the same bytes, and times both in one process.
 
+- [Step 1 shipped: deflate is Rust (2026-10-04)](#step-1-shipped-deflate-is-rust-2026-10-04).
 - [Deflate, current code (2026-10-03, `a8a95e0`)](#deflate-current-code-2026-10-03-a8a95e0):
   `deflate.c` after #20 (16-lane Adler-32, bit reversal by table, inlined matcher).
 - [Painting and deflate POC (2026-10-01, `bd726a6`), history](#painting-and-deflate-poc-2026-10-01-bd726a6-history):
   the first port of both files. Its deflate C is two optimization rounds old and its
   painting C predates #61, #66 and #69, so do not compare its numbers with the current code.
+
+## Step 1 shipped: deflate is Rust (2026-10-04)
+
+The owner decided #12: move `deflate.c`, then painting, and keep stb in C. Step 1
+shipped: `src/deflate.c` is gone, and `src/deflate.rs`, started from this
+comparison's `deflate.rs`, is the compressor that stb_image_write calls through
+`STBIW_ZLIB_COMPRESS`. Two of the gaps found below were closed, and both open
+items under "Against" were done:
+
+- **x86-64 Adler-32:** an SSE2 form (`psadbw`, `pmaddwd`, one 16-byte load per
+  chunk; SSE2 is baseline, so no detection) runs at 0.77 of GCC 16's C and
+  0.70-0.72 of clang 22's, where the safe form was 1.14-1.21. arm64 keeps the
+  safe form.
+- **Matching:** scanning a bucket in two phases (before and after a first
+  match) took the LLVM-side gap from 6-13% to 1-3%; against GCC 16 the
+  whole compressor is now 0.87-0.96 on x86-64.
+- **Allocation failure** returns NULL, as the C did, from libc
+  `malloc`/`realloc` buffers that stb frees; the CLI exits 2. The
+  `TERMSHOT_PROFILE` deflate timers are kept, with the same keys.
+- `tests/deflate_diff.c` tests the Rust against stock stb, linked as a static
+  library.
+
+`bench/c-vs-rust/run.sh deflate` keeps the comparison running against
+`deflate.c` as of `a8a95e0`, with the shipped compressor as a sixth variant,
+so rustc upgrades stay gated. Numbers, and the end-to-end comparison with main:
+[docs/performance.md](performance.md#png-compression-in-rust-2026-10-04-6396b8d-12-step-1).
 
 ## Deflate, current code (2026-10-03, `a8a95e0`)
 

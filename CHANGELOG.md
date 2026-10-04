@@ -174,6 +174,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The PNG compressor is Rust (`src/deflate.rs`) instead of C, the first step
+  of #12; stb_image_write, still C, calls it. PNGs are byte for byte the same.
+  On x86-64 its Adler-32 uses SSE2, and the whole compressor is 4-13% faster
+  than GCC's build of the C; `reply-sent` renders 5-6% faster on Linux x86-64
+  and the same on macOS arm64, where a few glyph-heavy cases are 1-2% slower
+  (docs/performance.md).
 - After a kitty placement, the cursor moves as kitty moves it
   (`handle_put_command`, `screen_handle_graphics_command`): right by the
   placement's columns and down by its rows less one, so it ends beside the
@@ -236,6 +242,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Running out of memory while compressing the PNG exits 2, as other
+  allocation failures do, with an "out of memory" message. It exited 1 and
+  said the PNG could not be written.
 - A font with no `glyf` table is refused for what it has instead (#38). A
   color bitmap font such as Noto Color Emoji (`CBDT` or `sbix`, no outlines)
   is named as one, with a pointer to an outline font such as Noto Emoji,
