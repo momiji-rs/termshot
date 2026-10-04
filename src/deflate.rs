@@ -451,10 +451,10 @@ fn compress(data: &[u8], quality: usize) -> Option<Out> {
     // calloc'd, unlike the C's malloc'd table: safe code may only read
     // initialized memory. Fresh pages are zero anyway, so it costs little
     // (docs/c-vs-rust.md measured it).
-    let mut tab = Words::new(Site::Table, ZHASH * cap)?;
-    let mut cnt = Words::new(Site::Counts, ZHASH)?;
+    let mut tab_words = Words::new(Site::Table, ZHASH * cap)?;
+    let mut cnt_words = Words::new(Site::Counts, ZHASH)?;
     let mut o = Out::new()?;
-    let (tab, cnt) = (tab.as_mut_slice(), cnt.as_mut_slice());
+    let (tab, cnt) = (tab_words.as_mut_slice(), cnt_words.as_mut_slice());
 
     o.put(&[0x78, 0x5e]); // DEFLATE 32K window, FLEVEL = 1
     o.add_bits(1, 1); // BFINAL = 1
@@ -581,6 +581,9 @@ fn compress(data: &[u8], quality: usize) -> Option<Out> {
         o.add_bits(0, 1);
     }
     let matched = now();
+    // Freed here, as the C did, so deflate_finalize_ms holds the frees.
+    drop(tab_words);
+    drop(cnt_words);
 
     // Store uncompressed instead if compression was worse, as stb does.
     // Empty input still needs the final fixed-Huffman block above.
