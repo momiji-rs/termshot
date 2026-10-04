@@ -225,7 +225,7 @@ static void face_v_metrics(const stbtt_fontinfo *font, const Face *face, int *as
 static float face_scale(const stbtt_fontinfo *font, const Face *face, float px) {
     int ascent, descent, line_gap;
     face_v_metrics(font, face, &ascent, &descent, &line_gap);
-    return px / (ascent - descent);
+    return px / (float)((long long)ascent - descent);
 }
 
 /* A CFF face without outlines of its own would have stb run its charstrings. */
@@ -238,27 +238,34 @@ typedef struct {
     float scale, italic_pivot;
 } CellMetrics;
 
+/* A length in pixels as an int, saturated at 2^28 either way: on its own
+   past the largest image (MAX_PIXELS), which the render refuses, and with
+   room to add two. Only HVAR's and MVAR's 32-bit deltas, which can take a
+   face's metrics past the 16 bits hmtx and hhea hold, reach it. */
+static int to_px(float v) {
+    const float limit = (float)(1 << 28);
+    return v >= limit ? (1 << 28) : v <= -limit ? -(1 << 28) : (int)v;
+}
+
 static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double font_px, CellMetrics *m) {
     int ascent, descent, line_gap;
     face_v_metrics(font, face, &ascent, &descent, &line_gap);
     int adv = face_advance(font, face, stbtt_FindGlyphIndex(font, 'M'));
-    /* metrics.rs keeps the extents in hhea's 16 bits; an advance HVAR
-       takes past hmtx's would overflow the cell's arithmetic. */
-    if (adv <= 0 || adv > 65535 || ascent <= descent) {
+    if (adv <= 0 || ascent <= descent) {
         fprintf(stderr, "termshot: font metrics unusable\n");
         return 0;
     }
     float scale = face_scale(font, face, (float)font_px);
-    int cell_w = (int)(adv * scale + 0.5f);
+    int cell_w = to_px(adv * scale + 0.5f);
     if (cell_w < 1) cell_w = 1;
     scale = (float)cell_w / (float)adv;
-    int body = (int)((ascent - descent) * scale + 0.5f);
-    int gap = (int)(line_gap * scale + 0.5f);
+    int body = to_px((float)((long long)ascent - descent) * scale + 0.5f);
+    int gap = to_px(line_gap * scale + 0.5f);
     if (gap < 0) gap = 0;
     int cell_h = body + gap;
     if (cell_h < 1) cell_h = 1;
-    int baseline = (int)(ascent * scale + 0.5f) + (cell_h - body) / 2;
-    *m = (CellMetrics){adv, cell_w, cell_h, body, baseline, scale, (ascent + descent) * scale / 2};
+    int baseline = to_px(ascent * scale + 0.5f) + (cell_h - body) / 2;
+    *m = (CellMetrics){adv, cell_w, cell_h, body, baseline, scale, (float)((long long)ascent + descent) * scale / 2};
     return 1;
 }
 

@@ -276,18 +276,6 @@ fn damaged_metrics_tables_are_refused_at_an_instance() {
             mvar(8, &[(b"hasc", 0), (b"hdsc", 1)], &store(2, &regions(), &[data(&[0], 1, &[&[-800], &[200]])])),
             "at this instance the ascender 0 is not above the descender 0",
         ),
-        (
-            mvar(8, &[(b"hasc", 0)], &store(2, &regions(), &[data(&[0], 0x8001, &[&[2_000_000_000]])])),
-            "at this instance the ascender 2000000768 is past the 16 bits hhea holds",
-        ),
-        (
-            mvar(8, &[(b"hdsc", 0)], &store(2, &regions(), &[data(&[0], 0x8001, &[&[-40000]])])),
-            "at this instance the descender -40200 is past the 16 bits hhea holds",
-        ),
-        (
-            mvar(8, &[(b"hlgp", 0)], &store(2, &regions(), &[data(&[0], 0x8001, &[&[32768]])])),
-            "at this instance the line gap 32768 is past the 16 bits hhea holds",
-        ),
     ];
     let cases = hvars.into_iter().map(|(t, e)| (*b"HVAR", t, e)).chain(mvars.into_iter().map(|(t, e)| (*b"MVAR", t, e)));
     fs::create_dir_all("target/test").unwrap();
@@ -303,23 +291,48 @@ fn damaged_metrics_tables_are_refused_at_an_instance() {
     }
 }
 
-/// The cell is sized by the advance of M, which HVAR can take past the 16
-/// bits hmtx holds, and so past what draw.c's arithmetic on it allows: the
-/// crafted font's glyph 13, mapped to M, advances 70002 units more at
-/// ax0=1,ax1=1, so its metrics are unusable there.
+/// HVAR's and MVAR's 32-bit deltas can take an advance or an extent past
+/// the 16 bits hmtx and hhea hold, and the cell they size past what an
+/// int holds. A wide advance sizes the cell as any does: the crafted
+/// font's glyph 13, mapped to M, advances 70002 units more at ax0=1,ax1=1.
+/// A cell past the largest image is saturated, not overflowed, and the
+/// render refuses it (exit 2): at ax0=1, MVAR takes the height to 1 unit,
+/// so the scale to 24, and the line gap or every advance far past 2^28
+/// pixels. A line gap as far below 0 adds nothing, as any below 0.
 #[test]
-fn an_advance_past_hmtx_s_16_bits_is_refused_for_the_cell() {
+fn metrics_past_16_bits_size_the_cell_without_overflow() {
     fs::create_dir_all("target/test").unwrap();
-    let path = "target/test/metrics-wide-m.otf";
-    fs::write(path, one_maps_to(&crafted(), b'M' as u16, 13)).unwrap();
-    let load = |axes: &str| font::load(&font::Spec { path: path.into(), face: None, axes: Some(axes.into()) }).unwrap();
-    for (axes, usable) in [("ax0=1,ax1=1", false), ("ax0=1", true)] {
-        let font = load(axes);
-        assert_eq!(drawn(&font, 14).0[13] > 65535, !usable, "{axes}");
+    let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None, axes: None }).unwrap();
+    let cells = crate::parse(b"MM", 2, 1);
+    let size = |name: &str, data: Vec<u8>, axes: &str| {
+        let path = format!("target/test/metrics-cell-{name}.otf");
+        fs::write(&path, data).unwrap();
+        let font = font::load(&font::Spec { path: path.clone(), face: None, axes: Some(axes.into()) }).unwrap();
         let (mut w, mut h) = (0, 0);
         let sized = font.with_metrics(|face| unsafe { draw_face_cell_size(face, 24.0, &mut w, &mut h) });
-        assert_eq!(sized, Ok(usable as c_int), "{axes}");
-    }
+        assert_eq!(sized, Ok(1), "{name}");
+        let code = render_with(&cells, 2, 1, &font, Some(&mono), 24.0, &path.replace(".otf", ".png"));
+        (w, h, code)
+    };
+    let wide = one_maps_to(&crafted(), b'M' as u16, 13);
+    let (w, _, code) = size("wide-m", wide.clone(), "ax0=1,ax1=1");
+    let font = font::load(&font::Spec { path: "target/test/metrics-cell-wide-m.otf".into(), face: None, axes: Some("ax0=1,ax1=1".into()) });
+    assert!(drawn(&font.unwrap(), 14).0[13] > 65535);
+    assert!(w > 1 && code == 0, "a wide M: cell {w} wide, exit {code}");
+    // At ax0=1 (region 0): hhea's 800 and -200 to 1 and 0, and its line gap 0 moved by `gap`.
+    let short = |gap: i32| {
+        let rows: [&[i32]; 3] = [&[-799], &[200], &[gap]];
+        mvar(8, &[(b"hasc", 0), (b"hdsc", 1), (b"hlgp", 2)], &store(2, &regions(), &[data(&[0], 0x8001, &rows)]))
+    };
+    let (w0, h0, code) = size("short", two_axes(&[(b"MVAR", &short(0))]), "ax0=1");
+    assert!(code == 0 && w0 < 1 << 20 && h0 < 1 << 20, "a short face: cell {w0}x{h0}, exit {code}");
+    let (w, h, code) = size("gap-up", two_axes(&[(b"MVAR", &short(2_000_000_000))]), "ax0=1");
+    assert_eq!((w, h, code), (w0, h0 + (1 << 28), 2), "a line gap past 2^28 pixels");
+    let (w, h, code) = size("gap-down", two_axes(&[(b"MVAR", &short(-2_000_000_000))]), "ax0=1");
+    assert_eq!((w, h, code), (w0, h0, 0), "a line gap far below 0");
+    let all = hvar(&store(2, &regions(), &[data(&[0], 0x8001, &[&[100_000_000]])]), &index_map(0, 1, 1, &[(0, 0)]));
+    let (w, h, code) = size("advance-up", two_axes(&[(b"HVAR", &all), (b"MVAR", &short(0))]), "ax0=1");
+    assert_eq!((w, code), (1 << 28, 2), "an advance past 2^28 pixels, cell {w}x{h}");
 }
 
 /// The crafted font has HarfBuzz's metrics at each instance that

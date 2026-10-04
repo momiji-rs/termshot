@@ -164,9 +164,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the ascender, descender and line gap by `MVAR`. Every glyph of the
   CFF2 test font has HarfBuzz's advance at four instances. A damaged `HVAR`
   or `MVAR` is refused with a reason (exit 1) at an instance, and not read
-  at the default one. So is an ascender, descender or line gap varied past
-  the 16 bits `hhea` holds; a main font whose `M` advances past the 16 bits
-  of `hmtx` exits 1 as "font metrics unusable".
+  at the default one. An advance or extent varied past the 16 bits `hmtx`
+  and `hhea` hold sizes the cell as any does; a cell past the largest
+  image exits 2, as a large `--px` does.
 - Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
   is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
   outline is slanted 12 degrees before it is rasterized, so it is as smooth
