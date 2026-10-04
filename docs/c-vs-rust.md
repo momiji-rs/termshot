@@ -18,9 +18,9 @@ Measured 2026-10-03 against `src/deflate.c` at `a8a95e0` (main after #20, #69).
 Painting (`draw.c`) is **not** in scope for this round.
 
 **Short answer:** a safe Rust port of the current `deflate.c` writes the same bytes and,
-in the whole compressor, runs 2-8% slower than Apple clang's C on macOS arm64. Against GCC on Linux
-x86-64 it runs from 2% faster to 3% slower on the image inputs, 12% slower on the one input that is
-mostly checksum, and 7-8% slower on random bytes. The new 16-lane Adler-32 matches the C on arm64
+in the whole compressor, runs 1-9% slower than Apple clang's C on macOS arm64. Against GCC on Linux
+x86-64 it runs from 2% faster to 3% slower on the image inputs, 11% slower on the one input that is
+mostly checksum, and 6% slower on random bytes. The new 16-lane Adler-32 matches the C on arm64
 in safe stable Rust, but only in some loop shapes: written in the C's own loop shape (one chunk
 per step), it is 3.3× slower there at `opt-level=2`. On x86-64 the Rust Adler-32 is 14-21% slower
 than the C. Two `unsafe` reads buy at most 4 points and close no gap.
@@ -31,23 +31,25 @@ than the C. Two `unsafe` reads buy at most 4 points and close no gap.
 compiler.
 
 - **C:** `src/deflate.c` and `src/deflate_profile.h` at `a8a95e0`, taken with `git archive`
-  as the 2026-10-01 POC takes `bd726a6`. `deflate_shim.c` includes it twice under two prefixes, both with
+  as the 2026-10-01 POC takes `bd726a6`. `deflate_shim.c` includes it three times under three prefixes, all with
   `build.sh`'s `-O2`:
   - **C**: the default build. Under clang, this is the generic-vector Adler-32. Under GCC, it is
     the plain loop, which GCC vectorizes.
   - **C portable**: `-DTERMSHOT_PORTABLE_ADLER`, the plain loop on every compiler. Under GCC
     it is the same code as **C**.
+  - **C zeroed table**: the default build with its 1 MiB hash table from `calloc` instead of
+    `malloc`, because the safe Rust's `vec![0; n]` zeroes it too. This measures that cost
+    rather than assuming it.
 - **Rust:** `deflate.rs`, a port in safe Rust with the same algorithms. It has the 16-lane Adler-32 with
   weights applied once per 5552-byte block, the 256-byte reversed-byte table, `countm`
   comparing 16 bytes, then 8, then single bytes, the newest-first bucket scan with the same
   early exits, lazy matching, and the carried hash. The output buffer appends four bytes per token and keeps
   the complete ones, as the C does. It does not port the `TERMSHOT_PROFILE` timers, which are off in this
   bench, so the C pays only five thread-local `enabled` checks per call (four `profile_now()` calls and the final
-  `if`). It is built with `build.sh`'s
-  `-C opt-level=2`.
+  `if`). It is built with `build.sh`'s `-C opt-level=2`.
   - **Rust unchecked**: the 2026-10-01 POC's `--cfg unchecked` with the same two
     `unsafe` reads, the candidate-rejection byte and `countm`'s loads. Here it is a const
-    generic, so both Rust variants run in the same process and rounds as the two C builds.
+    generic, so both Rust variants run in the same process and rounds as the C builds.
 - **Correctness gate:** every variant must write the C's bytes, and every Adler-32 must
   equal the C's, or the run aborts. The gate covers these inputs:
   - every timed input;
@@ -59,13 +61,14 @@ compiler.
   That is 3,260 cases. All passed on every host and compiler below.
   `tests/deflate_diff.c` still checks the C against stock stb in `./test.sh`.
 - **Inputs:** the deflate input of each image, which is the inflated IDAT of the current
-  termshot's PNG. That is the filtered scanlines, rendered by the current CLI from the same
-  logs (`deflate_inputs.py`). There are also two seeded synthetic buffers. Quality 8, as termshot uses.
+  termshot's PNG. That is the filtered scanlines, rendered from the same logs by the current
+  CLI with its defaults, cursor included (`deflate_inputs.py`). So `1-reply-px48` is exactly what
+  a plain `reply-sent` run compresses. There are also two seeded synthetic buffers. Quality 8, as termshot uses.
 
 | input | bytes | source |
 |---|---:|---|
 | 1-reply-px48 | 9,505,440 | `tests::poc_workloads`, `reply-sent.pty` at 48 px (the README sample, `reply-sent`) |
-| 2-reply-px128 | 66,819,840 | the same at 128 px: the size of `reply-128px`, the #20 Adler-32 stress case |
+| 2-reply-px128 | 66,819,840 | the same at 128 px (`reply-128px`, the #20 Adler-32 stress case) |
 | 3-attrs-px24 | 456,336 | `poc_workloads`: 256 colours, every attribute |
 | 4-boxes-px48 | 9,505,440 | `poc_workloads`: rounded boxes |
 | 5-dense-200x60-px16 | 3,780,900 | `poc_workloads`: a different colour on every cell |
@@ -75,95 +78,92 @@ compiler.
 | 7-random-uniform | 2,376,720 | seeded uniform random bytes: every position a literal |
 | 8-random-4sym-skewed | 2,376,720 | seeded, four symbols at 9/16, 4/16, 2/16, 1/16 |
 
-- **Timing:** all four variants run in each round, and the first of them rotates each round. Each
-  call is timed alone; copying and freeing the output are not timed. The tables give the
-  median / p95 of 101 rounds per call, in ms. R/C is the Rust median ÷ the **C** median;
-  below 1 means Rust is faster. The Adler-32 rows time the checksum alone on the two reply inputs,
-  with the same rotation.
+- **Timing:** all five variants run in each round, in a seeded random order per round, so each
+  variant follows every other about equally often. Each call is timed alone; copying and freeing
+  the output are not timed. The tables give the median / p95 of 101 rounds per call, in ms. R/C
+  is the Rust median ÷ the **C** median; below 1 means Rust is faster. The Adler-32 rows time the
+  checksum alone on the two reply inputs, shuffled the same way.
 
 | | macOS arm64 | Linux x86-64 |
 |---|---|---|
 | host | `lawrences-mac-studio`, Apple M2 Max, macOS 26.6.2 | `starship`, Ryzen 7 8745HS, kernel 7.2.5-3-omarchy, glibc 2.44 |
 | C compilers | Apple clang 21.0.0 (clang-2100.3.34.2) | GCC 16.2.1 20260810, clang 22.1.8 |
 | Rust | rustc 1.98.1 (Homebrew) | rustc 1.98.1 (Arch) |
-| load average (1 min) | 3.3 → 4.4 and 2.6 → 4.3: a shared desktop, other sessions busy | GCC 1.1 → 1.3 and 3.3 → 1.9; clang 1.5 → 1.7 |
+| load average (1 min), start → end of each run | 3.8 → 3.6 and 3.6 → 3.3: a shared desktop, other sessions busy | GCC 0.6 → 1.2 and 2.5 → 1.4; clang 1.5 → 1.3 and 2.2 → 1.8 |
 
 ### Results
 
-**macOS arm64, Apple clang 21 vs rustc 1.98.1** (both LLVM), first of two runs:
+Each host and compiler ran twice. The tables show the first run; the line under each gives the
+second run's ranges.
 
-| input | C | C portable | Rust safe | Rust unchecked | R/C safe | R/C unchecked |
-|---|---:|---:|---:|---:|---:|---:|
-| 1-reply-px48 | 3.104 / 3.250 | 4.184 / 4.351 | 3.223 / 3.407 | 3.237 / 3.384 | 1.04 | 1.04 |
-| 2-reply-px128 | 13.220 / 13.621 | 20.729 / 21.282 | 13.642 / 14.117 | 13.685 / 14.089 | 1.03 | 1.04 |
-| 3-attrs-px24 | 0.205 / 0.229 | 0.258 / 0.286 | 0.221 / 0.248 | 0.218 / 0.243 | 1.08 | 1.06 |
-| 4-boxes-px48 | 1.710 / 1.824 | 2.793 / 2.905 | 1.751 / 1.864 | 1.734 / 1.854 | 1.02 | 1.01 |
-| 5-dense-200x60-px16 | 24.543 / 25.469 | 25.012 / 25.709 | 26.573 / 27.586 | 26.038 / 27.016 | 1.08 | 1.06 |
-| 6-blank | 1.158 / 1.258 | 2.222 / 2.352 | 1.191 / 1.277 | 1.183 / 1.262 | 1.03 | 1.02 |
-| 6-color-grid | 11.534 / 11.900 | 11.773 / 12.185 | 12.311 / 12.784 | 12.213 / 12.566 | 1.07 | 1.06 |
-| 6-large | 18.685 / 19.720 | 25.408 / 27.256 | 19.432 / 20.774 | 19.245 / 20.013 | 1.04 | 1.03 |
-| 7-random-uniform | 60.587 / 69.542 | 60.613 / 70.126 | 64.840 / 80.120 | 64.378 / 74.028 | 1.07 | 1.06 |
-| 8-random-4sym-skewed | 53.629 / 59.817 | 54.231 / 59.693 | 54.484 / 59.872 | 54.078 / 60.641 | 1.02 | 1.01 |
-| Adler-32 alone, reply-px48 | 0.484 / 0.533 | 1.555 / 1.652 | 0.488 / 0.540 | — | 1.01 | — |
-| Adler-32 alone, reply-px128 | 3.455 / 3.642 | 11.009 / 11.304 | 3.505 / 3.637 | — | 1.01 | — |
+**macOS arm64, Apple clang 21 vs rustc 1.98.1** (both LLVM):
 
-The second run gave the same R/C to within 0.02: safe 1.02-1.08, unchecked 1.01-1.06,
-Adler-32 1.01-1.02.
+| input | C | C portable | C zeroed table | Rust safe | Rust unchecked | R/C safe | R/C unchecked |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1-reply-px48 | 3.082 / 3.241 | 4.129 / 4.336 | 3.103 / 3.267 | 3.260 / 3.430 | 3.200 / 3.383 | 1.06 | 1.04 |
+| 2-reply-px128 | 13.329 / 13.648 | 20.820 / 21.265 | 13.329 / 13.708 | 13.754 / 14.140 | 13.658 / 14.052 | 1.03 | 1.02 |
+| 3-attrs-px24 | 0.216 / 0.238 | 0.268 / 0.294 | 0.222 / 0.251 | 0.230 / 0.260 | 0.229 / 0.251 | 1.07 | 1.06 |
+| 4-boxes-px48 | 1.726 / 1.876 | 2.790 / 2.935 | 1.744 / 1.865 | 1.764 / 1.885 | 1.768 / 1.894 | 1.02 | 1.02 |
+| 5-dense-200x60-px16 | 24.570 / 24.973 | 25.150 / 25.630 | 24.695 / 25.272 | 26.626 / 27.211 | 26.171 / 26.715 | 1.08 | 1.07 |
+| 6-blank | 1.167 / 1.271 | 2.235 / 2.369 | 1.174 / 1.267 | 1.190 / 1.288 | 1.195 / 1.272 | 1.02 | 1.02 |
+| 6-color-grid | 11.541 / 11.971 | 11.844 / 12.214 | 11.600 / 12.065 | 12.370 / 12.752 | 12.285 / 12.724 | 1.07 | 1.06 |
+| 6-large | 19.642 / 20.052 | 26.588 / 27.053 | 19.777 / 20.367 | 20.458 / 20.986 | 20.264 / 20.623 | 1.04 | 1.03 |
+| 7-random-uniform | 59.484 / 60.175 | 59.750 / 60.597 | 59.527 / 60.412 | 63.334 / 63.998 | 63.110 / 64.050 | 1.06 | 1.06 |
+| 8-random-4sym-skewed | 53.051 / 53.527 | 53.489 / 54.069 | 53.343 / 53.857 | 53.937 / 54.440 | 53.399 / 53.979 | 1.02 | 1.01 |
+| Adler-32 alone, reply-px48 | 0.481 / 0.526 | 1.553 / 1.656 | — | 0.487 / 0.555 | — | 1.01 | — |
+| Adler-32 alone, reply-px128 | 3.449 / 3.607 | 10.957 / 11.262 | — | 3.496 / 3.634 | — | 1.01 | — |
+
+Second run: safe 1.01-1.09, unchecked 1.01-1.07, zeroed table / C 1.00-1.04, Adler-32 1.01-1.02.
 
 **Linux x86-64, GCC 16.2.1 vs rustc 1.98.1** (GCC vs LLVM; Linux releases are built with
-`musl-gcc`), first of two runs:
+`musl-gcc`):
 
-| input | C | C portable | Rust safe | Rust unchecked | R/C safe | R/C unchecked |
-|---|---:|---:|---:|---:|---:|---:|
-| 1-reply-px48 | 3.110 / 3.159 | 3.099 / 3.146 | 3.073 / 3.121 | 3.032 / 3.081 | 0.99 | 0.98 |
-| 2-reply-px128 | 13.538 / 13.912 | 13.445 / 13.606 | 13.813 / 14.008 | 13.784 / 13.933 | 1.02 | 1.02 |
-| 3-attrs-px24 | 0.221 / 0.230 | 0.221 / 0.228 | 0.224 / 0.234 | 0.220 / 0.254 | 1.01 | 1.00 |
-| 4-boxes-px48 | 1.658 / 1.705 | 1.668 / 1.707 | 1.697 / 1.743 | 1.715 / 1.770 | 1.02 | 1.03 |
-| 5-dense-200x60-px16 | 23.263 / 23.482 | 23.264 / 23.460 | 23.287 / 23.428 | 22.599 / 22.863 | 1.00 | 0.97 |
-| 6-blank | 1.124 / 1.140 | 1.130 / 1.147 | 1.253 / 1.274 | 1.264 / 1.282 | 1.11 | 1.12 |
-| 6-color-grid | 11.005 / 11.288 | 10.989 / 11.265 | 11.099 / 11.288 | 10.737 / 10.919 | 1.01 | 0.98 |
-| 6-large | 19.530 / 19.595 | 19.558 / 19.610 | 19.204 / 19.271 | 18.945 / 19.014 | 0.98 | 0.97 |
-| 7-random-uniform | 55.734 / 56.312 | 55.836 / 56.426 | 59.913 / 60.221 | 57.286 / 57.967 | 1.07 | 1.03 |
-| 8-random-4sym-skewed | 47.852 / 48.240 | 47.822 / 48.267 | 47.017 / 47.323 | 45.694 / 46.082 | 0.98 | 0.95 |
-| Adler-32 alone, reply-px48 | 0.499 / 0.511 | 0.499 / 0.507 | 0.604 / 0.613 | — | 1.21 | — |
-| Adler-32 alone, reply-px128 | 3.547 / 3.572 | 3.548 / 3.572 | 4.286 / 4.313 | — | 1.21 | — |
+| input | C | C portable | C zeroed table | Rust safe | Rust unchecked | R/C safe | R/C unchecked |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1-reply-px48 | 3.117 / 3.145 | 3.123 / 3.165 | 3.122 / 3.151 | 3.072 / 3.122 | 3.019 / 3.053 | 0.99 | 0.97 |
+| 2-reply-px128 | 13.462 / 13.561 | 13.479 / 13.582 | 13.415 / 13.478 | 13.754 / 13.854 | 13.623 / 13.718 | 1.02 | 1.01 |
+| 3-attrs-px24 | 0.223 / 0.232 | 0.224 / 0.230 | 0.231 / 0.240 | 0.224 / 0.233 | 0.219 / 0.226 | 1.01 | 0.98 |
+| 4-boxes-px48 | 1.649 / 1.679 | 1.664 / 1.699 | 1.663 / 1.683 | 1.691 / 1.717 | 1.699 / 1.728 | 1.03 | 1.03 |
+| 5-dense-200x60-px16 | 23.421 / 23.940 | 23.476 / 23.743 | 23.440 / 23.633 | 23.327 / 23.643 | 22.480 / 22.788 | 1.00 | 0.96 |
+| 6-blank | 1.123 / 1.143 | 1.124 / 1.151 | 1.134 / 1.151 | 1.248 / 1.276 | 1.258 / 1.278 | 1.11 | 1.12 |
+| 6-color-grid | 11.007 / 11.109 | 11.015 / 11.110 | 11.043 / 11.132 | 11.014 / 11.124 | 10.679 / 10.768 | 1.00 | 0.97 |
+| 6-large | 19.394 / 19.530 | 19.417 / 19.699 | 19.435 / 19.573 | 19.110 / 19.415 | 18.730 / 18.874 | 0.99 | 0.97 |
+| 7-random-uniform | 52.849 / 53.507 | 52.838 / 53.285 | 52.865 / 53.626 | 56.158 / 56.779 | 54.243 / 54.913 | 1.06 | 1.03 |
+| 8-random-4sym-skewed | 47.303 / 48.073 | 47.756 / 48.287 | 47.825 / 48.225 | 47.341 / 47.672 | 46.075 / 46.540 | 1.00 | 0.97 |
+| Adler-32 alone, reply-px48 | 0.499 / 0.508 | 0.499 / 0.509 | — | 0.603 / 0.620 | — | 1.21 | — |
+| Adler-32 alone, reply-px128 | 3.548 / 3.571 | 3.548 / 3.578 | — | 4.289 / 4.321 | — | 1.21 | — |
 
-The second run gave the same R/C to within 0.01: safe 0.98-1.12, unchecked 0.95-1.12,
-Adler-32 1.21.
+Second run: safe 0.98-1.11, unchecked 0.96-1.12, zeroed table / C 1.00-1.04, Adler-32 1.21.
 
 **Linux x86-64, same machine, clang 22.1.8 vs rustc 1.98.1** (both LLVM):
 
-| input | C | C portable | Rust safe | Rust unchecked | R/C safe | R/C unchecked |
-|---|---:|---:|---:|---:|---:|---:|
-| 1-reply-px48 | 2.937 / 3.023 | 3.696 / 3.764 | 3.081 / 3.133 | 3.037 / 3.102 | 1.05 | 1.03 |
-| 2-reply-px128 | 13.361 / 13.599 | 18.426 / 18.819 | 13.777 / 14.249 | 13.854 / 14.127 | 1.03 | 1.04 |
-| 3-attrs-px24 | 0.204 / 0.290 | 0.241 / 0.361 | 0.223 / 0.312 | 0.219 / 0.298 | 1.09 | 1.07 |
-| 4-boxes-px48 | 1.621 / 1.651 | 2.364 / 2.395 | 1.689 / 1.712 | 1.707 / 1.739 | 1.04 | 1.05 |
-| 5-dense-200x60-px16 | 21.105 / 21.648 | 21.815 / 22.163 | 23.271 / 23.815 | 22.499 / 22.837 | 1.10 | 1.07 |
-| 6-blank | 1.177 / 1.204 | 1.919 / 1.971 | 1.253 / 1.283 | 1.272 / 1.288 | 1.06 | 1.08 |
-| 6-color-grid | 10.285 / 10.620 | 10.609 / 10.767 | 11.166 / 11.453 | 10.869 / 11.205 | 1.09 | 1.06 |
-| 6-large | 18.315 / 20.419 | 23.082 / 25.946 | 19.324 / 21.329 | 18.991 / 21.926 | 1.06 | 1.04 |
-| 7-random-uniform | 52.836 / 56.054 | 53.985 / 56.984 | 60.957 / 65.170 | 58.666 / 62.108 | 1.15 | 1.11 |
-| 8-random-4sym-skewed | 46.689 / 48.466 | 46.407 / 48.371 | 47.821 / 49.195 | 45.525 / 47.220 | 1.02 | 0.98 |
-| Adler-32 alone, reply-px48 | 0.532 / 0.550 | 1.256 / 1.287 | 0.604 / 0.620 | — | 1.14 | — |
-| Adler-32 alone, reply-px128 | 3.789 / 3.830 | 8.885 / 8.923 | 4.305 / 4.348 | — | 1.14 | — |
+| input | C | C portable | C zeroed table | Rust safe | Rust unchecked | R/C safe | R/C unchecked |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1-reply-px48 | 2.973 / 3.027 | 3.664 / 3.717 | 2.950 / 3.057 | 3.073 / 3.130 | 3.028 / 3.074 | 1.03 | 1.02 |
+| 2-reply-px128 | 13.431 / 13.647 | 18.354 / 18.556 | 13.182 / 13.327 | 13.733 / 14.045 | 13.675 / 13.905 | 1.02 | 1.02 |
+| 3-attrs-px24 | 0.209 / 0.216 | 0.244 / 0.255 | 0.216 / 0.224 | 0.225 / 0.238 | 0.221 / 0.233 | 1.07 | 1.06 |
+| 4-boxes-px48 | 1.668 / 1.698 | 2.386 / 2.428 | 1.666 / 1.690 | 1.704 / 1.739 | 1.714 / 1.754 | 1.02 | 1.03 |
+| 5-dense-200x60-px16 | 21.944 / 22.061 | 22.132 / 22.299 | 21.843 / 22.000 | 23.786 / 23.889 | 23.082 / 23.249 | 1.08 | 1.05 |
+| 6-blank | 1.206 / 1.220 | 1.920 / 1.933 | 1.206 / 1.219 | 1.258 / 1.305 | 1.274 / 1.307 | 1.04 | 1.06 |
+| 6-color-grid | 10.340 / 10.413 | 10.406 / 10.492 | 10.250 / 10.325 | 11.041 / 11.117 | 10.751 / 10.809 | 1.07 | 1.04 |
+| 6-large | 18.714 / 18.778 | 23.102 / 23.165 | 18.510 / 18.632 | 19.266 / 19.339 | 18.983 / 19.050 | 1.03 | 1.01 |
+| 7-random-uniform | 52.957 / 53.292 | 53.161 / 53.426 | 52.823 / 53.160 | 59.606 / 60.130 | 57.731 / 58.182 | 1.13 | 1.09 |
+| 8-random-4sym-skewed | 46.638 / 47.106 | 46.419 / 46.721 | 46.116 / 46.453 | 47.682 / 47.941 | 46.186 / 46.588 | 1.02 | 0.99 |
+| Adler-32 alone, reply-px48 | 0.531 / 0.541 | 1.255 / 1.273 | — | 0.605 / 0.615 | — | 1.14 | — |
+| Adler-32 alone, reply-px128 | 3.776 / 3.803 | 8.859 / 8.928 | — | 4.298 / 4.317 | — | 1.14 | — |
 
-This is the third clang run. The first gave the same R/C to within 0.05, but the host's load rose to
-7.7 while it ran and its `6-large` and `7-random-uniform` times were disturbed. In the second,
-all four variants of `2-reply-px128` ran about 1.75× slower than in the other runs (23.4 ms for
-the C), which points to contention from another job, so it is not used. Its R/C were 1.00-1.14
-safe and 0.97-1.10 unchecked.
+Second run: safe 1.01-1.13, unchecked 0.99-1.09, zeroed table / C 0.98-1.05, Adler-32 1.14.
 
 **Linux aarch64, ratios only.** One run on a shared GitHub `ubuntu-24.04-arm` runner, with GCC
 13.3.0 and Ubuntu clang 18.1.3 against rustc 1.98.1, 61 rounds
-([run](https://github.com/momiji-rs/termshot/actions/runs/37172877370/job/111349279959),
+([run](https://github.com/momiji-rs/termshot/actions/runs/37174264965/job/111353491924),
 from a scratch branch since deleted). Shared-runner timings are not kept as numbers, and the
 ratios have that caveat too.
 
-| | R/C safe | R/C unchecked | Adler-32 R/C | C portable / C |
-|---|---|---|---|---|
-| GCC 13.3 | 0.98-1.10 | 1.03-1.11 | 1.05-1.07 | 0.99-1.02 |
-| clang 18.1 | 0.99-1.09 | 0.98-1.15 | 0.97-0.99 | 1.01-2.05 |
+| | R/C safe | R/C unchecked | Adler-32 R/C | C portable / C | zeroed table / C |
+|---|---|---|---|---|---|
+| GCC 13.3 | 0.99-1.12 | 1.02-1.10 | 1.07 | 0.98-1.01 | 0.98-1.05 |
+| clang 18.1 | 0.98-1.10 | 0.97-1.15 | 0.97 | 1.01-1.99 | 0.98-1.04 |
 
 ### Codegen: does safe Rust vectorize the 16-lane Adler-32?
 
@@ -171,29 +171,32 @@ Yes, on both targets, but the loop shape decides it. Every form below keeps the 
 lanes and gives each lane the same adds in the same order (`p[k] += a[k]`, then `a[k] += x[k]`, chunk
 by chunk). They differ only in how many 16-byte chunks one step of the outer loop takes.
 `bench/c-vs-rust/adler_forms.rs` checks each against the scalar definition, then times
-them on 66,819,840 random bytes. The table gives ms, median of 31 interleaved rounds. The C rows are
+them on 66,819,840 random bytes. The table gives ms, median of 31 rounds in a shuffled order. The C rows are
 the bench's Adler-32 alone on `2-reply-px128`, which is the same length, and whose speed does not depend on
 the data.
 
 | form | M2 Max, `opt-level=2` | M2 Max, `opt-level=3` | Ryzen, `opt-level=2` | Ryzen, `opt-level=3` |
 |---|---:|---:|---:|---:|
-| one chunk per step (as the C) | 11.46 | 11.47 | 4.12 | 14.14 |
-| literal: index a shrinking slice | 24.20 | 16.37 | 20.01 | 20.83 |
-| 2 chunks per step | 3.37 | 9.38 | 4.27 | 3.63 |
-| 4 chunks per step | 3.42 | 3.95 | 4.21 | 4.22 |
-| **8 chunks per step (`deflate.rs`)** | **3.43** | 3.33 | **4.28** | 4.31 |
-| C, Apple clang, generic vectors | 3.43-3.46 | | | |
+| one chunk per step (as the C) | 11.50 | 11.52 | 4.11 | 14.00 |
+| literal: index a shrinking slice | 24.26 | 16.52 | 19.73 | 20.56 |
+| 2 chunks per step | 3.39 | 9.43 | 4.26 | 3.58 |
+| 4 chunks per step | 3.45 | 3.97 | 4.20 | 4.20 |
+| **8 chunks per step (`deflate.rs`)** | **3.46** | 3.36 | **4.28** | 4.31 |
+| C, Apple clang, generic vectors | 3.45 | | | |
 | C, GCC 16, plain loop | | | 3.55 | |
-| C, clang 22, generic vectors | | | 3.79 | |
+| C, clang 22, generic vectors | | | 3.78 | |
 
-- **The C's own loop shape (one chunk per step) stays scalar on arm64 at `opt-level=2`**: 11.46
-  ms against 3.43. The POC's literal Adler-32 also lost its vectorization, but to bounds checks;
+On the aarch64 runner, at `opt-level=2`, one chunk per step took 2.5-2.7× as long as two, four or
+eight.
+
+- **The C's own loop shape (one chunk per step) stays scalar on arm64 at `opt-level=2`**: 11.50
+  ms against 3.46. The POC's literal Adler-32 also lost its vectorization, but to bounds checks;
   this form has none in its inner loop. On x86-64 it vectorizes at 2 but not at 3.
-  `-C no-vectorize-loops` makes every form scalar on both hosts at `opt-level=2` (10.7-31.5 ms
-  on the M2, 11.0-28.3 on the Ryzen). So when the work is vectorized at 2, the loop vectorizer does it.
+  `-C no-vectorize-loops` makes every form scalar on both hosts at `opt-level=2` (10.6-31.5 ms
+  on the M2, 11.0-27.9 on the Ryzen). So when the work is vectorized at 2, the loop vectorizer does it.
   `-C no-vectorize-slp` changes nothing at 2. Taking two or more chunks per step keeps the
   lane loop a loop that the loop vectorizer takes. Four and eight are vectorized at both
-  opt-levels on both targets. Eight is as fast as four at 2 and faster on arm64 at 3, which is
+  opt-levels on both targets. Eight is about as fast as four at 2 and faster on arm64 at 3, which is
   why `deflate.rs` uses it.
 - **The 2026-10-01 finding that `opt-level=3` was worse than 2 is a property of the loop shape,**
   not of the level. Here 3 is better for one form, worse for another, and equal for a third.
@@ -206,7 +209,7 @@ the data.
   loop vectorizer splits the 16 lanes into groups of four and loads each group's 4 bytes with
   `movd`. Per 16 bytes that is four loads and eight unpacks where the C has one load and six. That is the
   1.14× (clang) and 1.21× (GCC) Adler-32 gap. No safe form tried here gets the 16-byte
-  load at `opt-level=2`; at 3, two chunks per step reaches 3.63 ms.
+  load at `opt-level=2`; at 3, two chunks per step reaches 3.58 ms.
 - **Inspect the linked binary, not `--emit asm`.** In one case (`adler_forms.rs`, one chunk per step,
   `opt-level=3`, arm64) the `.s` from `--emit asm` showed the vector loop while the linked
   binary's function was scalar.
@@ -215,29 +218,32 @@ the data.
 
 ### Findings
 
-1. **Safe Rust matches the new Adler-32 on arm64** (R/C 1.01-1.02 on the M2, 0.97-0.99 against
-   clang 18 on aarch64 Linux, 1.05-1.07 against GCC 13's plain loop there), in a loop shape LLVM
-   vectorizes. It does not match it on x86-64: 1.14×
-   clang 22 and 1.21× GCC 16. That is about 0.07-0.10 ms on `reply-sent`'s 9.5 MB, and 0.5-0.7 ms at
-   128 px.
-2. **Safe Rust is slightly slower in matching and emission against LLVM's C,** and even with
-   GCC's on image inputs. The compressor minus its checksum is about 4% slower on `reply-sent`
-   (M2: +0.11 ms of 2.6). On the match-heavy inputs (`dense`, `color-grid`,
-   random bytes) it is 6-8% slower on the M2 and 9-15% with clang on x86-64, and 1.07-1.08 on random
+1. **Safe Rust matches the new Adler-32 on arm64** (R/C 1.01-1.02 on the M2, 0.97 against
+   clang 18 on aarch64 Linux, 1.07 against GCC 13's plain loop there), in a loop shape LLVM
+   vectorizes. It does not match it on x86-64: 1.14× clang 22 and 1.21× GCC 16. That is about
+   0.07-0.10 ms on `reply-sent`'s 9.5 MB, and 0.5-0.7 ms at 128 px.
+2. **Safe Rust is slower in matching and emission against LLVM's C,** and about even with
+   GCC's on image inputs. The compressor minus its checksum is 5-7% slower on `reply-sent`
+   (M2: +0.12-0.17 ms of 2.6). On the match-heavy inputs (`dense`, `color-grid`,
+   random bytes) it is 6-9% slower on the M2 and 7-13% with clang on x86-64, and 6% on random
    bytes with GCC. Against GCC the image inputs are 0.98-1.03, apart from `blank`, which is
-   mostly Adler-32 and is 1.11-1.12. The cause of the LLVM-side matching gap was not found. Three
+   mostly Adler-32 and is 1.11. The cause of the LLVM-side matching gap was not found. Three
    tries showed no effect beyond noise in 15-round runs on the M2: one bounds check instead of
    three in the hash (kept), a fixed-size count array, and writing each token into a pre-sized
    scratch buffer as the C does.
-3. **`unchecked` buys little:** at most 4 points (`7-random-uniform` with GCC, 1.07 → 1.03),
-   0-2 points on most inputs, and on aarch64 it was slower than safe on most inputs. The safe
-   `countm` here walks `chunks_exact(16)` over two slices cut to `limit`, so its 16-byte compares
-   carry no per-load check. The POC's safe `countm`, which closed a 5% gap when unchecked, sliced
-   `a[i..i + 8]` at every step.
-4. **The compiler still matters as much as the language,** but it matters differently from 2026-10-01. #20's
+3. **Zeroing the hash table costs little.** The C with a `calloc`'d table runs at 0.98-1.05 of
+   the C, and the largest effect is on the smallest input, `3-attrs-px24` (0.46 MB, 1.03-1.05).
+   That is up to about 4 points of that input's 7-8% R/C on the LLVM hosts, and about 1 point
+   or less on the others. The allocation alone, `vec![0u32; 262144]` with no pages touched, takes 0.006-0.009 ms.
+4. **`unchecked` buys little:** at most 4 points (`5-dense` with GCC 1.00 → 0.96, `7-random-uniform`
+   with clang 1.13 → 1.09), and 0-3 points on most inputs. On aarch64 it was no better: with GCC it was slower than
+   safe on 8 of 10 inputs. The safe `countm` here walks `chunks_exact(16)` over two slices cut to
+   `limit`, so its 16-byte compares carry no per-load check. The POC's safe `countm`, which closed
+   a 5% gap when unchecked, sliced `a[i..i + 8]` at every step.
+5. **The compiler still matters as much as the language,** but it matters differently from 2026-10-01. #20's
    per-compiler C closed the GCC gap that made Rust 5-26% faster then. On clang hosts, the plain loop that clang
-   does not vectorize costs the C up to 1.93× in the whole compressor (C portable / C, most where the
-   checksum is a large share) and 2.35-3.24× in the Adler-32 alone.
+   does not vectorize costs the C up to 1.92× in the whole compressor (C portable / C, most where the
+   checksum is a large share) and 2.35-3.23× in the Adler-32 alone.
 
 ### End-to-end context
 
@@ -247,11 +253,11 @@ ms. On its deflate input, the measured difference of the whole compressor is:
 
 | | C | Rust safe | difference | share of a `reply-sent` run |
 |---|---:|---:|---:|---:|
-| macOS, Apple clang (release compiler) | 3.10 | 3.22-3.24 | +0.12-0.13 ms | +1.4% |
-| Linux x86-64, GCC (release compiler: `musl-gcc`) | 3.11-3.14 | 3.07-3.11 | -0.03-0.04 ms | -0.5% |
-| Linux x86-64, clang | 2.94 | 3.08 | +0.14 ms | +1.9% |
+| macOS, Apple clang (release compiler) | 3.08-3.09 | 3.22-3.26 | +0.13-0.18 ms | +1.5-2.0% |
+| Linux x86-64, GCC (release compiler: `musl-gcc`) | 3.12-3.13 | 3.07-3.08 | -0.04-0.05 ms | -0.6% |
+| Linux x86-64, clang | 2.97 | 3.07 | +0.10-0.11 ms | +1.4% |
 
-At 128 px (`reply-128px`, about 29 ms on macOS) the difference is about +0.4 ms, or 1.5%. The x86-64 slice of the
+At 128 px (`reply-128px`, about 29 ms on macOS) the difference is +0.39-0.43 ms, or about 1.5%. The x86-64 slice of the
 macOS universal binary was not measured.
 
 ### What this means for #12
@@ -262,14 +268,14 @@ The evidence, without a decision:
   - A safe-Rust port of the current code is byte-identical on 3,260 differential cases and ten
     workloads, on three platforms and five C compilers.
   - It needs no `unsafe`. The `unchecked` variant shows bounds checks are not where the remaining time
-    goes.
+    goes, and the zeroed table explains only a point or so.
   - Against the Linux release compiler (GCC) it is even on image inputs on x86-64 (0.98-1.03;
-    0.98-1.10 against GCC 13 on aarch64).
-  - On macOS it costs about 1.4% of a typical run.
+    0.99-1.12 against GCC 13 on aarch64).
+  - On macOS it costs about 1.5-2% of a typical run.
   - The 16-lane Adler-32 vectorizes in safe stable Rust on arm64 with no intrinsics.
   - The memory-safety argument in #12 is unchanged by this round.
 - **Against, or not yet:**
-  - It is not faster anywhere a release is built, and is 2-8% slower than Apple clang's C.
+  - It is not faster anywhere a release is built, and is 1-9% slower than Apple clang's C.
   - On x86-64 its Adler-32 is 14-21% slower and no safe form tried at `opt-level=2` closes that.
   - Whether LLVM vectorizes the checksum depends on the loop shape. It differs by target and
     opt-level, and the shape that ports the C's loop directly is 3.3× slower on arm64. A move
@@ -284,8 +290,8 @@ The evidence, without a decision:
 
 ### Limits
 
-- One machine per OS for the timed runs. macOS ran twice under a load of 2.6-4.4 from other sessions.
-  Linux GCC ran twice and clang once cleanly. aarch64 is one shared-runner run, ratios only.
+- One machine per OS for the timed runs, two runs per host and compiler. macOS ran under a load of
+  3.3-3.8 from other sessions. aarch64 is one shared-runner run, ratios only.
 - The Rust side was tuned only as far as the Adler-32 loop shape and the three small matcher
   tries above; the matcher otherwise follows the C line for line.
 - Only quality 8 is timed; the correctness gate covers qualities 5-16.
