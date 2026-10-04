@@ -2,7 +2,9 @@
 //! as draw.c gets them, against HarfBuzz's.
 
 use crate::cff_tests::craft;
+use crate::draw_tests::{self, render_with};
 use crate::font;
+use crate::font::tests::edit_table;
 use std::ffi::c_int;
 use std::fs;
 
@@ -203,6 +205,42 @@ fn crafted_hvar() -> Vec<u8> {
 fn crafted_mvar() -> Vec<u8> {
     let vertical = store(2, &regions(), &[data(&[0, 3], 1, &[&[100, 20], &[300, -50], &[55, 7], &[999, 9]])]);
     mvar(10, &[(b"hasc", 0), (b"hdsc", 1), (b"hlgp", 2), (b"xhgt", 3)], &vertical)
+}
+
+/// The font with U+4E00 mapped to `glyph`, in place of A to glyph 1.
+fn one_maps_to(font: &[u8], glyph: u16) -> Vec<u8> {
+    edit_table(font, b"cmap", |cmap| {
+        // The format 4 subtable's first segment: its end, start and delta.
+        for (at, v) in [(26, 0x4e00), (32, 0x4e00), (36, glyph.wrapping_sub(0x4e00))] {
+            cmap[at..at + 2].copy_from_slice(&u16::to_be_bytes(v));
+        }
+    })
+}
+
+/// A fallback glyph is centered in its cells, or shrunk to fit them, by
+/// its advance at the instance: at ax0=1 the crafted HVAR advances glyph 1
+/// 727 units (centered) and glyph 3 1600 (shrunk), so each draws as a
+/// font whose hmtx says so draws at the default.
+#[test]
+fn a_fallback_is_placed_by_its_advance_at_the_instance() {
+    let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None, axes: None }).unwrap();
+    let cells = crate::parse("\u{4e00}".as_bytes(), 4, 1);
+    let hvar = crafted_hvar();
+    for (glyph, advance) in [(1usize, 727u16), (3, 1600)] {
+        let varied = one_maps_to(&two_axes(&[(b"HVAR", &hvar)]), glyph as u16);
+        let fixed = edit_table(&varied, b"hmtx", |hmtx| hmtx[4 * glyph..][..2].copy_from_slice(&advance.to_be_bytes()));
+        let draw = |data: &[u8], axes: Option<&str>, name: &str| {
+            let path = format!("target/test/metrics-fallback-{glyph}-{name}.otf");
+            fs::write(&path, data).unwrap();
+            let fallback = font::load(&font::Spec { path: path.clone(), face: None, axes: axes.map(String::from) }).unwrap();
+            let out = path.replace(".otf", ".png");
+            assert_eq!(render_with(&cells, 4, 1, &mono, Some(&fallback), 24.0, &out), 0);
+            fs::read(out).unwrap()
+        };
+        let at_instance = draw(&varied, Some("ax0=1"), "instance");
+        assert!(at_instance == draw(&fixed, None, "hmtx"), "glyph {glyph} at ax0=1 is not drawn as advancing {advance}");
+        assert!(at_instance != draw(&varied, None, "default"), "glyph {glyph} draws the same at ax0=1");
+    }
 }
 
 /// A damaged HVAR or MVAR is refused with a reason at an instance, at load,
