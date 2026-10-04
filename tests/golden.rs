@@ -96,10 +96,10 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 62] = [
     ("marks", "46", 40, 6, &["--fallback-font", MARKS]),
     // Glyphs and marks reaching into the rows above and below (the bracket
     // pieces, by a pixel), over backgrounds and images below and under the
-    // text: painting a row of backgrounds at a time must draw them as
-    // painting every background first did (#22).
-    ("row-overlap", "24", 30, 6, &["--fallback-font", MARKS]),
-    ("row-overlap", "46", 30, 6, &["--fallback-font", MARKS]),
+    // text, with the backdrop painted at once (a small raster) and a row of
+    // cells at a time (one over 16 MiB), which must draw the same (#22).
+    ("row-overlap", "24", 100, 30, &["--fallback-font", MARKS]),
+    ("row-overlap", "96", 100, 30, &["--fallback-font", MARKS]),
     ("cursor-underline", "24", 8, 2, &[]),
     ("cursor-bar", "24", 8, 2, &[]),
     // Sixel: hand-made images (HLS, P2 0 and 1, $ and -, the VT340 palette,

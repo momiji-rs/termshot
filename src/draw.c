@@ -1179,9 +1179,16 @@ static void paint_images(Canvas *cv, const ImageView *images, size_t count, int 
    those over every background. A row is painted before anything over it
    (the row's own cells, or a glyph or mark reaching down into it), so each
    pixel is painted in the same order as if every row were painted first.
-   Each row looks at every image, so with more than BACKDROP_ROW_IMAGES of
-   them under the text (Unicode placeholders make one a run) the whole
-   backdrop is painted at once, as it was before rows. */
+   The whole backdrop is painted at once instead, as it was before rows:
+   - for a raster under BACKDROP_ROW_BYTES, which stays in the last-level
+     cache anyway. Rows gained nothing at 2200x1440 (9.5 MB) on either host
+     measured, and on macOS they cost 1-2% there, but up to 8% faster on
+     Linux at 61-67 MB (docs/performance.md);
+   - with more than BACKDROP_ROW_IMAGES images under the text (Unicode
+     placeholders make one a run), since each row looks at every image. */
+#ifndef BACKDROP_ROW_BYTES
+#define BACKDROP_ROW_BYTES ((size_t)16 << 20)
+#endif
 #define BACKDROP_ROW_IMAGES 64
 typedef struct {
     const Cell *cells;
@@ -1192,11 +1199,12 @@ typedef struct {
     double ms;
 } Backdrop;
 
-static Backdrop backdrop_for(const Cell *cells, int cols, int rows, int cell_w, int cell_h, const ImageView *images,
-                             size_t image_count) {
+static Backdrop backdrop_for(const Canvas *cv, const Cell *cells, int cols, int rows, int cell_w, int cell_h,
+                             const ImageView *images, size_t image_count) {
     size_t under = 0;
     for (size_t i = 0; i < image_count; i++) under += image_layer(images[i].z) != LAYER_OVER_TEXT;
-    return (Backdrop){cells, cols, rows, cell_w, cell_h, 0, images, image_count, under > BACKDROP_ROW_IMAGES, 0};
+    int whole = under > BACKDROP_ROW_IMAGES || cv->stride * (size_t)cv->h < BACKDROP_ROW_BYTES;
+    return (Backdrop){cells, cols, rows, cell_w, cell_h, 0, images, image_count, whole, 0};
 }
 
 /* Paint the backdrop of every row of cells above pixel row y. */
@@ -1469,7 +1477,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     /* The backgrounds and the images under the text are painted a row of
        cells ahead of the text over them (backdrop_through); background_ms
        is their time, and foreground_ms the rest. */
-    Backdrop backdrop = backdrop_for(cells, cols, rows, cell_w, cell_h, images, image_count);
+    Backdrop backdrop = backdrop_for(cv, cells, cols, rows, cell_w, cell_h, images, image_count);
     double background = now_ms();
     double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
     Glyph cache[GLYPH_CACHE_SIZE] = {0};

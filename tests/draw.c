@@ -1,4 +1,6 @@
-/* Exercise the complete C renderer under ASan/UBSan, including cache eviction. */
+/* Exercise the complete C renderer under ASan/UBSan, including cache eviction.
+   Every raster's backdrop is painted a row at a time, however small. */
+#define BACKDROP_ROW_BYTES 0
 #include "../src/draw.c"
 #include <assert.h>
 static void images(void) {
@@ -110,8 +112,9 @@ static void clipped_across(void) {
     paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
     for (size_t i = 0; i < sizeof buffer; i++) assert(buffer[i] == 0);
 }
-/* The backdrop painted a row of cells at a time and all at once (as with
-   more than BACKDROP_ROW_IMAGES images under the text) is the same: cell
+/* The backdrop painted a row of cells at a time and all at once (as for a
+   small raster, or with more than BACKDROP_ROW_IMAGES images under the
+   text) is the same: cell
    backgrounds of both kinds, and images below them and under the text that
    overlap, cross rows of cells, hang off the canvas and blend. */
 static void backdrop_rows(void) {
@@ -130,7 +133,7 @@ static void backdrop_rows(void) {
         unsigned char *buffer = mode ? whole : rows;
         memset(buffer, 0xee, STRIDE * H);
         Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = W, .h = H, .stride = STRIDE};
-        Backdrop bd = backdrop_for(cells, COLS, ROWS, CW, CH, views, 3);
+        Backdrop bd = backdrop_for(&cv, cells, COLS, ROWS, CW, CH, views, 3);
         assert(!bd.whole);
         bd.whole = mode;
         for (int y = 1; y <= H; y += 3) backdrop_through(&cv, &bd, y);
