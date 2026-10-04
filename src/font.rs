@@ -193,7 +193,7 @@ impl Font {
             cff,
             font: PhantomData,
         };
-        Ok(match cff_outlines(&self.data, self.start)? {
+        Ok(match cff_outlines(&self.data, self.start, &[])? {
             None => f(&face(None, std::ptr::null())),
             Some(cff) => f(&face(Some(outline), &cff as *const cff::Font as *const c_void)),
         })
@@ -470,15 +470,16 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
         return Err(format!("hmtx is {} bytes, needs {hmtx_needed}", hmtx.len()));
     }
     // stb draws a face without glyf from its CFF table.
-    if cff_outlines(d, start)?.is_none() {
+    if cff_outlines(d, start, &[])?.is_none() {
         check_glyf(d, start, head, glyph_count)?;
     }
     check_cmap(cmap, glyph_count)
 }
 
 /// The CFF outlines of a face without glyf, parsed and checked; None for a
-/// TrueType face.
-pub fn cff_outlines(d: &[u8], start: usize) -> Result<Option<cff::Font<'_>>, String> {
+/// TrueType face. A CFF2 face is drawn at the instance at `coords`, as
+/// cff::Font::parse_cff2 takes them.
+pub fn cff_outlines<'a>(d: &'a [u8], start: usize, coords: &[i32]) -> Result<Option<cff::Font<'a>>, String> {
     if table(d, start, b"glyf")?.is_some() {
         return Ok(None);
     }
@@ -490,7 +491,7 @@ pub fn cff_outlines(d: &[u8], start: usize) -> Result<Option<cff::Font<'_>>, Str
     let Some(cff2) = table(d, start, b"CFF2")? else {
         return Err(no_outlines(d, start)?);
     };
-    cff::Font::parse_cff2(cff2.data, glyphs).map(Some).map_err(|reason| format!("CFF2 table: {reason}"))
+    cff::Font::parse_cff2(cff2.data, glyphs, coords).map(Some).map_err(|reason| format!("CFF2 table: {reason}"))
 }
 
 /// Check the loca and glyf tables of a TrueType face.

@@ -7,14 +7,15 @@
 //! and the measurements.
 //!
 //! It also reads CFF2 tables (variable fonts), which stb can't, and draws
-//! their default instance: `blend` keeps its default values and drops the
-//! deltas. A CFF2 table is checked as strictly. Of its variation store only
-//! the region counts are used, because they say how many operands each
-//! `blend` takes. CFF charstrings run in f32, as stb runs them; CFF2 ones in
-//! f64, as HarfBuzz, the reference for CFF2, runs them.
+//! the instance at the normalized coordinates it is given: `blend` adds each
+//! value's deltas times the scalars of their regions, or at the default
+//! instance drops them. A CFF2 table is checked as strictly. Of its
+//! variation store only the regions and their counts are used. CFF
+//! charstrings run in f32, as stb runs them; CFF2 ones in f64, as HarfBuzz,
+//! the reference for CFF2, runs them, and blend as HarfBuzz does.
 
 use std::collections::HashMap;
-use std::ops::{Add, Neg, Sub};
+use std::ops::{Add, Mul, Neg, Sub};
 
 /// stb_truetype's vertex kinds.
 pub const MOVE: u8 = 1;
@@ -238,7 +239,7 @@ fn dict2(dict: &[u8], regions: Option<&[usize]>) -> Result<Vec<(u16, Vec<Operand
                 vsindex = index;
             }
             (23, Some(regions)) => {
-                let depth = blend(&operands, regions.get(vsindex).copied(), vsindex)?;
+                let (_, depth) = blend(&operands, regions.get(vsindex).copied(), vsindex)?;
                 operands.truncate(depth);
                 continue;
             }
@@ -259,17 +260,18 @@ fn find(entries: &[(u16, Vec<Operand>)], key: u16) -> &[Operand] {
 }
 
 /// `blend` on a stack of DICT or charstring operands: the count n on top,
-/// under it n default values and then n * regions deltas. Returns the stack
-/// depth that leaves only the defaults. `regions` is the region count of the
-/// ItemVariationData `vsindex` names, None where the store has no such data.
-fn blend<T: Copy + Into<Count>>(stack: &[T], regions: Option<usize>, vsindex: usize) -> Result<usize, String> {
+/// under it n default values and then n * regions deltas, value by value.
+/// Returns n and the stack depth that leaves only the defaults, where the
+/// deltas start. `regions` is the region count of the ItemVariationData
+/// `vsindex` names, None where the store has no such data.
+fn blend<T: Copy + Into<Count>>(stack: &[T], regions: Option<usize>, vsindex: usize) -> Result<(usize, usize), String> {
     let regions = regions.ok_or_else(|| format!("blend with vsindex {vsindex}, which names no ItemVariationData"))?;
     let Some(Count(Some(n))) = stack.last().map(|&v| v.into()) else {
         return Err("blend without a count of values".into());
     };
     let needed = n.checked_mul(regions + 1).and_then(|v| v.checked_add(1));
     match needed {
-        Some(needed) if needed <= stack.len() => Ok(stack.len() - 1 - n * regions),
+        Some(needed) if needed <= stack.len() => Ok((n, stack.len() - 1 - n * regions)),
         _ => Err(format!("blend of {n} values over {regions} regions has only {} operands", stack.len())),
     }
 }
@@ -301,7 +303,15 @@ impl From<f64> for Count {
 /// A charstring number: f32 for CFF, as stb computes them, and f64 for CFF2,
 /// as HarfBuzz, the reference for CFF2, does.
 trait Num:
-    Copy + PartialOrd + std::fmt::Display + Add<Output = Self> + Sub<Output = Self> + Neg<Output = Self> + Into<Count>
+    Copy
+    + PartialOrd
+    + std::fmt::Display
+    + From<f32>
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Neg<Output = Self>
+    + Into<Count>
 {
     const ZERO: Self;
     fn int(v: i16) -> Self;
@@ -353,13 +363,29 @@ impl Num for f64 {
     }
 }
 
-/// The region count of each ItemVariationData of the CFF2 variation store
-/// at `at`: how many deltas `blend` takes per value. The deltas are dropped
-/// for the default instance, so the rest of the store is only checked to
-/// lie inside it. Sizes are worked out in u64, which the 16- and 32-bit
-/// fields can't overflow, and each ItemVariationData is checked once however
-/// many offsets name it, so a store's checking costs at most its size.
-fn read_store(cff: &[u8], at: usize) -> Result<Vec<usize>, String> {
+/// The CFF2 variation store, as the charstrings use it.
+#[derive(Default)]
+struct Store {
+    /// The region count of each ItemVariationData: how many deltas `blend`
+    /// takes per value.
+    regions: Vec<usize>,
+    /// Which of `scalars` each ItemVariationData's are: one copy for each
+    /// ItemVariationData however many offsets name it.
+    data: Vec<usize>,
+    /// The scalar of each region an ItemVariationData names, at the
+    /// instance drawn; empty at the default instance.
+    scalars: Vec<Vec<f32>>,
+}
+
+/// Read the CFF2 variation store at `at`, for the instance at `coords`
+/// (normalized, in F2Dot14 units; none for the default instance, whose
+/// deltas are dropped). Only the region list and the region indexes are
+/// used, so the rest of the store is only checked to lie inside it. Sizes
+/// are worked out in u64, which the 16- and 32-bit fields can't overflow,
+/// and each ItemVariationData is checked once however many offsets name it,
+/// and each region evaluated once, so reading a store costs at most its
+/// size.
+fn read_store(cff: &[u8], at: usize, coords: &[i32]) -> Result<Store, String> {
     let length = u16_at(cff, at)?;
     let store = cff.get(at + 2..at + 2 + length).ok_or("runs past the table")?;
     let fits = |end: u64| end <= store.len() as u64;
@@ -373,12 +399,17 @@ fn read_store(cff: &[u8], at: usize) -> Result<Vec<usize>, String> {
     if !fits(list as u64 + 4 + regions as u64 * axes as u64 * 6) {
         return Err("the region list runs past the store".into());
     }
+    let region_scalars: Vec<f32> = match coords {
+        [] => Vec::new(),
+        _ => (0..regions).map(|r| region_scalar(&store[list + 4 + 6 * axes * r..][..6 * axes], coords)).collect(),
+    };
     let mut checked: HashMap<usize, usize> = HashMap::new();
-    let mut out = Vec::with_capacity(count);
+    let mut out = Store { regions: Vec::with_capacity(count), data: Vec::with_capacity(count), scalars: Vec::new() };
     for i in 0..count {
         let data = u32_at(store, 8 + 4 * i)?;
-        if let Some(&n) = checked.get(&data) {
-            out.push(n);
+        if let Some(&slot) = checked.get(&data) {
+            out.regions.push(out.regions[slot]);
+            out.data.push(out.data[slot]);
             continue;
         }
         let (items, words, n) = (u16_at(store, data)?, u16_at(store, data + 2)?, u16_at(store, data + 4)?);
@@ -390,10 +421,14 @@ fn read_store(cff: &[u8], at: usize) -> Result<Vec<usize>, String> {
         if !fits(data as u64 + 6 + 2 * n as u64) {
             return Err(format!("ItemVariationData {i} runs past the store"));
         }
+        let mut scalars = Vec::with_capacity(if coords.is_empty() { 0 } else { n });
         for j in 0..n {
             let region = u16_at(store, data + 6 + 2 * j)?;
             if region >= regions {
                 return Err(format!("ItemVariationData {i} names region {region} of {regions}"));
+            }
+            if !coords.is_empty() {
+                scalars.push(region_scalars[region]);
             }
         }
         let (words, rest) = (words as u64, (n - words) as u64);
@@ -401,10 +436,51 @@ fn read_store(cff: &[u8], at: usize) -> Result<Vec<usize>, String> {
         if !fits(data as u64 + 6 + 2 * n as u64 + items as u64 * row) {
             return Err(format!("ItemVariationData {i} runs past the store"));
         }
-        checked.insert(data, n);
-        out.push(n);
+        checked.insert(data, i);
+        out.regions.push(n);
+        out.data.push(out.scalars.len());
+        out.scalars.push(scalars);
     }
     Ok(out)
+}
+
+/// The scalar of the region whose (start, peak, end) triples are `region`,
+/// at `coords`: the product of each axis's, 0 as soon as one is, in f32 as
+/// HarfBuzz works it out. An axis past `coords` is at 0.
+fn region_scalar(region: &[u8], coords: &[i32]) -> f32 {
+    let mut v = 1.0f32;
+    for (i, axis) in region.chunks_exact(6).enumerate() {
+        let at = |k: usize| i16::from_be_bytes([axis[k], axis[k + 1]]) as i32;
+        let factor = axis_scalar(at(0), at(2), at(4), coords.get(i).copied().unwrap_or(0));
+        if factor == 0.0 {
+            return 0.0;
+        }
+        v *= factor;
+    }
+    v
+}
+
+/// One axis's part of a region scalar, in HarfBuzz's order of cases: an
+/// axis whose start, peak and end are out of order or straddle 0 counts
+/// as 1, as if the region did not name it.
+fn axis_scalar(start: i32, peak: i32, end: i32, coord: i32) -> f32 {
+    if peak == 0 || coord == peak {
+        return 1.0;
+    }
+    if coord == 0 {
+        return 0.0;
+    }
+    if start > peak || peak > end || (start < 0 && end > 0) {
+        return 1.0;
+    }
+    if coord <= start || end <= coord {
+        return 0.0;
+    }
+    if coord < peak {
+        (coord - start) as f32 / (peak - start) as f32
+    } else {
+        (end - coord) as f32 / (end - peak) as f32
+    }
 }
 
 /// The local Subrs of a Top DICT or Font DICT, as stbtt__get_subrs finds them.
@@ -500,8 +576,11 @@ pub struct Font<'a> {
     fdselect: FdSelect<'a>,
     /// CFF2: charstrings without endchar or width, with blend and vsindex.
     cff2: bool,
-    /// CFF2: the region count of each ItemVariationData in the store.
-    regions: Vec<usize>,
+    /// CFF2: the variation store.
+    store: Store,
+    /// CFF2: whether `blend` applies its deltas, at an instance other than
+    /// the default; it drops them otherwise.
+    blending: bool,
     /// CFF2: each font dict's default vsindex, and for FdSelect::None the
     /// one font dict's.
     fd_vsindex: Vec<usize>,
@@ -549,13 +628,15 @@ impl<'a> Font<'a> {
             }
             fdselect = read_fdselect(cff, fdselect_at, glyphs, fd_subrs.len(), false)?;
         }
-        let (cff2, regions, fd_vsindex, vsindex) = (false, Vec::new(), Vec::new(), 0);
-        Ok(Font { glyphs, charstrings, gsubrs, subrs, fd_subrs, fdselect, cff2, regions, fd_vsindex, vsindex })
+        let (cff2, store, blending, fd_vsindex, vsindex) = (false, Store::default(), false, Vec::new(), 0);
+        Ok(Font { glyphs, charstrings, gsubrs, subrs, fd_subrs, fdselect, cff2, store, blending, fd_vsindex, vsindex })
     }
 
     /// Parse a `CFF2` table, checking every structure the charstrings will
-    /// use, as for CFF.
-    pub fn parse_cff2(cff: &'a [u8], glyphs: usize) -> Result<Font<'a>, String> {
+    /// use, as for CFF. Its glyphs are drawn at the instance at `coords`, the
+    /// normalized coordinates of each fvar axis in F2Dot14 units, or at the
+    /// default instance for none.
+    pub fn parse_cff2(cff: &'a [u8], glyphs: usize, coords: &[i32]) -> Result<Font<'a>, String> {
         let major = *cff.first().ok_or("header truncated")?;
         if major != 2 {
             return Err(format!("header says version {major}"));
@@ -572,9 +653,9 @@ impl<'a> Font<'a> {
         let [fdarray] = ints::<1>(find(&top, 0x124), 0x124)?;
         let [fdselect_at] = ints::<1>(find(&top, 0x125), 0x125)?;
         let [vstore] = ints::<1>(find(&top, 24), 24)?;
-        let regions = match vstore {
-            0 => Vec::new(),
-            at => read_store(cff, at).map_err(|reason| format!("vstore: {reason}"))?,
+        let store = match vstore {
+            0 => Store::default(),
+            at => read_store(cff, at, coords).map_err(|reason| format!("vstore: {reason}"))?,
         };
         if charstrings == 0 {
             return Err("no CharStrings".into());
@@ -592,7 +673,7 @@ impl<'a> Font<'a> {
         }
         let (mut fd_subrs, mut fd_vsindex) = (Vec::with_capacity(dicts.count), Vec::with_capacity(dicts.count));
         for i in 0..dicts.count {
-            let (subrs, vsindex) = read_private2(cff, dicts.get(i).unwrap_or(&[]), &regions)?;
+            let (subrs, vsindex) = read_private2(cff, dicts.get(i).unwrap_or(&[]), &store.regions)?;
             fd_subrs.push(subrs);
             fd_vsindex.push(vsindex);
         }
@@ -602,7 +683,8 @@ impl<'a> Font<'a> {
             at => read_fdselect(cff, at, glyphs, dicts.count, true)?,
         };
         let (subrs, vsindex) = (fd_subrs[0], fd_vsindex[0]);
-        Ok(Font { glyphs, charstrings, gsubrs, subrs, fd_subrs, fdselect, cff2: true, regions, fd_vsindex, vsindex })
+        let blending = !coords.is_empty();
+        Ok(Font { glyphs, charstrings, gsubrs, subrs, fd_subrs, fdselect, cff2: true, store, blending, fd_vsindex, vsindex })
     }
 
     /// The font dict of `glyph`, None for FdSelect::None.
@@ -1001,16 +1083,31 @@ fn run<N: Num>(font: &Font, glyph: usize, c: &mut Pen<N>) -> Result<bool, String
                     return Err(format!("glyph {glyph}: vsindex with no operand"));
                 };
                 let index = match v.into() {
-                    Count(Some(index)) if index < font.regions.len() => index,
-                    _ => return Err(format!("glyph {glyph}: vsindex {v}, with {} ItemVariationData", font.regions.len())),
+                    Count(Some(index)) if index < font.store.regions.len() => index,
+                    _ => return Err(format!("glyph {glyph}: vsindex {v}, with {} ItemVariationData", font.store.regions.len())),
                 };
+                // As in HarfBuzz: the scalars a blend uses are fixed by then.
+                if vsindex.is_some() {
+                    return Err(format!("glyph {glyph}: vsindex after a blend or another vsindex"));
+                }
                 vsindex = Some(index);
             }
             0x10 if font.cff2 => {
                 // blend
                 let index = *vsindex.get_or_insert_with(|| font.default_vsindex(glyph));
-                let regions = font.regions.get(index).copied();
-                sp = blend(s, regions, index).map_err(|reason| format!("glyph {glyph}: {reason}"))?;
+                let regions = font.store.regions.get(index).copied();
+                let (n, depth) = blend(s, regions, index).map_err(|reason| format!("glyph {glyph}: {reason}"))?;
+                if font.blending {
+                    // Each value plus its deltas times the region scalars,
+                    // summed first, as HarfBuzz sums them.
+                    let scalars = &font.store.scalars[font.store.data[index]];
+                    for i in 0..n {
+                        let deltas = &stack[depth + i * scalars.len()..][..scalars.len()];
+                        let v = scalars.iter().zip(deltas).fold(N::ZERO, |v, (&scalar, &delta)| v + N::from(scalar) * delta);
+                        stack[depth - n + i] = stack[depth - n + i] + v;
+                    }
+                }
+                sp = depth;
                 clear = false;
             }
             0x0b => {

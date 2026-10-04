@@ -221,7 +221,13 @@ outlines itself (`init_cff2`: metrics tables and the cmap subtable stb would pic
 - **The default instance**: `blend` keeps its n default values and drops the n × k deltas
   under them. k is the region count of the ItemVariationData that `vsindex` names, so the
   variation store is read for its region counts, and its region list and data are checked to
-  lie inside it. No `fvar` or `avar` is read.
+  lie inside it.
+- **Other instances**: given normalized coordinates (F2Dot14), `blend` adds to each value the
+  sum of its k deltas times their region scalars, as HarfBuzz does: the sum in f64 from 0, each
+  scalar the f32 product of its axes', in `VarRegionAxis::evaluate`'s order of cases (a
+  malformed axis, or one peaking at 0, counts as 1). Each region is evaluated once per font,
+  when the store is read, so a `blend` costs its k multiply-adds. As in HarfBuzz, `vsindex`
+  after a `blend` or a second `vsindex` is an error, since the scalars are fixed by then.
 - **Arithmetic as HarfBuzz's**: CFF charstrings run in f32, as stb runs them; CFF2 ones run
   in f64, as HarfBuzz runs them, and each point is drawn as the f32 HarfBuzz hands on, then
   truncated. A contour is closed with a line where its ends differ as f32s. Steps of 1/4096
