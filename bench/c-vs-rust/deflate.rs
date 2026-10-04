@@ -536,7 +536,7 @@ fn check_corpus(cases: usize) -> usize {
 }
 
 /// Seeded synthetic inputs of reply-24px's size (2,376,720 bytes): uniform
-/// random bytes (every position a literal) and a skewed four-symbol alphabet.
+/// random bytes (nearly all literals) and a skewed four-symbol alphabet.
 fn synthetic() -> Vec<(String, Vec<u8>)> {
     let len = 2_376_720;
     let mut rng = Rng(0x0123_4567_89ab_cdef);

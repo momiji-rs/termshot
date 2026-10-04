@@ -79,7 +79,7 @@ compiler.
 | 6-blank | 9,505,440 | `scripts/bench.py`'s `blank`, nearly all Adler-32 (from the #20 round) |
 | 6-color-grid | 2,376,720 | `bench.py`'s `color-grid`: short matches |
 | 6-large | 60,829,440 | `bench.py`'s `large`: 240×80 at 48 px |
-| 7-random-uniform | 2,376,720 | seeded uniform random bytes: every position a literal |
+| 7-random-uniform | 2,376,720 | seeded uniform random bytes: nearly every position a literal |
 | 8-random-4sym-skewed | 2,376,720 | seeded, four symbols at 9/16, 4/16, 2/16, 1/16 |
 
 - **Timing:** all five variants run in each round, in a seeded random order per round, so each
