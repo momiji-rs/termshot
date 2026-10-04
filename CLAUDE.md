@@ -21,7 +21,7 @@ SANITIZE=1 ./tests/run.sh       # extended: codec round trips, compressor and ge
 ./target/test/unit --ignored          # #[ignore] tests only
 ```
 
-A test for a known bug states the correct behaviour and is marked `#[ignore = "#N: ..."]` with its issue, so it starts passing when the issue is fixed. None are open now. The bare `#[ignore]` on `poc_workloads` is different: that function is a benchmark helper, not a test. It writes inputs to `$TERMSHOT_POC_DIR` and does nothing when the variable is unset (see `docs/c-vs-rust.md`). So is `any_cff2_font_matches_harfbuzz`: given `TERMSHOT_CFF2_FONT` and `TERMSHOT_CFF2_OUTLINES` (written by `tools/cff2-outlines.sh [--variations=LIST] FONT OUT`), it checks every glyph of that font against HarfBuzz's outlines at that instance.
+A test for a known bug states the correct behaviour and is marked `#[ignore = "#N: ..."]` with its issue, so it starts passing when the issue is fixed. None are open now. The bare `#[ignore]` on `poc_workloads` is different: that function is a benchmark helper, not a test. It writes inputs to `$TERMSHOT_POC_DIR` and does nothing when the variable is unset (see `docs/c-vs-rust.md`). So is `any_cff2_font_matches_harfbuzz`: given `TERMSHOT_CFF2_FONT` and `TERMSHOT_CFF2_OUTLINES` (written by `tools/cff2-outlines.sh [--variations=LIST] FONT OUT`), it checks each character's glyph against HarfBuzz's outline at that instance (the glyphs termshot can draw; the others need only draw without an error).
 
 Rebuild it after editing Rust without running the whole suite:
 
