@@ -437,7 +437,7 @@ fn check(what: &str, data: &[u8], quality: usize) {
     }
     let a = adler_variant(0, data);
     for v in 1..4 {
-        assert_eq!(adler_variant(v, data), a, "{what}: {} Adler-32 differs", NAMES[v]);
+        assert_eq!(adler_variant(v, data), a, "{what}: {} Adler-32 differs", ["C", "C portable", "Rust", "Rust shipped"][v]);
     }
 }
 
