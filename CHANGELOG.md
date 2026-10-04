@@ -206,10 +206,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Rounded corners, diagonals, large screens and images are drawn faster, to
   the same pixels (#22). A corner or diagonal is painted from one rasterized
   before it when its points round the same way, which is checked exactly;
-  backgrounds are painted a row of cells ahead of the text over them, while
-  the row is in the cache; and images find their source columns without a
-  division per pixel. On an Apple M2 Max the 3,000-corner benchmark takes 9.9
-  ms instead of 15.3 at 48 px, and 32.6 instead of 70.3 at 128 px;
+  on rasters over 16 MiB, backgrounds are painted a row of cells ahead of the
+  text over them, while the row is in the cache; and images find their
+  source columns without a division per pixel. The 3,000-corner benchmark
+  takes 10.0 ms instead of 15.2 at 48 px and 32.4 instead of 68.9 at 128 px
+  on an Apple M2 Max, and 8.9 instead of 14.0 and 26.1 instead of 63.1 on a
+  Ryzen 7 8745HS, where 5280×3840 screens are also 7-10% faster;
   `docs/performance.md` has the measurements.
 
 ### Fixed
