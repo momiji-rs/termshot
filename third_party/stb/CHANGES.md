@@ -34,7 +34,7 @@ The compressor's unit tests (`src/deflate_tests.rs`) fail each of its
 allocations in turn, checking that it returns NULL and frees the rest,
 including an output buffer with pending bits, and `tests/run.sh` does the
 same through the CLI, which must exit 2. The C harnesses link the compressor
-as a static library (`tests/deflate_lib.sh`).
+as a static library (`tests/rust_lib.sh`).
 Run `SANITIZE=1 ./tests/run.sh`
 after changes. `./test.sh` additionally compares both compressors byte for byte
 on 3,000 seeded inputs. Renderer pixel hashes provide end-to-end checks on macOS

@@ -13,7 +13,9 @@
    - blocks fill the named fraction from the named edge, complementary blocks
      tile the cell exactly, and shades are a flat mix of the two colours.
 
-   Built and run by test.sh. */
+   The geometry is src/geometry.rs, linked as a static library
+   (tests/rust_lib.sh); draw.c gives its Canvas and declarations. Built and
+   run by test.sh. */
 #include "../src/draw.c"
 
 static const char *NAMES[160] = {
@@ -247,11 +249,10 @@ static int cell_w, cell_h, grid_w, grid_h;
 
 static void paint(uint32_t cp, int bold) {
     memset(pixels, 0, (size_t)grid_w * grid_h * 3);
-    Stamps stamps = {0};
     Canvas cv = {.px = pixels, .filtered = pixels, .w = grid_w, .h = grid_h, .stride = (size_t)grid_w * 3,
-                 .stamps = &stamps};
-    paint_geometry(&cv, 1, 1, cell_w, cell_h, cp, bold, 255, 255, 255);
-    free_geometry(&cv);
+                 .geometry = termshot_geometry_new(1)};
+    termshot_paint_geometry(&cv, 1, 1, cell_w, cell_h, cp, bold, 255, 255, 255);
+    termshot_geometry_free(cv.geometry);
 }
 
 /* A pixel of the grid; (x, y) is relative to the middle cell. */
@@ -661,25 +662,28 @@ static int stamps_match(uint32_t cp, int bold, int cols, int rows, size_t *hits)
         order[i] = order[j];
         order[j] = t;
     }
-    Stamps stamps = {0};
-    Canvas cached = {.px = canvas, .filtered = canvas, .w = w, .h = h, .stride = stride, .stamps = &stamps};
-    Canvas fresh = {.px = canvas, .filtered = canvas, .w = w, .h = h, .stride = stride};
+    Canvas cached = {.px = canvas, .filtered = canvas, .w = w, .h = h, .stride = stride,
+                     .geometry = termshot_geometry_new(1)};
+    Canvas fresh = {.px = canvas, .filtered = canvas, .w = w, .h = h, .stride = stride,
+                    .geometry = termshot_geometry_new(0)};
     for (int k = 0; k < n; k++) {
         int col = order[k] % cols, row = order[k] / cols;
         uint8_t *origin = canvas + (size_t)row * cell_h * stride + (size_t)col * cell_w * 3;
         size_t span = (size_t)cell_w * 3;
-        paint_geometry(&cached, col, row, cell_w, cell_h, cp, bold, 255, 255, 255);
+        termshot_paint_geometry(&cached, col, row, cell_w, cell_h, cp, bold, 255, 255, 255);
         for (int y = 0; y < cell_h; y++) {
             memcpy(saved + y * span, origin + y * stride, span);
             memset(origin + y * stride, 0, span);
         }
-        paint_geometry(&fresh, col, row, cell_w, cell_h, cp, bold, 255, 255, 255);
+        termshot_paint_geometry(&fresh, col, row, cell_w, cell_h, cp, bold, 255, 255, 255);
         for (int y = 0; y < cell_h; y++) same &= memcmp(saved + y * span, origin + y * stride, span) == 0;
     }
+    GeometryStats stamps;
+    termshot_geometry_stats(cached.geometry, &stamps);
     *hits += stamps.hits;
-    same &= stamps.uncached == 0;
-    free_geometry(&cached);
-    free_geometry(&fresh);
+    same &= cached.geometry && fresh.geometry && stamps.uncached == 0;
+    termshot_geometry_free(cached.geometry);
+    termshot_geometry_free(fresh.geometry);
     free(order);
     free(saved);
     free(canvas);

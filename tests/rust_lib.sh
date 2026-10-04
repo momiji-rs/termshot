@@ -1,9 +1,10 @@
 #!/bin/sh
-# Build src/deflate.rs as a static library for the C harnesses
-# (tests/deflate_lib.rs) and print the system libraries a C link needs for
-# it, as rustc names them. Used by test.sh and tests/run.sh:
+# Build the Rust that C calls (src/deflate.rs and src/geometry.rs, through
+# tests/rust_lib.rs) as a static library for the C harnesses, and print the
+# system libraries a C link needs for it, as rustc names them. Used by
+# test.sh and tests/run.sh:
 #
-#   libs=$(tests/deflate_lib.sh out.a [rustc flags])
+#   libs=$(tests/rust_lib.sh out.a [rustc flags])
 #   cc harness.c out.a $libs
 #
 # With SANITIZE=1 it keeps overflow checks and debug assertions, since the
@@ -16,7 +17,7 @@ checks=''
 [ "${SANITIZE:-}" = 1 ] && checks='-C debug-assertions=on -C overflow-checks=on'
 log="$lib.log"
 # shellcheck disable=SC2086
-if ! rustc --edition 2021 --crate-type staticlib -C opt-level=2 $checks "$@" tests/deflate_lib.rs \
+if ! rustc --edition 2021 --crate-type staticlib -C opt-level=2 $checks "$@" tests/rust_lib.rs \
     -o "$lib" --print native-static-libs 2>"$log"; then
     cat "$log" >&2
     exit 1

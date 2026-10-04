@@ -3,27 +3,25 @@ set -eu
 cd "$(dirname "$0")/.."
 ./build.sh
 scratch=$(mktemp -d)
-trap 'rm -f "$scratch/codec" "$scratch/codec-custom" "$scratch/deflate.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/stamps-alloc" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
+trap 'rm -f "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
 sanitize=''
 if [ "${SANITIZE:-0}" = 1 ]; then
     sanitize='-fsanitize=address,undefined -fno-omit-frame-pointer'
 fi
-# src/deflate.rs for the C harnesses; with SANITIZE=1, with overflow checks.
-deflate_libs=$(tests/deflate_lib.sh "$scratch/deflate.a")
+# The Rust draw.c calls, for the C harnesses; with SANITIZE=1, with overflow
+# checks.
+rust_libs=$(tests/rust_lib.sh "$scratch/rust.a")
 # shellcheck disable=SC2086
-cc tests/image.c "$scratch/deflate.a" -I third_party/stb -O2 -Wno-unused-function $sanitize $deflate_libs -o "$scratch/image"
+cc tests/image.c "$scratch/rust.a" -I third_party/stb -O2 -Wno-unused-function $sanitize $rust_libs -o "$scratch/image"
 "$scratch/image"
 # shellcheck disable=SC2086
 cc tests/codec.c -I third_party/stb -O2 -Wno-deprecated-declarations $sanitize -o "$scratch/codec"
 "$scratch/codec"
 # shellcheck disable=SC2086
-cc tests/codec.c "$scratch/deflate.a" -DTEST_CUSTOM_DEFLATE -I third_party/stb -O2 -Wno-deprecated-declarations $sanitize $deflate_libs -o "$scratch/codec-custom"
+cc tests/codec.c "$scratch/rust.a" -DTEST_CUSTOM_DEFLATE -I third_party/stb -O2 -Wno-deprecated-declarations $sanitize $rust_libs -o "$scratch/codec-custom"
 "$scratch/codec-custom"
 # shellcheck disable=SC2086
-cc tests/stamps_alloc.c "$scratch/deflate.a" -I third_party/stb -O2 -ffp-contract=off -Wno-deprecated-declarations $sanitize -lm $deflate_libs -o "$scratch/stamps-alloc"
-"$scratch/stamps-alloc"
-# shellcheck disable=SC2086
-cc tests/draw.c "$scratch/deflate.a" -I third_party/stb -O2 -ffp-contract=off -Wno-deprecated-declarations $sanitize -lm $deflate_libs -o "$scratch/draw"
+cc tests/draw.c "$scratch/rust.a" -I third_party/stb -O2 -ffp-contract=off -Wno-deprecated-declarations $sanitize -lm $rust_libs -o "$scratch/draw"
 "$scratch/draw" third_party/jetbrains-mono/JetBrainsMono-Regular.ttf "$scratch/draw.png"
 
 # Fail each compressor allocation in turn, in the CLI: the unit tests check
@@ -55,6 +53,36 @@ if [ "$n" -le 4 ]; then
     exit 1
 fi
 echo "ok, each of $((n - 1)) compressor allocation failures exits 2 and leaves no output"
+
+# Fail each allocation of the box-drawing caches in turn (the arcs' offsets
+# and the strokes reused): the strokes are stamped afresh, so the run
+# succeeds with the same PNG. The fault build says which allocation failed;
+# when none does, all have been.
+printf '\033[1m\342\225\255\342\225\256\033[m\342\225\260\342\225\257\342\225\261\342\225\262\342\225\263\r\n%.0s' $(seq 6) > "$scratch/strokes.pty"
+./termshot --size 7x6 "$scratch/strokes.pty" "$scratch/strokes.png"
+n=1
+while :; do
+    rm -f "$scratch/fault.png"
+    set +e
+    TERMSHOT_GEOMETRY_FAIL_AT=$n "$scratch/termshot-faults" --size 7x6 "$scratch/strokes.pty" "$scratch/fault.png" \
+        2>"$scratch/fault.err"
+    code=$?
+    set -e
+    if [ "$code" -ne 0 ] || ! cmp -s "$scratch/fault.png" "$scratch/strokes.png"; then
+        echo "FAIL geometry allocation $n: exit $code, or another PNG" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    grep -q "geometry allocation $n " "$scratch/fault.err" || break
+    n=$((n + 1))
+done
+# The geometry, the arcs' offsets, and the cache's points, ids, sequences,
+# slots, mask and runs.
+if [ "$n" -le 8 ]; then
+    echo "FAIL only $((n - 1)) geometry allocations failed" >&2
+    exit 1
+fi
+echo "ok, each of $((n - 1)) geometry allocation failures draws the same PNG"
 
 rustc --edition 2021 --test src/main.rs -o "$scratch/unit" \
     -L native="$PWD" -l static=termshot_c

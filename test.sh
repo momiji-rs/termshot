@@ -31,27 +31,28 @@ rustc --edition 2021 --test src/main.rs -o "$out/unit" \
 "$out/unit" -q
 
 echo "== deflate matches stb"
-# The C harnesses link src/deflate.rs as a static library, with the system
-# libraries rustc names for it (tests/deflate_lib.sh).
-deflate="$out/libtermshot_deflate.a"
-deflate_libs=$(tests/deflate_lib.sh "$deflate")
+# The C harnesses link the Rust that draw.c calls (src/deflate.rs and
+# src/geometry.rs) as a static library, with the system libraries rustc
+# names for it (tests/rust_lib.sh).
+rust="$out/libtermshot_rust.a"
+rust_libs=$(tests/rust_lib.sh "$rust")
 # shellcheck disable=SC2086
-cc tests/deflate_diff.c "$deflate" -o "$out/deflate_diff" -O2 -Wno-deprecated-declarations \
-    -I third_party/stb ${CFLAGS:-} $deflate_libs
+cc tests/deflate_diff.c "$rust" -o "$out/deflate_diff" -O2 -Wno-deprecated-declarations \
+    -I third_party/stb ${CFLAGS:-} $rust_libs
 "$out/deflate_diff"
 # The safe 16-lane Adler-32, which x86-64 builds would otherwise not use.
 if [ "$(uname -m)" = x86_64 ]; then
-    portable_libs=$(tests/deflate_lib.sh "$out/libtermshot_deflate_portable.a" --cfg termshot_portable_adler)
+    portable_libs=$(tests/rust_lib.sh "$out/libtermshot_rust_portable.a" --cfg termshot_portable_adler)
     # shellcheck disable=SC2086
-    cc tests/deflate_diff.c "$out/libtermshot_deflate_portable.a" -o "$out/deflate_diff_portable" -O2 \
+    cc tests/deflate_diff.c "$out/libtermshot_rust_portable.a" -o "$out/deflate_diff_portable" -O2 \
         -Wno-deprecated-declarations -I third_party/stb ${CFLAGS:-} $portable_libs
     "$out/deflate_diff_portable"
 fi
 
 echo "== box drawing and blocks"
 # shellcheck disable=SC2086
-cc tests/boxes.c "$deflate" -o "$out/boxes" -O2 -ffp-contract=off -Wno-deprecated-declarations \
-    -I src -I third_party/stb -lm ${CFLAGS:-} $deflate_libs
+cc tests/boxes.c "$rust" -o "$out/boxes" -O2 -ffp-contract=off -Wno-deprecated-declarations \
+    -I src -I third_party/stb -lm ${CFLAGS:-} $rust_libs
 "$out/boxes"
 
 echo "== glyph placement"
@@ -60,8 +61,8 @@ cc -c tests/png_read.c -o "$out/png_read.o" -O2 -I third_party/stb
 rm -f "$out/libpng_read.a"
 ar rcs "$out/libpng_read.a" "$out/png_read.o"
 # shellcheck disable=SC2086
-cc tests/glyphs.c "$out/png_read.o" "$deflate" -o "$out/glyphs" -O2 -Wno-deprecated-declarations \
-    -I src -I third_party/stb -lm ${CFLAGS:-} $deflate_libs
+cc tests/glyphs.c "$out/png_read.o" "$rust" -o "$out/glyphs" -O2 -Wno-deprecated-declarations \
+    -I src -I third_party/stb -lm ${CFLAGS:-} $rust_libs
 "$out/glyphs" "$font" "$out/glyphs.png" "$out/hollow-A.ttf" "$out/fb-reference.png"
 
 echo "== cli"
@@ -403,7 +404,7 @@ rustc --edition 2021 tests/graphics.rs -o "$out/graphics" -L native="$out" -l st
 
 # Exercise the production PNG decoder, including allocation quota failures.
 # shellcheck disable=SC2086
-cc tests/image.c "$deflate" -I third_party/stb -O2 -Wno-unused-function ${CFLAGS:-} $deflate_libs -o "$out/image"
+cc tests/image.c "$rust" -I third_party/stb -O2 -Wno-unused-function ${CFLAGS:-} $rust_libs -o "$out/image"
 "$out/image"
 
 echo "== output aliases"
