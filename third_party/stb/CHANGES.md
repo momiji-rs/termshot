@@ -19,10 +19,14 @@ upstream license intact when updating. `stb_truetype.h` is unchanged.
   IEEE CRC-32 (`src/png_crc.h`); the generic writer's default CRC is unchanged.
 
 termshot plugs its compressor in with the unmodified `STBIW_ZLIB_COMPRESS`
-hook: `src/draw.c` defines it as `termshot_zlib_compress`, which is Rust
-(`src/deflate.rs`) since #12 step 1 and was `src/deflate.c` before. It returns
-a buffer from libc `malloc`/`realloc`, which this header releases with
-`STBIW_FREE` (`free`), or NULL when memory runs out.
+hook: `src/stb_glue.c` (`src/draw.c` until #12 step 2d) defines it as
+`termshot_zlib_compress`, which is Rust (`src/deflate.rs`) since #12 step 1
+and was `src/deflate.c` before. It returns a buffer from libc
+`malloc`/`realloc`, which this header releases with `STBIW_FREE` (`free`), or
+NULL when memory runs out. The glue also sets the unmodified allocator hooks:
+`STBIW_MALLOC` is `termshot_png_alloc` (`src/render.rs`), which is `malloc`
+but where termshot's fault tests fail it, and `STBIW_REALLOC` and
+`STBIW_FREE` are `realloc` and `free`, as the defaults.
 
 `tests/codec.c` independently decodes and checks 5,024 zlib/PNG round trips
 for each of the stock and custom compressors, including all PNG filters,

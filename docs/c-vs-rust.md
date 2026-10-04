@@ -2,11 +2,14 @@
 
 This file holds dated comparisons, newest first, for
 [#12](https://github.com/momiji-rs/termshot/issues/12): should termshot's own C
-(`src/draw.c` painting and `src/deflate.c` compression) move to Rust? It is
-moving: compression, box drawing, the image layers and the text are Rust now. The vendored stb
-libraries are not part of it. Each comparison ports the C as of one commit to Rust,
+(`src/draw.c` painting and `src/deflate.c` compression) move to Rust? It
+has: compression, box drawing, the image layers, the text and the render
+driver are Rust now, and `src/draw.c` is gone; `src/stb_glue.c` is the C
+left, the glue to vendored stb. The vendored stb libraries are not part of
+it (step 3 would replace stb_truetype). Each comparison ports the C as of one commit to Rust,
 checks that both write the same bytes, and times both in one process.
 
+- [Step 2 done: the render is Rust, C keeps only stb glue (2026-10-04)](#step-2-done-the-render-is-rust-c-keeps-only-stb-glue-2026-10-04).
 - [Step 2c shipped: the text is Rust (2026-10-04)](#step-2c-shipped-the-text-is-rust-2026-10-04).
 - [Step 2b shipped: the image layers are Rust (2026-10-04)](#step-2b-shipped-the-image-layers-are-rust-2026-10-04).
 - [Step 2a shipped: box drawing is Rust (2026-10-04)](#step-2a-shipped-box-drawing-is-rust-2026-10-04).
@@ -16,6 +19,100 @@ checks that both write the same bytes, and times both in one process.
 - [Painting and deflate POC (2026-10-01, `bd726a6`), history](#painting-and-deflate-poc-2026-10-01-bd726a6-history):
   the first port of both files. Its deflate C is two optimization rounds old and its
   painting C predates #61, #66 and #69, so do not compare its numbers with the current code.
+
+## Step 2 done: the render is Rust, C keeps only stb glue (2026-10-04)
+
+Step 2d moves the last of draw.c, the driver, to `src/render.rs`, and what
+is left becomes `src/stb_glue.c`. With it step 2 is done: termshot's own C
+no longer paints, decides or allocates anything for a render. What remains C
+is vendored stb and the glue that reaches into its structs.
+
+| step | moved to Rust | what crosses into C now |
+| --- | --- | --- |
+| 1 (#73) | the compressor, `src/deflate.rs` | `termshot_zlib_compress`, called by stb_image_write |
+| 2a (#75) | box drawing, blocks, the stroke cache, `src/geometry.rs` | nothing (C harnesses only) |
+| 2b (#76) | the image layers and the backdrop, `src/composite.rs` | nothing |
+| 2c (#80) | the text, `src/glyphs.rs` | stb's functions, as pointers in `TextFonts` |
+| 2d (this) | the driver, `src/render.rs` | `termshot_font_setup`, `termshot_png_encode`, `draw_cell_size` |
+
+**What `src/render.rs` does**, in draw.c's order: clear the `EmptyGlyphs`
+report, read `TERMSHOT_PROFILE`, set up the fonts (through the glue), print
+the `-v` line, refuse an image over 2^27 pixels (exit 2), allocate the
+raster, begin the render (`termshot_geometry_new`, which also resets the
+paint-failed flag), fill in the `Backdrop`, paint the text (which paints
+the backdrop a row ahead), paint the images over the text (the cursor mark
+first among them), check the paint-failed flag, encode, write, and print
+the profile record. Each failure keeps its message and code: 1 for a face
+or metrics stb can't use (the glue says why), 2 for an oversized image, the
+raster ("out of memory for a WxH image"), a glyph allocation, a panic in a
+painter or the encoder ("out of memory encoding a WxH PNG"), and 3 for a
+write ("png write failed"), which main turns into exit 1.
+
+**What `src/stb_glue.c` keeps, and why each is C**:
+
+- `init_cff2`, `init_font`, `init_face`: they fill in an `stbtt_fontinfo`
+  and read its fields (`glyf`, `index_map`), and `init_cff2` uses stb's
+  private `stbtt__find_table`, `ttUSHORT` and `ttULONG`. Rust sees
+  `stbtt_fontinfo` only as 160 opaque bytes.
+- `cell_metrics` and `draw_cell_size`: stb's `GetFontVMetrics`,
+  `GetCodepointHMetrics` and `ScaleForPixelHeight`, and float arithmetic
+  that must stay under `-ffp-contract=off` with stb's. They are unchanged,
+  and so is the "font metrics unusable" message.
+- `glyph_face` and `termshot_font_setup`: they take the address of stb's
+  functions for `TextFonts`, and enforce the CFF rule exactly as #80 did:
+  the four outline readers only for a face with no `Face.outline` and a
+  `glyf` table.
+- `termshot_png_encode`: `stbiw__write_png_from_filtered` is a static
+  function of the locally modified header, and its `STBIW_PNG_PROFILE`
+  marks are a macro inside it. `STBIW_ZLIB_COMPRESS` and `STBIW_CRC32` are
+  set here too, and `STBIW_MALLOC` is `termshot_png_alloc` (Rust, so the
+  fault build can fail stb's PNG buffer).
+
+**FFI structs** that cross into the binary's C, each size asserted on both
+sides: `Face` (32), `GlyphFace` (56), `TextFonts` (152), `CellMetrics` (28),
+`FontSetup` (504: two opaque `stbtt_fontinfo`s of 160, 8-aligned, then
+`TextFonts` and `CellMetrics`), and `stbtt_vertex` (14, `cff::Vertex`).
+`FontSetup` lives in `render.rs`'s frame and is filled in place, since
+`TextFonts` points into it. `Cell` (12), `Canvas` (40) and `GeometryStats`
+no longer reach the binary's C; the harnesses declare them in
+`tests/termshot.h`.
+
+- **Memory**: the raster is `alloc_zeroed` (calloc, whose fresh pages need
+  no clearing), so the bytes painting reads are always initialized. A
+  raster that can't be had is `None`: the first version built a `Raster`
+  from the null pointer and dropped it, which deallocates null, and LLVM
+  then took the pointer for non-null and painted through it, a segfault
+  under `ulimit -v` that `tests/run.sh` caught on Linux. The fault build
+  fails the render's two allocations in turn (`TERMSHOT_RENDER_FAIL_AT`):
+  the raster, and stb's PNG buffer; both exit 2 with no output.
+- **The PNG write**: `File::create` and `write_all` instead of `fopen`,
+  `fwrite` and `fclose`, the same flags (`O_WRONLY | O_CREAT | O_TRUNC`,
+  mode 0666) and the same message for any failure, `/dev/full` included.
+- **The profile**: the same keys, in the same order, on the same stage
+  boundaries, read from the same clock (`CLOCK_MONOTONIC`, through
+  `glyphs::Clock` in Rust and `now_ms` for stb's marks). The one move is
+  filling in `TextFonts`, now in the font setup, which is nanoseconds.
+- **The harnesses**: `tests/draw.c` and `tests/glyphs.c` include
+  `src/stb_glue.c` and link the render from the harness library built with
+  `--cfg termshot_render`, so `SANITIZE=1` puts the remaining C under ASan
+  and UBSan for whole renders. `tests/draw.c`'s backdrop check, which
+  checked draw.c's declarations of the shared structs, is gone with them;
+  `backdrop_rows_paint_what_the_whole_does` in `src/composite_tests.rs`
+  checks the same.
+- **Evidence**: `bench/c-vs-rust/run.sh full` (CI, all three hosts) runs the
+  glyphs matrix, every fixture, `tests/vt/real/`, `examples/`, `tests/perf/`
+  and the generated logs with 12 font setups (13 with the system Noto CJK)
+  at `--px` 9, 24, 46, 47.5 and 128, plus `-v`, an image over 2^27 pixels
+  with three font setups, and unwritable outputs, through the CLI built at
+  main `48192f6` and now, comparing PNG bytes, exit codes and stderr: 4,057
+  renders on macOS arm64 and 4,266 on Linux x86-64 (with the system CJK),
+  all the same. Every PNG `./test.sh` writes hashes the same as main's on
+  both hosts. See
+  [docs/performance.md](performance.md#the-render-driver-in-rust-2026-10-04-cc29aed-12-step-2d)
+  for the time.
+
+Step 3, stb_truetype itself, is what remains of #12: the glue is the
+boundary it would replace.
 
 ## Step 2c shipped: the text is Rust (2026-10-04)
 
