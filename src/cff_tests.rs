@@ -28,7 +28,7 @@ extern "C" {
 /// and box stb does, and return how many glyphs have an outline.
 fn same_as_stb(data: Vec<u8>) -> usize {
     let font = font::prepare(data).unwrap();
-    let cff = font::cff_outlines(&font.data, font.start).unwrap().expect("a CFF font");
+    let cff = font::cff_outlines(&font.data, font.start, &[]).unwrap().expect("a CFF font");
     let mut info = FontInfo([0; 512]);
     assert_ne!(unsafe { stbtt_InitFont(&mut info, font.data.as_ptr(), font.start as c_int) }, 0);
     let (mut ours, mut bounds, mut drawn) = (Vec::new(), [0; 4], 0);
@@ -69,6 +69,7 @@ fn hand_made_fonts_match_stb() {
         ("control", craft::control()),
         ("local subrs", craft::local_subrs()),
         ("FDSelect format 0", craft::fdselect_format_0()),
+        ("steps a float rounds away", craft::small_steps_cff()),
     ] {
         assert_eq!(same_as_stb(font), 2, "{name}");
     }
@@ -77,7 +78,7 @@ fn hand_made_fonts_match_stb() {
 #[test]
 fn a_box_comes_out_as_drawn() {
     let font = font::prepare(craft::control()).unwrap();
-    let cff = font::cff_outlines(&font.data, font.start).unwrap().unwrap();
+    let cff = font::cff_outlines(&font.data, font.start, &[]).unwrap().unwrap();
     let (mut out, mut bounds) = (Vec::new(), [0; 4]);
     assert_eq!(cff.glyph(1, &mut out, &mut bounds), Ok(true));
     let points: Vec<(u8, i16, i16)> = out.iter().map(|v| (v.kind, v.x, v.y)).collect();
@@ -126,6 +127,8 @@ fn hostile_fonts_are_refused_or_drawn() {
         ("CFF2 blend of -1 values", craft::cff2_blend_negative(), None, Some("blend without a count of values")),
         ("CFF2 514 operands", craft::cff2_stack_overflow(), None, Some("more than 513 operands on the stack")),
         ("CFF2 endchar", craft::cff2_endchar(), None, Some("endchar is not a CFF2 operator")),
+        ("CFF2 vsindex after blend", craft::cff2_vsindex_after_blend(), None, Some("vsindex after a blend")),
+        ("CFF2 two vsindex", craft::cff2_vsindex_twice(), None, Some("vsindex after a blend or another vsindex")),
     ] {
         // For test.sh's CLI checks, which run after these tests.
         if name == "CharStrings past the table" {
@@ -143,7 +146,7 @@ fn hostile_fonts_are_refused_or_drawn() {
             (Ok(_), Some(_)) => panic!("{name}: accepted"),
             (Ok(font), None) => font,
         };
-        let cff = font::cff_outlines(&font.data, font.start).unwrap().unwrap();
+        let cff = font::cff_outlines(&font.data, font.start, &[]).unwrap().unwrap();
         let glyph = cff.glyph(1, &mut Vec::new(), &mut [0; 4]);
         match (glyph, glyph_refused) {
             (Err(error), Some(reason)) => assert!(error.contains(reason), "{name}: {error}"),
@@ -155,8 +158,8 @@ fn hostile_fonts_are_refused_or_drawn() {
 
 #[test]
 fn cff_fonts_render_as_primary_and_fallback() {
-    let cjk = font::load(&font::Spec { path: CJK.into(), face: None }).unwrap();
-    let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None }).unwrap();
+    let cjk = font::load(&font::Spec { path: CJK.into(), face: None, axes: None }).unwrap();
+    let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None, axes: None }).unwrap();
     let text = format!("{CJK_TEXT} \x1b[3m{CJK_TEXT}\x1b[0m");
     let cells = parse(text.as_bytes(), 60, 2);
     let draw = |font: &font::Font, fallback: Option<&font::Font>, out: &str| {
@@ -218,18 +221,18 @@ fn svg_path(outline: &[cff::Vertex]) -> String {
     path
 }
 
-/// stb has no CFF2 reader, so HarfBuzz is the reference: every character of
-/// the subset has the outline hb-vector draws for its default instance.
-#[test]
-fn every_character_of_a_cff2_font_matches_harfbuzz() {
-    assert_eq!(cksum(b"abc"), (1219131554, 3));
-    let font = font::prepare(fs::read(CJK_VF).unwrap()).unwrap();
-    let cff = font::cff_outlines(&font.data, font.start).unwrap().expect("a CFF2 font");
+/// Checks the font at `path` against `reference`, as tools/cff2-outlines.sh
+/// writes it: every glyph draws without an error, and each it lists has
+/// HarfBuzz's outline, at the instance its "# variations:" line names (the
+/// default without one). Returns how many it lists and how many draw.
+fn matches_harfbuzz(path: &str, reference: &str) -> (usize, usize) {
+    let axes = reference.lines().find_map(|line| line.strip_prefix("# variations: ")).map(String::from);
+    let font = font::load(&font::Spec { path: path.into(), face: None, axes }).unwrap();
+    let cff = font::cff_outlines(&font.data, font.start, &font.coords).unwrap().expect("a CFF2 font");
     let (mut out, mut bounds, mut drawn) = (Vec::new(), [0; 4], 0);
     for glyph in 0..cff.glyphs {
-        drawn += usize::from(cff.glyph(glyph, &mut out, &mut bounds).unwrap());
+        drawn += usize::from(cff.glyph(glyph, &mut out, &mut bounds).unwrap_or_else(|e| panic!("glyph {glyph}: {e}")));
     }
-    let reference = fs::read_to_string("tests/fixtures/cff2-outlines.txt").unwrap();
     let mut checked = 0;
     for line in reference.lines().filter(|line| !line.starts_with('#')) {
         let fields: Vec<usize> = line.split(' ').map(|field| field.parse().unwrap()).collect();
@@ -239,7 +242,43 @@ fn every_character_of_a_cff2_font_matches_harfbuzz() {
         assert_eq!(cksum(path.as_bytes()), (crc as u32, length), "glyph {glyph} differs from HarfBuzz's: {path}");
         checked += 1;
     }
-    assert!(checked > 100 && drawn > 150, "{checked} checked, {drawn} drawn");
+    (checked, drawn)
+}
+
+/// stb has no CFF2 reader, so HarfBuzz is the reference: every character of
+/// the subset has the outline hb-vector draws, for the default instance in
+/// cff2-outlines.txt and for the one each other cff2-outlines-*.txt names.
+#[test]
+fn every_character_of_a_cff2_font_matches_harfbuzz() {
+    assert_eq!(cksum(b"abc"), (1219131554, 3));
+    let mut fixtures: Vec<_> = fs::read_dir("tests/fixtures")
+        .unwrap()
+        .map(|entry| entry.unwrap().path().to_str().unwrap().to_string())
+        .filter(|path| path.starts_with("tests/fixtures/cff2-outlines"))
+        .collect();
+    fixtures.sort();
+    assert!(fixtures.len() > 3, "{fixtures:?}");
+    for fixture in fixtures {
+        let (checked, drawn) = matches_harfbuzz(CJK_VF, &fs::read_to_string(&fixture).unwrap());
+        assert!(checked > 100 && drawn > 150, "{fixture}: {checked} checked, {drawn} drawn");
+    }
+}
+
+/// Any CFF2 font against HarfBuzz, at any instance: record its outlines,
+/// then check them, with no change here.
+///
+///     tools/cff2-outlines.sh --variations=wght=700 FONT OUT
+///     TERMSHOT_CFF2_FONT=FONT TERMSHOT_CFF2_OUTLINES=OUT ./target/test/unit --ignored any_cff2_font
+///
+/// Without the variables it checks nothing.
+#[test]
+#[ignore]
+fn any_cff2_font_matches_harfbuzz() {
+    let (Ok(font), Ok(outlines)) = (std::env::var("TERMSHOT_CFF2_FONT"), std::env::var("TERMSHOT_CFF2_OUTLINES")) else {
+        return;
+    };
+    let (checked, drawn) = matches_harfbuzz(&font, &fs::read_to_string(&outlines).unwrap());
+    println!("{font}: {drawn} glyphs drawn; {checked} match {outlines}");
 }
 
 #[test]
@@ -260,7 +299,7 @@ fn hand_made_cff2_fonts_draw_the_square() {
         ("hintmask", craft::cff2_hintmask()),
     ] {
         let font = font::prepare(font).unwrap_or_else(|error| panic!("{name}: {error}"));
-        let cff = font::cff_outlines(&font.data, font.start).unwrap().unwrap();
+        let cff = font::cff_outlines(&font.data, font.start, &[]).unwrap().unwrap();
         let (mut out, mut bounds) = (Vec::new(), [0; 4]);
         assert_eq!(cff.glyph(1, &mut out, &mut bounds), Ok(true), "{name}");
         let points: Vec<(u8, i16, i16)> = out.iter().map(|v| (v.kind, v.x, v.y)).collect();
@@ -271,10 +310,122 @@ fn hand_made_cff2_fonts_draw_the_square() {
     }
 }
 
+/// The first point of glyph 1 of `font` at `coords`.
+fn first_point(font: Vec<u8>, coords: &[i32]) -> (i16, i16) {
+    let font = font::prepare(font).unwrap();
+    let cff = font::cff_outlines(&font.data, font.start, coords).unwrap().unwrap();
+    let (mut out, mut bounds) = (Vec::new(), [0; 4]);
+    assert_eq!(cff.glyph(1, &mut out, &mut bounds), Ok(true));
+    (out[0].x, out[0].y)
+}
+
+/// Each case of a region's scalar, as HarfBuzz's VarRegionAxis::evaluate
+/// works it out: glyph 1 moves to 16384 times the scalars' sum.
+#[test]
+fn region_scalars_are_harfbuzz_s() {
+    const ONE: i16 = 0x4000;
+    let up = [0, ONE, ONE];
+    fs::create_dir_all("target/test").unwrap();
+    let mut manifest = Vec::new();
+    for (case, axes, regions, coords, x) in [
+        ("the default instance", 1, vec![vec![up]], vec![], 0),
+        ("at the peak", 1, vec![vec![up]], vec![16384], 16384),
+        ("at 0", 1, vec![vec![up]], vec![0], 0),
+        ("halfway up", 1, vec![vec![up]], vec![8192], 8192),
+        ("a quarter up", 1, vec![vec![up]], vec![4096], 4096),
+        ("past the peak, down to the end", 1, vec![vec![[0, 8192, ONE]]], vec![12288], 8192),
+        ("a third, as an f32", 1, vec![vec![[0, 12288, ONE]]], vec![4096], 5461),
+        ("at the start", 1, vec![vec![[8192, 12288, ONE]]], vec![8192], 0),
+        ("at the end", 1, vec![vec![[0, 8192, 12288]]], vec![12288], 0),
+        ("below the start", 1, vec![vec![up]], vec![-8192], 0),
+        ("peak 0: the axis is ignored", 1, vec![vec![[0, 0, ONE]]], vec![5000], 16384),
+        ("peak 0, but every coordinate 0: the default", 1, vec![vec![[0, 0, ONE]]], vec![0], 0),
+        ("peak 0, and another coordinate not 0", 2, vec![vec![[0, 0, ONE], [0, 0, ONE]]], vec![0, 4096], 16384),
+        ("start past the peak: ignored", 1, vec![vec![[12000, 8000, ONE]]], vec![4000], 16384),
+        ("peak past the end: ignored", 1, vec![vec![[0, 12000, 8000]]], vec![4000], 16384),
+        ("straddling 0: ignored", 1, vec![vec![[-8192, 8192, ONE]]], vec![4000], 16384),
+        ("malformed, but at 0", 1, vec![vec![[-8192, 8192, ONE]]], vec![0], 0),
+        ("the negative direction", 1, vec![vec![[-ONE, -ONE, 0]]], vec![-8192], 8192),
+        ("two axes multiply", 2, vec![vec![up, up]], vec![8192, 4096], 2048),
+        ("one axis at 0", 2, vec![vec![up, up]], vec![8192, 0], 0),
+        ("two regions add", 1, vec![vec![up], vec![[0, 8192, ONE]]], vec![12288], 20480),
+    ] {
+        let font = craft::cff2_scalars(axes, &regions);
+        assert_eq!(first_point(font.clone(), &coords), (x, 0), "{case}");
+        // Each font has an axis per coordinate, so hb-vector can draw it:
+        // hb-vector --font-size=1000 --precision=9 --variations=SETTINGS --glyphs FONT gid1
+        // moves to x (rounded here to an i16). All agree with 14.4.0.
+        let settings: Vec<String> = coords.iter().enumerate().map(|(i, c)| format!("ax{i}={}", *c as f64 / 16384.0)).collect();
+        let file = format!("target/test/cff2-scalars-{}.otf", manifest.len());
+        fs::write(&file, font).unwrap();
+        manifest.push(format!("{file} {} {x} {case}", settings.join(",")));
+    }
+    fs::write("target/test/cff2-scalars.txt", manifest.join("\n") + "\n").unwrap();
+}
+
+/// The deltas of each blended value, at the instance: the square's corner
+/// and first side move by `d` each way, so its other corners by 2 * `d`.
+#[test]
+fn blend_applies_its_deltas_at_an_instance() {
+    let points = |font: &[u8], coords: &[i32]| -> Vec<(u8, i32, i32)> {
+        let font = font::prepare(font.to_vec()).unwrap();
+        let cff = font::cff_outlines(&font.data, font.start, coords).unwrap().unwrap();
+        let (mut out, mut bounds) = (Vec::new(), [0; 4]);
+        assert_eq!(cff.glyph(1, &mut out, &mut bounds), Ok(true));
+        out.iter().map(|v| (v.kind, v.x as i32, v.y as i32)).collect()
+    };
+    for (name, font, coords, d) in [
+        // 2 regions peaking at +1, each delta 7.
+        ("halfway", craft::cff2_blended(), vec![8192], 7),
+        ("at the end", craft::cff2_blended(), vec![16384], 14),
+        ("past the end", craft::cff2_blended(), vec![20000], 0),
+        ("against the regions", craft::cff2_blended(), vec![-16384], 0),
+        // 3 regions, picked by the Private DICT or by the charstring.
+        ("Private DICT vsindex", craft::cff2_private_vsindex_1(), vec![16384], 21),
+        ("charstring vsindex", craft::cff2_charstring_vsindex(), vec![16384], 21),
+        ("Private DICT blend", craft::cff2_private_blend(), vec![16384], 14),
+    ] {
+        let default = points(&font, &[]);
+        let expected: Vec<_> = default.iter().enumerate().map(|(i, &(kind, x, y))| {
+            let k = if i == 0 || i == default.len() - 1 { d } else { 2 * d };
+            (kind, x + k, y + k)
+        }).collect();
+        assert_eq!(points(&font, &coords), expected, "{name}");
+    }
+    // Each value's deltas are its own.
+    assert_eq!(first_point(craft::cff2_blend_two_values(), &[16384]), (1100, 2200));
+    // Four offsets to two ItemVariationData: vsindex 3 is the first's.
+    assert_eq!(first_point(craft::cff2_shared_data_order(), &[16384]), (16384, 0));
+    assert_eq!(first_point(craft::cff2_shared_data_order(), &[-16384]), (0, 0));
+    // 8000 offsets to one ItemVariationData of 8000 regions: evaluated once.
+    assert_eq!(first_point(craft::cff2_shared_store_data(), &[8192]), (100, 100));
+}
+
+/// HarfBuzz runs CFF2 charstrings in doubles, so cff.rs does; stb, the
+/// reference for CFF, runs them in floats, where this glyph would stay at
+/// x = 8192. hb-vector draws it as M8192,0 L8192,0 L8191.999511719,0
+/// L8191.999023438,0 L8191.999023438,0 L8191.999023438,500
+/// L8191.999023438,0 L8192,0 Z: the first step and the last point round to
+/// 8192 as floats, so no line closes the contour.
+#[test]
+fn cff2_charstrings_add_in_doubles_as_harfbuzz_does() {
+    let font = craft::cff2_small_steps();
+    fs::write("target/test/cff2-small-steps.otf", &font).unwrap();
+    let font = font::prepare(font).unwrap();
+    let cff = font::cff_outlines(&font.data, font.start, &[]).unwrap().unwrap();
+    let (mut out, mut bounds) = (Vec::new(), [0; 4]);
+    assert_eq!(cff.glyph(1, &mut out, &mut bounds), Ok(true));
+    let points: Vec<(u8, i16, i16)> = out.iter().map(|v| (v.kind, v.x, v.y)).collect();
+    let (m, l) = (cff::MOVE, cff::LINE);
+    let steps = [(l, 8192, 0), (l, 8191, 0), (l, 8191, 0), (l, 8191, 0)];
+    assert_eq!(points, [&[(m, 8192, 0)][..], &steps, &[(l, 8191, 500), (l, 8191, 0), (l, 8192, 0)]].concat());
+    assert_eq!(bounds, [8191, 0, 8192, 500]);
+}
+
 #[test]
 fn cff2_fonts_render_as_primary_and_fallback() {
-    let vf = font::load(&font::Spec { path: CJK_VF.into(), face: None }).unwrap();
-    let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None }).unwrap();
+    let vf = font::load(&font::Spec { path: CJK_VF.into(), face: None, axes: None }).unwrap();
+    let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None, axes: None }).unwrap();
     let cells = parse(CJK_TEXT.as_bytes(), 60, 1);
     let draw = |font: &font::Font, fallback: Option<&font::Font>, out: &str| {
         assert_eq!(render_with(&cells, 60, 1, font, fallback, 24.0, out), 0);
@@ -301,7 +452,7 @@ fn mutated_cff2_fonts_are_refused_or_render() {
         let mut font = original.clone();
         mutate(&mut font[at..at + length], seed);
         if let Ok(font) = font::prepare(font) {
-            let cff = font::cff_outlines(&font.data, font.start).unwrap().unwrap();
+            let cff = font::cff_outlines(&font.data, font.start, &[]).unwrap().unwrap();
             for glyph in 0..cff.glyphs {
                 let _ = cff.glyph(glyph, &mut out, &mut bounds);
             }
@@ -426,6 +577,11 @@ pub(crate) mod craft {
 
     /// The font file around a CFF table (or, with `tag`, another table).
     fn sfnt_tagged(cff: &[u8], glyphs: u16, tag: &[u8; 4]) -> Vec<u8> {
+        sfnt_with(cff, glyphs, tag, &[])
+    }
+
+    /// The same with the `extra` tables too.
+    fn sfnt_with(cff: &[u8], glyphs: u16, tag: &[u8; 4], extra: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
         let be = |v: &[u16]| v.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>();
         let mut cmap = be(&[0, 1, 3, 1, 0, 12]);
         cmap.extend(be(&[4, 32, 0, 4, 4, 1, 0, 0x41, 0xffff, 0, 0x41, 0xffff, (1 - 0x41i16) as u16, 1, 0, 0]));
@@ -437,6 +593,7 @@ pub(crate) mod craft {
         let maxp = be(&[0x0000, 0x5000, glyphs]);
         let mut tables: Vec<(&[u8; 4], &[u8])> =
             vec![(tag, cff), (b"cmap", &cmap), (b"head", &head), (b"hhea", &hhea), (b"hmtx", &hmtx), (b"maxp", &maxp)];
+        tables.extend(extra);
         tables.sort();
         let mut out = [&b"OTTO"[..], &be(&[tables.len() as u16, 0, 0, 0])].concat();
         // The CFF table goes last and unpadded, so the file ends where it does.
@@ -616,19 +773,35 @@ pub(crate) mod craft {
         charstring(&[&num(100), &num(100), &[RMOVE], &num(-BIAS), &[CALLSUBR]])
     }
 
-    /// A variation store with one axis and `regions` regions, and an
-    /// ItemVariationData per entry of `data`, naming those regions.
-    fn store_with(regions: u16, data: &[Vec<u16>]) -> Vec<u8> {
+    /// A region's (start, peak, end) on each axis, in F2Dot14 units.
+    type Region = Vec<[i16; 3]>;
+
+    /// A variation store of `regions`, each over `axes` axes, and an
+    /// ItemVariationData per entry of `data`, naming those regions. Its
+    /// offsets name them in the order `order` gives.
+    fn store_full(axes: u16, regions: &[Region], data: &[Vec<u16>], order: &[usize]) -> Vec<u8> {
         let be16 = |v: &[u16]| v.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>();
-        let list_at = 8 + 4 * data.len();
-        let list = [be16(&[1, regions]), be16(&[0, 0x4000, 0x4000]).repeat(regions as usize)].concat();
-        let (mut offsets, mut tables) = (Vec::new(), Vec::new());
+        let list_at = 8 + 4 * order.len();
+        let mut list = be16(&[axes, regions.len() as u16]);
+        for triple in regions.iter().flatten() {
+            list.extend(be16(&triple.map(|v| v as u16)));
+        }
+        let (mut at, mut tables) = (Vec::new(), Vec::new());
         for indexes in data {
-            offsets.extend(((list_at + list.len() + tables.len()) as u32).to_be_bytes());
+            at.push(list_at + list.len() + tables.len());
             tables.extend([be16(&[0, 0, indexes.len() as u16]), be16(indexes)].concat());
         }
-        let store = [be16(&[1]), (list_at as u32).to_be_bytes().to_vec(), be16(&[data.len() as u16]), offsets, list, tables].concat();
+        let offsets: Vec<u8> = order.iter().flat_map(|&i| (at[i] as u32).to_be_bytes()).collect();
+        let store = [be16(&[1]), (list_at as u32).to_be_bytes().to_vec(), be16(&[order.len() as u16]), offsets, list, tables].concat();
         [be16(&[store.len() as u16]), store].concat()
+    }
+
+    /// A variation store with one axis and `regions` regions, each peaking
+    /// at its maximum, and an ItemVariationData per entry of `data`, naming
+    /// those regions.
+    fn store_with(regions: u16, data: &[Vec<u16>]) -> Vec<u8> {
+        let order: Vec<usize> = (0..data.len()).collect();
+        store_full(1, &vec![vec![[0, 0x4000, 0x4000]]; regions as usize], data, &order)
     }
 
     /// The same, each ItemVariationData naming that many regions.
@@ -927,5 +1100,128 @@ pub(crate) mod craft {
 
     pub fn cff2_endchar() -> Vec<u8> {
         sfnt2(&Cff2::new(vec![square2(), square()]))
+    }
+
+    /// Glyph 1 moves to x = 16384 times the sum of the scalars of
+    /// `regions`, then draws the square's sides. Its store has one
+    /// ItemVariationData, naming every region.
+    /// It has an fvar of `axes` axes, `ax0 `, `ax1 ` and so on, each from
+    /// -1 to 1 by default 0, so that a setting is its normalized coordinate
+    /// and hb-vector can draw it at any.
+    pub fn cff2_scalars(axes: u16, regions: &[Region]) -> Vec<u8> {
+        let tags: Vec<[u8; 4]> = (0..axes).map(|i| [b'a', b'x', b'0' + i as u8, b' ']).collect();
+        cff2_scalars_with(&fvar(&tags.iter().map(|tag| (tag, -1.0, 0.0, 1.0)).collect::<Vec<_>>()), axes, regions)
+    }
+
+    /// cff2_scalars, with the given fvar, whose axes need not be the store's.
+    pub fn cff2_scalars_with(fvar: &[u8], axes: u16, regions: &[Region]) -> Vec<u8> {
+        let deltas = num(16384).repeat(regions.len());
+        let glyph = [num(0), deltas, num(1), vec![BLEND], num(0), vec![RMOVE], sides()].concat();
+        let all = (0..regions.len() as u16).collect();
+        let vstore = store_full(axes, regions, &[all], &[0]);
+        sfnt_with(&Cff2 { vstore, ..Cff2::new(vec![square2(), glyph]) }.build(), 2, b"CFF2", &[(b"fvar", fvar)])
+    }
+
+    /// An fvar of `axes`, each a tag and its minimum, default and maximum.
+    pub fn fvar(axes: &[(&[u8; 4], f64, f64, f64)]) -> Vec<u8> {
+        let be16 = |v: &[u16]| v.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>();
+        let fixed = |v: f64| ((v * 65536.0).round() as i32).to_be_bytes();
+        let count = axes.len() as u16;
+        let mut out = be16(&[1, 0, 16, 2, count, 20, 0, 4 * count + 4]);
+        for &(tag, min, default, max) in axes {
+            out.extend([&tag[..], &fixed(min), &fixed(default), &fixed(max), &be16(&[0, 256])].concat());
+        }
+        out
+    }
+
+    /// An avar of a segment map per axis, each (from, to) in F2Dot14 units.
+    pub fn avar(maps: &[Vec<(i16, i16)>]) -> Vec<u8> {
+        let be16 = |v: &[u16]| v.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>();
+        let mut out = be16(&[1, 0, 0, maps.len() as u16]);
+        for map in maps {
+            out.extend(be16(&[map.len() as u16]));
+            out.extend(map.iter().flat_map(|&(from, to)| [from as u16, to as u16]).flat_map(u16::to_be_bytes));
+        }
+        out
+    }
+
+    /// A font whose glyph k + 1, for character 'A' + k, moves to x = the
+    /// normalized coordinate of axis k, in F2Dot14 units, for one in -1..1:
+    /// a region peaking at +1 on that axis and one at -1, with deltas of
+    /// 16384 and -16384. So hb-vector draws what HarfBuzz normalizes axis
+    /// settings to.
+    pub fn cff2_coordinates(fvar: &[u8], avar: Option<&[u8]>, axes: u16) -> Vec<u8> {
+        let one = 0x4000;
+        let mut regions = Vec::new();
+        for k in 0..axes as usize {
+            for peak in [[0, one, one], [-one, -one, 0]] {
+                let mut region = vec![[0, 0, 0]; axes as usize];
+                region[k] = peak;
+                regions.push(region);
+            }
+        }
+        let data: Vec<Vec<u16>> = (0..axes).map(|k| vec![2 * k, 2 * k + 1]).collect();
+        let order: Vec<usize> = (0..axes as usize).collect();
+        let vstore = store_full(axes, &regions, &data, &order);
+        let mut glyphs = vec![square2()];
+        for k in 0..axes as i32 {
+            let blend = [num(0), num(16384), num(-16384), num(1), vec![BLEND]].concat();
+            glyphs.push([num(k), vec![VSINDEX], blend, num(0), vec![RMOVE], sides()].concat());
+        }
+        let mut extra: Vec<(&[u8; 4], &[u8])> = vec![(b"fvar", fvar)];
+        extra.extend(avar.map(|avar| (b"avar", avar)));
+        sfnt_with(&Cff2 { vstore, ..Cff2::new(glyphs) }.build(), axes + 1, b"CFF2", &extra)
+    }
+
+    /// Four ItemVariationData offsets naming two: the first, of a region
+    /// peaking at +1, then the second, of one peaking at -1, twice, then
+    /// the first again. Glyph 1 picks the last with vsindex 3 and moves by
+    /// 16384 times its scalar, so at +1 it moves and at -1 it does not.
+    pub fn cff2_shared_data_order() -> Vec<u8> {
+        let regions = [vec![[0, 0x4000, 0x4000]], vec![[-0x4000, -0x4000, 0]]];
+        let vstore = store_full(1, &regions, &[vec![0], vec![1]], &[0, 1, 1, 0]);
+        let glyph = [num(3), vec![VSINDEX], num(0), num(16384), num(1), vec![BLEND], num(0), vec![RMOVE], sides()].concat();
+        sfnt2(&Cff2 { vstore, ..Cff2::new(vec![square2(), glyph]) })
+    }
+
+    /// Two values blended over two regions, each with deltas of its own:
+    /// at +1, glyph 1 moves to (1100, 2200).
+    pub fn cff2_blend_two_values() -> Vec<u8> {
+        let deltas = [num(100), num(1000), num(200), num(2000)].concat();
+        let glyph = [num(0), num(0), deltas, num(2), vec![BLEND], vec![RMOVE], sides()].concat();
+        sfnt2(&Cff2 { vstore: store(2, &[2]), ..Cff2::new(vec![square2(), glyph]) })
+    }
+
+    /// vsindex after a blend.
+    pub fn cff2_vsindex_after_blend() -> Vec<u8> {
+        cff2_glyph_after(&[blended(&[0], 1), vec![VSINDEX]].concat(), 1)
+    }
+
+    /// Two vsindex operators.
+    pub fn cff2_vsindex_twice() -> Vec<u8> {
+        cff2_glyph_after(&[num(0), vec![VSINDEX], num(0), vec![VSINDEX]].concat(), 1)
+    }
+
+    /// A charstring 16.16 fixed-point number.
+    fn fixed(v: i32) -> Vec<u8> {
+        [vec![255], v.to_be_bytes().to_vec()].concat()
+    }
+
+    /// From x = 8192, four steps of -1/4096, up and back down, then 3/4096
+    /// right, without endchar. In f32 each step rounds back to 8192; in f64
+    /// the line ends at 8191.999, and the contour 1/4096 short of its start,
+    /// which is the start once drawn as a float.
+    fn small_steps() -> Vec<u8> {
+        let step = [fixed(-16), num(0)].concat().repeat(4);
+        let back = [num(0), num(-500), fixed(48), num(0), vec![RLINE]].concat();
+        [num(8192), num(0), vec![RMOVE], step, vec![RLINE], num(0), num(500), vec![RLINE], back].concat()
+    }
+
+    pub fn cff2_small_steps() -> Vec<u8> {
+        sfnt2(&Cff2::new(vec![square2(), small_steps()]))
+    }
+
+    pub fn small_steps_cff() -> Vec<u8> {
+        sfnt(&Cff::new(vec![square(), [small_steps(), vec![ENDCHAR]].concat()]).build(), 2)
     }
 }
