@@ -30,7 +30,8 @@ and double, dashes, arcs and diagonals), block elements and shades, and the
   panic, which fails the render with exit 2); `termshot_fill_rect` for the
   C's own rectangles (the first scanline of each cell's background, underlines,
   missing-glyph boxes); `termshot_geometry_new`/`_free`/`_stats` for the
-  render's state. Never per pixel.
+  render's state; `termshot_paint_failed` once per render, since a fill has
+  no result of its own (a panic in either fails the render). Never per pixel.
 - **Canvas ABI**: `#[repr(C)]` `{px, filtered, w, h, stride, geometry}`, 40
   bytes, asserted on both sides. The clip is Rust's alone, and the arc
   offsets and `Stamps` live behind the opaque `geometry` pointer, which may be

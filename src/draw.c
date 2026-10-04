@@ -189,12 +189,16 @@ _Static_assert(sizeof(Canvas) == 40, "Canvas ABI must match the Rust side");
    (of cell_w x cell_h pixels) inside the cell, a pixel thicker when bold.
    1 when painted, 0 for other characters, -1 if the painter failed (a bug).
 
-   termshot_fill_rect: fill [x0, x1) x [y0, y1), clipped to the canvas. */
+   termshot_fill_rect: fill [x0, x1) x [y0, y1), clipped to the canvas.
+
+   termshot_paint_failed: nonzero if a call above failed (a bug) on this
+   thread since termshot_geometry_new; the render then fails. */
 Geometry *termshot_geometry_new(int reuse_strokes);
 void termshot_geometry_free(Geometry *geometry);
 int termshot_paint_geometry(const Canvas *cv, int col, int row, int cell_w, int cell_h, uint32_t cp, int bold,
                             uint8_t r, uint8_t g, uint8_t b);
 void termshot_fill_rect(const Canvas *cv, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b);
+int termshot_paint_failed(void);
 /* The cache's counters, for TERMSHOT_PROFILE: strokes painted from it, kept
    in it, and stamped without it, and the bytes it holds now and held at
    most. Zeros with no cache. */
@@ -871,6 +875,9 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
         }
     }
 
+    /* termshot_fill_rect has no result of its own: a fill that failed says
+       so here, before an incomplete image is written. */
+    if (termshot_paint_failed()) return paint_failed(cv, cache, &scratch, "box drawing failed");
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
     GeometryStats stamps;
     termshot_geometry_stats(cv->geometry, &stamps);

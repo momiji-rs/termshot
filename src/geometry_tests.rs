@@ -368,6 +368,21 @@ fn a_canvas_without_pixels_is_left_alone() {
 }
 
 #[test]
+fn a_panic_is_caught_and_remembered_for_the_render() {
+    unsafe { termshot_geometry_free(termshot_geometry_new(0)) };
+    assert_eq!(termshot_paint_failed(), 0);
+    assert_eq!(guarded(|| 7), Some(7));
+    assert_eq!(termshot_paint_failed(), 0);
+    assert_eq!(guarded(|| -> i32 { panic!("a painter bug") }), None);
+    assert_eq!(termshot_paint_failed(), 1);
+    // Still failed, until the next render begins.
+    assert_eq!(guarded(|| 7), Some(7));
+    assert_eq!(termshot_paint_failed(), 1);
+    unsafe { termshot_geometry_free(termshot_geometry_new(1)) };
+    assert_eq!(termshot_paint_failed(), 0);
+}
+
+#[test]
 fn stats_without_a_cache_are_zero() {
     let mut s = GeometryStats { hits: 1, misses: 2, uncached: 3, bytes: 4, peak: 5 };
     unsafe { termshot_geometry_stats(ptr::null(), &mut s) };

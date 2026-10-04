@@ -84,6 +84,7 @@ const _: () = assert!(std::mem::size_of::<GeometryStats>() == 5 * std::mem::size
 /// canvas whose geometry is null.
 #[no_mangle]
 pub extern "C" fn termshot_geometry_new(reuse_strokes: c_int) -> *mut Geometry {
+    PANICKED.with(|p| p.set(false));
     catch_unwind(|| {
         faults::start();
         if !allowed(Site::Geometry) {
@@ -153,7 +154,7 @@ pub unsafe extern "C" fn termshot_paint_geometry(cv: *const Canvas, col: c_int, 
     }
     let cv = &*cv;
     let geometry = cv.geometry.as_mut();
-    let painted = catch_unwind(AssertUnwindSafe(|| {
+    let painted = guarded(|| {
         let px = Pixels::of(cv);
         let (arcs, stamps) = match geometry {
             Some(g) => (Some(&mut g.arc_offsets), g.stamps.as_mut()),
@@ -161,11 +162,11 @@ pub unsafe extern "C" fn termshot_paint_geometry(cv: *const Canvas, col: c_int, 
         };
         let mut p = Painter { px, arcs, stamps };
         p.paint_geometry(col, row, cell_w, cell_h, cp, bold != 0, [r, g, b])
-    }));
+    });
     match painted {
-        Ok(true) => 1,
-        Ok(false) => 0,
-        Err(_) => -1,
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
     }
 }
 
@@ -178,8 +179,34 @@ pub unsafe extern "C" fn termshot_paint_geometry(cv: *const Canvas, col: c_int, 
 pub unsafe extern "C" fn termshot_fill_rect(cv: *const Canvas, x0: c_int, y0: c_int, x1: c_int, y1: c_int, r: u8,
                                             g: u8, b: u8) {
     let cv = &*cv;
-    // It indexes only inside the slice it clipped to, so nothing panics.
-    let _ = catch_unwind(AssertUnwindSafe(|| Pixels::of(cv).fill_rect(x0, y0, x1, y1, [r, g, b])));
+    // It writes only inside the rectangle it clipped, so it shouldn't panic;
+    // if it does, termshot_paint_failed says so.
+    guarded(|| Pixels::of(cv).fill_rect(x0, y0, x1, y1, [r, g, b]));
+}
+
+thread_local! {
+    /// Whether a call here panicked on this thread since the render began
+    /// (termshot_geometry_new).
+    static PANICKED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+/// f's result, or None if it panicked, which is remembered for
+/// termshot_paint_failed. A panic must not unwind into C.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    let result = catch_unwind(AssertUnwindSafe(f)).ok();
+    if result.is_none() {
+        PANICKED.with(|p| p.set(true));
+    }
+    result
+}
+
+/// Nonzero if painting panicked (a bug) on this thread since
+/// termshot_geometry_new began the render: termshot_fill_rect has no result
+/// of its own, so draw.c asks once, before it writes the PNG, and fails the
+/// render (exit 2) rather than write an incomplete image.
+#[no_mangle]
+pub extern "C" fn termshot_paint_failed() -> c_int {
+    PANICKED.with(|p| p.get()) as c_int
 }
 
 type Rgb = [u8; 3];
