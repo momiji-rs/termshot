@@ -144,7 +144,10 @@ def draw_workloads(directory):
     colored = crlf.join(
         ''.join(f'\x1b[48;5;{(r * 3 + c // 10) % 216 + 16}m' + 'Benchmark ' for c in range(0, 240, 10))
         for r in range(80))
-    text = crlf.join([('The quick brown fox 0123456789! @#$% ' * 3)[:100]] * 30)
+    # Every third row on a background of its own, which hides an image below
+    # the backgrounds.
+    text = crlf.join((f'\x1b[48;5;{17 + r}m' if r % 3 == 0 else '') + ('The quick brown fox 0123456789! @#$% ' * 3)[:100]
+                     + '\x1b[0m' for r in range(30))
     image = lambda z: ('\x1b[H'.encode() + kitty_image(128, 128, 60, 20, z, 22) + b'\x1b[H' + text.encode())
     generated = {
         'box-grid': (crlf.join(table).encode(), 48, 100, 30),
