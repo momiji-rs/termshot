@@ -144,7 +144,8 @@ The cell backgrounds' first scanline is filled inside Rust now, not through
 
 - **main**: `431ed23` (main after #75), built with `./build.sh`.
 - **branch**: `82c3f3d`, the step 2b commits on top of it. Later commits
-  change only documentation.
+  change documentation and add one check per image outside the paint loops
+  (`4fd0d28`: a crop must lie inside its image).
 
 Method as in the
 [step 2a round](#box-drawing-in-rust-2026-10-04-629a4d4-12-step-2a):
