@@ -3,14 +3,15 @@ set -eu
 cd "$(dirname "$0")/.."
 ./build.sh
 scratch=$(mktemp -d)
-trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
+trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/render.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
 sanitize=''
 if [ "${SANITIZE:-0}" = 1 ]; then
     sanitize='-fsanitize=address,undefined -fno-omit-frame-pointer'
 fi
-# The Rust draw.c calls, for the C harnesses; with SANITIZE=1, with overflow
-# checks.
+# The Rust the C harnesses call, and the render with it for tests/draw.c;
+# with SANITIZE=1, with overflow checks.
 rust_libs=$(tests/rust_lib.sh "$scratch/rust.a")
+render_libs=$(tests/rust_lib.sh "$scratch/render.a" --cfg termshot_render)
 # shellcheck disable=SC2086
 cc tests/image.c "$scratch/rust.a" -I third_party/stb -O2 -Wno-unused-function $sanitize $rust_libs -o "$scratch/image"
 "$scratch/image"
@@ -21,7 +22,7 @@ cc tests/codec.c -I third_party/stb -O2 -Wno-deprecated-declarations $sanitize -
 cc tests/codec.c "$scratch/rust.a" -DTEST_CUSTOM_DEFLATE -I third_party/stb -O2 -Wno-deprecated-declarations $sanitize $rust_libs -o "$scratch/codec-custom"
 "$scratch/codec-custom"
 # shellcheck disable=SC2086
-cc tests/draw.c "$scratch/rust.a" -I third_party/stb -O2 -ffp-contract=off -Wno-deprecated-declarations $sanitize -lm $rust_libs -o "$scratch/draw"
+cc tests/draw.c "$scratch/render.a" -I third_party/stb -O2 -ffp-contract=off -Wno-deprecated-declarations $sanitize -lm $render_libs -o "$scratch/draw"
 "$scratch/draw" third_party/jetbrains-mono/JetBrainsMono-Regular.ttf "$scratch/draw.png"
 
 # Fail each compressor allocation in turn, in the CLI: the unit tests check
@@ -53,6 +54,43 @@ if [ "$n" -le 4 ]; then
     exit 1
 fi
 echo "ok, each of $((n - 1)) compressor allocation failures exits 2 and leaves no output"
+
+# Fail each of the render's own allocations in turn (src/render.rs: the
+# canvas, then the PNG's buffer, which stb_image_write asks for through
+# termshot_png_alloc): the run must exit 2, say which ran out, and leave no
+# output. The fault build says which allocation failed; when none does, all
+# have been.
+n=1
+while :; do
+    rm -f "$scratch/fault.png" "$scratch/fault.txt"
+    set +e
+    TERMSHOT_RENDER_FAIL_AT=$n "$scratch/termshot-faults" --text "$scratch/fault.txt" \
+        examples/reply-sent.pty "$scratch/fault.png" 2>"$scratch/fault.err"
+    code=$?
+    set -e
+    if ! grep -q "render allocation $n " "$scratch/fault.err"; then
+        [ "$code" -eq 0 ] && [ -e "$scratch/fault.png" ] && break
+        echo "FAIL with no render allocation $n failing: exit $code" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    case $n in
+        1) want="out of memory for a 2200x1440 image" ;;
+        *) want="out of memory encoding a 2200x1440 PNG" ;;
+    esac
+    if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
+        ! grep -q "$want" "$scratch/fault.err"; then
+        echo "FAIL render allocation $n: exit $code, want 2 with no output left" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    n=$((n + 1))
+done
+if [ "$n" -ne 3 ]; then
+    echo "FAIL $((n - 1)) render allocations failed, want the canvas and the PNG's buffer" >&2
+    exit 1
+fi
+echo "ok, each of $((n - 1)) render allocation failures exits 2 and leaves no output"
 
 # Fail each allocation of the box-drawing caches in turn (the arcs' offsets
 # and the strokes reused): the strokes are stamped afresh, so the run
@@ -122,9 +160,10 @@ fi
 echo "ok, each of $((n - 1)) glyph allocation failures exits 2 and leaves no output"
 
 # The image layers and the backdrop (src/composite.rs) allocate nothing; the
-# raster they paint is draw.c's one allocation for them. When it fails the
-# run exits 2, says so, and leaves no output. Linux only, where ulimit -v
-# caps the address space: 300x80 cells at --px 100 are a 321 MB raster.
+# raster they paint is the render's (src/render.rs). When the system can't
+# give it, not just the fault build, the run exits 2, says so, and leaves no
+# output. Linux only, where ulimit -v caps the address space: 300x80 cells at
+# --px 100 are a 321 MB raster.
 if [ "$(uname)" = Linux ]; then
     rm -f "$scratch/fault.png" "$scratch/fault.txt"
     set +e

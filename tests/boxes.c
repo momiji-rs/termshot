@@ -1,4 +1,4 @@
-/* Box-drawing and block-element checks for draw.c's geometry (U+2500..U+259F).
+/* Box-drawing and block-element checks for the geometry (U+2500..U+259F).
    The expectations come from the Unicode character names below, parsed here,
    not from draw.c's own tables. Each character is painted alone into the
    middle cell of a 3x3 grid, at many cell sizes, plain and bold:
@@ -14,9 +14,14 @@
      tile the cell exactly, and shades are a flat mix of the two colours.
 
    The geometry is src/geometry.rs, linked as a static library
-   (tests/rust_lib.sh); draw.c gives its Canvas and declarations. Built and
-   run by test.sh. */
-#include "../src/draw.c"
+   (tests/rust_lib.sh); tests/termshot.h declares it. Built and run by
+   test.sh. */
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "termshot.h"
 
 static const char *NAMES[160] = {
     "LIGHT HORIZONTAL", /* 2500 */
