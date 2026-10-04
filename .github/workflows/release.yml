@@ -1,7 +1,9 @@
 name: release
 
 # A v* tag builds, checks and publishes the archives. A pull request that
-# touches the release path builds and checks them without publishing.
+# touches the release path or the source builds and checks them without
+# publishing: musl's libm is not glibc's or Apple's, and the check renders
+# the samples on each archive's own target.
 #
 # To release 1.2.3: set VERSION in src/main.rs to "1.2.3", rename
 # CHANGELOG.md's [Unreleased] to "[1.2.3] - <date>", merge, then push tag
@@ -15,6 +17,7 @@ on:
       - .github/workflows/release.yml
       - build.sh
       - scripts/release.sh
+      - 'src/**'
   workflow_dispatch:
 
 permissions:

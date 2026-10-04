@@ -1,5 +1,6 @@
 //! Replay a PTY log into a cell grid and paint it.
-//! No crates. The rasterizer is draw.c (vendored stb, no window, no system font).
+//! No crates. The rasterizer is draw.c (vendored stb, no window, no system font),
+//! with box drawing and blocks in geometry.rs and the compressor in deflate.rs.
 
 use std::env;
 use std::fs;
@@ -11,6 +12,7 @@ mod cast;
 mod cff;
 mod deflate;
 mod font;
+mod geometry;
 mod graphics;
 #[rustfmt::skip]
 mod rowcolumn_diacritics;

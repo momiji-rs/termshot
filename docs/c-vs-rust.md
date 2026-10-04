@@ -2,16 +2,67 @@
 
 This file holds dated comparisons, newest first, for
 [#12](https://github.com/momiji-rs/termshot/issues/12): should termshot's own C
-(`src/draw.c` painting and `src/deflate.c` compression) move to Rust? The vendored stb
+(`src/draw.c` painting and `src/deflate.c` compression) move to Rust? It is
+moving: compression and box drawing are Rust now. The vendored stb
 libraries are not part of it. Each comparison ports the C as of one commit to Rust,
 checks that both write the same bytes, and times both in one process.
 
+- [Step 2a shipped: box drawing is Rust (2026-10-04)](#step-2a-shipped-box-drawing-is-rust-2026-10-04).
 - [Step 1 shipped: deflate is Rust (2026-10-04)](#step-1-shipped-deflate-is-rust-2026-10-04).
 - [Deflate, current code (2026-10-03, `a8a95e0`)](#deflate-current-code-2026-10-03-a8a95e0):
   `deflate.c` after #20 (16-lane Adler-32, bit reversal by table, inlined matcher).
 - [Painting and deflate POC (2026-10-01, `bd726a6`), history](#painting-and-deflate-poc-2026-10-01-bd726a6-history):
   the first port of both files. Its deflate C is two optimization rounds old and its
   painting C predates #61, #66 and #69, so do not compare its numbers with the current code.
+
+## Step 2a shipped: box drawing is Rust (2026-10-04)
+
+Painting moves bottom-up in four steps, each a layer the remaining C calls
+through FFI: 2a box drawing and blocks, 2b image compositing, 2c glyphs
+(cache, blending, italic, marks), 2d the driver loop and the PNG write call,
+leaving thin stb glue in C. Step 2a shipped: the canvas primitives (`put`,
+`clip_rect`, `fill_rect`, `shade_rect`, the bars), box drawing (lines, heavy
+and double, dashes, arcs and diagonals), block elements and shades, and the
+`Stamps` stroke cache are `src/geometry.rs`.
+
+- **FFI surface**: `termshot_paint_geometry(canvas, col, row, cell_w, cell_h,
+  cp, bold, r, g, b)` per cell (1 painted, 0 not geometry, -1 a caught
+  panic, which fails the render with exit 2); `termshot_fill_rect` for the
+  C's own rectangles (the first scanline of each cell's background, underlines,
+  missing-glyph boxes); `termshot_geometry_new`/`_free`/`_stats` for the
+  render's state; `termshot_paint_failed` once per render, since a fill has
+  no result of its own (a panic in either fails the render). Never per pixel.
+- **Canvas ABI**: `#[repr(C)]` `{px, filtered, w, h, stride, geometry}`, 40
+  bytes, asserted on both sides. The clip is Rust's alone, and the arc
+  offsets and `Stamps` live behind the opaque `geometry` pointer, which may be
+  NULL (nothing cached, same pixels).
+- **Floats**: ported operation for operation in f32; no `mul_add`. floor,
+  ceil and sqrt are exact, so std's are libm's. The arcs' sine and cosine are
+  the one rounded function, and the C's compilers merged `sinf` and `cosf` of
+  one angle into one sincos call. On macOS that merged form differs from
+  `cosf` in the last bit for 2.5 million floats in the arcs' range
+  (`bench/c-vs-rust/sincos.c`), and LLVM merged Rust's `f32::sin`/`cos` at
+  some call sites only, so `sin_cos` calls `__sincosf_stret` (macOS) or
+  `sincosf` (Linux) by name. Float-to-int casts are pixel coordinates and
+  step counts bounded by the 2^27-pixel canvas, where C's `(int)` truncation
+  and Rust's saturating `as` agree; C's out-of-range UB is never reached.
+- **Memory**: the caches grow with `try_reserve_exact` under the same 4 MiB
+  budget and the same TwoSum exactness check; a failed allocation stamps the
+  stroke afresh, as in C. No geometry allocation failed a render before, and
+  none does now.
+- **Evidence**: `bench/c-vs-rust/run.sh geometry` (CI, all three hosts)
+  compares 1,442,400 painted cells with draw.c as of `24d71fe`, byte for
+  byte, then times both: Rust ÷ C 0.97-1.01 under Apple clang 21 and
+  0.86-1.04 under GCC 16. End to end no geometry case is slower beyond noise
+  on either host
+  ([docs/performance.md](performance.md#box-drawing-in-rust-2026-10-04-629a4d4-12-step-2a)).
+
+For 2b: the image layer (`paint_image_rows`, `backdrop_through`) still calls
+`termshot_fill_rect` once per cell per backdrop row; moving it moves that
+call inside Rust. `Canvas` is already shared, so 2b can take the same
+pointer. Bounds checks cost up to 25% in short fills here, so the hot loops
+check a span once and then write through a pointer; expect the same in
+`blend` and the image sampler.
 
 ## Step 1 shipped: deflate is Rust (2026-10-04)
 

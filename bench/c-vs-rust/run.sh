@@ -1,5 +1,5 @@
 #!/bin/sh
-# C vs Rust (docs/c-vs-rust.md). Two comparisons, each against a snapshot of
+# C vs Rust (docs/c-vs-rust.md). Three comparisons, each against a snapshot of
 # the C taken with git archive, so later changes to src/ don't affect them:
 #
 #   bench/c-vs-rust/run.sh [rounds]           2026-10-01 POC: paint and compress
@@ -11,16 +11,23 @@
 #                                             and zeroed-table C, safe and
 #                                             unchecked Rust, and the shipped
 #                                             src/deflate.rs (#12 step 1)
+#   bench/c-vs-rust/run.sh geometry [rounds]  2026-10-04: draw.c's box drawing,
+#                                             blocks and stroke cache as of
+#                                             $geometry_rev against the shipped
+#                                             src/geometry.rs (#12 step 2a):
+#                                             the same pixels at every cell
+#                                             size, then the time of each
 #
-# src/deflate.c is gone from the tree since #12 step 1; both comparisons
-# still take it from the old revisions. Both check that the outputs are byte-identical before timing both sides in
+# src/deflate.c is gone from the tree since #12 step 1, and draw.c's geometry
+# since step 2a; the comparisons still take them from the old revisions. All
+# check that the outputs are byte-identical before timing both sides in
 # one process. Default 61 rounds. CC picks the C compiler of the deflate
 # comparison (default cc); RUSTFLAGS adds rustc flags to its Rust side.
 set -eu
 cd "$(dirname "$0")/../.."
 mode=poc
-if [ "${1:-}" = deflate ]; then
-    mode=deflate
+if [ "${1:-}" = deflate ] || [ "${1:-}" = geometry ]; then
+    mode=$1
     shift
 fi
 rounds=${1:-61}
@@ -28,6 +35,7 @@ rounds=${1:-61}
 # these commits into its shallow clone (ci.yml reads them from these lines).
 rev=bd726a6b53957c389722f018dbabb6b093ac90bb
 deflate_rev=a8a95e0bd7b8ba998688554e09680b34a40a8d4e
+geometry_rev=24d71feb5e80a0df5c079a64b1e31b8b2bc7f46b
 
 # Workloads, parsed by the current termshot parser. build.sh leaves the
 # current C in libtermshot_c.a; link it the way test.sh does.
@@ -37,6 +45,26 @@ workloads() {
         -L native="$PWD" -l static=termshot_c
     TERMSHOT_POC_DIR="$2" "$1/unit" --ignored --exact tests::poc_workloads -q > /dev/null
 }
+
+if [ "$mode" = geometry ]; then
+    cc=${CC:-cc}
+    work=target/c-vs-rust-geometry
+    rm -rf "$work"
+    mkdir -p "$work/snapshot"
+    git archive "$geometry_rev" src/draw.c src/png_crc.h src/crc32_table.h | tar -x -C "$work/snapshot"
+    # The Rust as the C harnesses link it, and the C with build.sh's flags.
+    rust_libs=$(tests/rust_lib.sh "$work/rust.a")
+    # shellcheck disable=SC2086
+    $cc bench/c-vs-rust/geometry.c "$work/rust.a" -o "$work/geometry" -O2 -ffp-contract=off -w \
+        -I "$work/snapshot/src" -I third_party/stb -lm $rust_libs
+    echo "== draw.c's geometry at $geometry_rev vs src/geometry.rs"
+    echo "C: $($cc --version | head -n 1)"
+    echo "Rust: $(rustc --version), -C opt-level=2"
+    echo "host: $(uname -sm), load: $(uptime | sed 's/.*load average[s]*: //')"
+    "$work/geometry" third_party/jetbrains-mono/JetBrainsMono-Regular.ttf "$rounds"
+    echo "load after: $(uptime | sed 's/.*load average[s]*: //')"
+    exit 0
+fi
 
 if [ "$mode" = deflate ]; then
     cc=${CC:-cc}

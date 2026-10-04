@@ -2,7 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include "../src/image.c"
-/* src/deflate.rs, linked as a static library (tests/deflate_lib.sh). */
+/* src/deflate.rs, linked as a static library (tests/rust_lib.sh). */
 unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality);
 static const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,2,0,0,0,2,8,6,0,0,0,114,182,13,36,0,0,0,23,73,68,65,84,120,156,99,248,207,192,208,192,240,31,136,25,24,254,55,252,7,50,0,56,232,6,252,229,30,226,71,0,0,0,0,73,69,78,68,174,66,96,130};
 // Inflate from a heap copy of exactly len bytes, so ASan sees any read past
