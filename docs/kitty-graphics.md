@@ -198,7 +198,7 @@ chunks of an upload and checked as each arrives, so an oversized upload is
 dropped before it is fully buffered. An uncompressed RGB or RGBA buffer gets
 10 bytes over the decoded size, and kitty uses the first `w*h*3` or `w*h*4`
 bytes of what arrives (`process_image_data`), so termshot accepts a payload
-up to 10 bytes long and ignores the excess (#55). It used to require the
+up to 10 bytes longer than the decoded size and ignores the excess (#55). It used to require the
 exact size. A PNG, compressed or not, keeps the 16 MiB
 payload limit. Raw dimensions are checked against the decoded limits (8,192
 pixels per axis, 16 MiB of RGBA) before inflating, so a stream for an image
