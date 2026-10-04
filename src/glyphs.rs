@@ -41,7 +41,6 @@
 
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use std::time::Instant;
 
 use crate::cell::{Cell, CellMarks, BOLD, DOUBLE_UNDERLINE, ITALIC, MAX_MARKS, STRIKE, UNDERLINE, WIDE};
 use crate::cff::{Vertex, CUBIC};
@@ -226,15 +225,47 @@ pub unsafe extern "C" fn termshot_paint_text(cv: *const Canvas, bd: *mut Backdro
     }
 }
 
-/// The time since the render's text began, in ms, while profiling; 0 when
-/// not, which reads no clock.
-struct Clock(Option<Instant>);
+/// The time in ms while profiling, from the clock draw.c's now_ms reads
+/// (CLOCK_MONOTONIC), so the stages it times here and the spans draw.c
+/// subtracts them from agree; 0 when not, which reads no clock. A clock
+/// read per stage per cell is the profile's own cost, and the same as the
+/// C's: with std's Instant, the profiled foreground of a screen of cache
+/// hits read up to 15% over the C's (cjk-dense 0.34 → 0.39 ms) for the
+/// same wall time.
+struct Clock(bool);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn monotonic_ms() -> f64 {
+    #[repr(C)]
+    struct Timespec {
+        tv_sec: i64,
+        tv_nsec: std::ffi::c_long,
+    }
+    extern "C" {
+        fn clock_gettime(clock: c_int, ts: *mut Timespec) -> c_int;
+    }
+    #[cfg(target_os = "macos")]
+    const CLOCK_MONOTONIC: c_int = 6;
+    #[cfg(target_os = "linux")]
+    const CLOCK_MONOTONIC: c_int = 1;
+    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: ts is writable; the call can't fail for this clock.
+    unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as f64 * 1000.0 + ts.tv_nsec as f64 / 1_000_000.0
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn monotonic_ms() -> f64 {
+    thread_local!(static START: std::time::Instant = std::time::Instant::now());
+    START.with(|start| start.elapsed().as_secs_f64() * 1000.0)
+}
 
 impl Clock {
     fn now(&self) -> f64 {
-        match self.0 {
-            Some(start) => start.elapsed().as_secs_f64() * 1000.0,
-            None => 0.0,
+        if self.0 {
+            monotonic_ms()
+        } else {
+            0.0
         }
     }
 }
@@ -279,7 +310,7 @@ unsafe fn paint_text(cv: &Canvas, bd: &mut Backdrop, marks: &[CellMarks], fonts:
         std::slice::from_raw_parts(bd.cells, cols as usize * rows as usize)
     };
     let baseline = fonts.baseline;
-    let mut ground = Ground { cv, bd, clock: Clock(profiling.then(Instant::now)), backdrop_ms: 0.0 };
+    let mut ground = Ground { cv, bd, clock: Clock(profiling), backdrop_ms: 0.0 };
     let mut g = Glyphs::new(fonts)?;
     let (mut geometry_ms, mut glyph_ms, mut blend_ms) = (0.0, 0.0, 0.0);
     let mut next_mark = 0;
@@ -310,7 +341,11 @@ unsafe fn paint_text(cv: &Canvas, bd: &mut Backdrop, marks: &[CellMarks], fonts:
                 if cp != 0 && cp != ' ' as u32 && !is_ignorable(cp) {
                     let tick = ground.clock.now();
                     // Box drawing and blocks, painted as geometry.
-                    let geometry = geometry::paint_cell(cv, c, r, cell_w, cell_h, cp, bold, fg);
+                    let geometry = if (0x2500..=0x259f).contains(&cp) {
+                        geometry::paint_cell(cv, c, r, cell_w, cell_h, cp, bold, fg)
+                    } else {
+                        Some(false)
+                    };
                     geometry_ms += ground.clock.now() - tick;
                     let Some(geometry) = geometry else { return Err(Failure::BoxDrawing) };
                     if !geometry {
@@ -720,6 +755,7 @@ impl Glyphs {
     ///
     /// # Safety
     /// As Glyphs::new.
+    #[inline]
     unsafe fn find(&mut self, cp: u32, wide: bool, italic: bool, mark: bool, span: i32) -> Result<usize, Failure> {
         // An italic glyph has its own slot, so mixed text doesn't evict.
         let slot = ((cp ^ if italic { GLYPH_CACHE_SIZE as u32 / 2 } else { 0 }) % GLYPH_CACHE_SIZE as u32) as usize;
@@ -728,7 +764,17 @@ impl Glyphs {
             self.cache_hits += 1;
             return Ok(slot);
         }
-        self.evictions += entry.valid as usize;
+        self.load(slot, cp, wide, italic, mark, span)
+    }
+
+    /// find's miss: the glyph of cp into the slot, evicting what it held.
+    ///
+    /// # Safety
+    /// As Glyphs::new.
+    #[inline(never)]
+    unsafe fn load(&mut self, slot: usize, cp: u32, wide: bool, italic: bool, mark: bool, span: i32)
+                   -> Result<usize, Failure> {
+        self.evictions += self.cache[slot].valid as usize;
         self.cache[slot] = Glyph { cp, valid: true, wide, italic, mark, ..Glyph::default() };
         let mut source = &self.font;
         let mut from_fallback = false;
