@@ -221,6 +221,10 @@ pub struct Face<'a> {
     font: PhantomData<&'a Font>,
 }
 
+// As draw.c and src/glyphs.rs (its Face, which reads the outline and
+// advance callbacks) assert.
+const _: () = assert!(std::mem::size_of::<Face>() == 64);
+
 /// The metrics of a face at its instance, where it varies them; neither at
 /// the default instance.
 struct Varied<'a> {

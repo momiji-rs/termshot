@@ -210,6 +210,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fails the render with exit 2 ("painting failed") instead of reading past an
   image. The image cases take the same time or less on macOS arm64 and Linux
   x86-64 (docs/performance.md).
+- The text is Rust (`src/glyphs.rs`) instead of C, step 2c of #12: the glyph
+  cache, the font and fallback lookups and the fallback's scaling, italic,
+  bold, combining marks, the box for a missing character with its
+  empty-glyph warning, and underlines and strike-through; draw.c calls it
+  once per render, and stb_truetype stays C. A CFF or CFF2 face is never
+  handed stb's outline readers. Every pixel and warning is the same, except
+  for the fix below: `bench/c-vs-rust/run.sh glyphs` renders every fixture
+  and generated logs with each kind of font at several sizes through the CLI
+  with the C and with the Rust, and CI runs that on all three hosts. Renders
+  take the same time on macOS arm64 and Linux x86-64, or less where many
+  glyphs are blended: the blend is up to 16% faster on macOS and 23% on
+  Linux (docs/performance.md). Running out of memory for a glyph
+  still exits 2 ("glyph allocation failed").
 - After a kitty placement, the cursor moves as kitty moves it
   (`handle_put_command`, `screen_handle_graphics_command`): right by the
   placement's columns and down by its rows less one, so it ends beside the
@@ -277,6 +290,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   height of 0 or less, and as `--font` it was refused only when drawing,
   as "font metrics unusable". An instance whose `MVAR` takes the height to
   0 is refused the same way.
+- A glyph with a box but no points, such as a composite of an empty glyph,
+  draws nothing. It drew whatever its bitmap's memory held, which on Linux
+  was not always zeros, so it could paint pixels that depended on what was
+  drawn before it.
 - A kitty RGB or RGBA payload up to 10 bytes longer than its pixels loads,
   as in kitty, which ignores the excess (#55). termshot required the exact
   length, and accepted up to 16 MiB of payload before refusing a longer one.

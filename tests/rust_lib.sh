@@ -1,8 +1,8 @@
 #!/bin/sh
-# Build the Rust that C calls (src/deflate.rs and src/geometry.rs, through
-# tests/rust_lib.rs) as a static library for the C harnesses, and print the
-# system libraries a C link needs for it, as rustc names them. Used by
-# test.sh and tests/run.sh:
+# Build the Rust that C calls (src/deflate.rs, geometry.rs, composite.rs and
+# glyphs.rs, through tests/rust_lib.rs) as a static library for the C
+# harnesses, and print the system libraries a C link needs for it, as rustc
+# names them. Used by test.sh and tests/run.sh:
 #
 #   libs=$(tests/rust_lib.sh out.a [rustc flags])
 #   cc harness.c out.a $libs

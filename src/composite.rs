@@ -137,9 +137,8 @@ pub const BACKDROP_ROW_IMAGES: usize = 64;
 /// each layer of images over the whole canvas, as before rows.
 ///
 /// Shared with draw.c (its Backdrop), which keeps it in its frame:
-/// termshot_backdrop_init fills it in, and draw.c reads `done`, `rows` and
-/// `cell_h` to skip a call with nothing to paint. `ms` is draw.c's, the
-/// time spent painting it, for TERMSHOT_PROFILE; not read here.
+/// termshot_backdrop_init fills it in, and src/glyphs.rs paints it as the
+/// text reaches each row (through), timing it for TERMSHOT_PROFILE.
 #[repr(C)]
 pub struct Backdrop {
     /// cols x rows cells, row by row.
@@ -154,11 +153,10 @@ pub struct Backdrop {
     pub done: i32,
     /// Nonzero: paint every row at the first call.
     pub whole: i32,
-    pub ms: f64,
 }
 
 /// As draw.c asserts of its Backdrop.
-const _: () = assert!(std::mem::size_of::<Backdrop>() == 56);
+const _: () = assert!(std::mem::size_of::<Backdrop>() == 48);
 
 /// The images, or none for a null pointer.
 ///
@@ -194,8 +192,7 @@ pub unsafe extern "C" fn termshot_backdrop_init(bd: *mut Backdrop, cv: *const Ca
     let under = views(images, image_count).iter().filter(|im| image_layer(im.z) != LAYER_OVER_TEXT).count();
     let raster = cv.stride.wrapping_mul(cv.h.max(0) as usize);
     let whole = under > BACKDROP_ROW_IMAGES || raster < row_bytes;
-    bd.write(Backdrop { cells, images, image_count, cols, rows, cell_w, cell_h, done: 0, whole: whole as i32,
-                        ms: 0.0 });
+    bd.write(Backdrop { cells, images, image_count, cols, rows, cell_w, cell_h, done: 0, whole: whole as i32 });
 }
 
 /// Paints the backdrop of every row of cells above pixel row `y` that is not
@@ -213,13 +210,21 @@ pub unsafe extern "C" fn termshot_backdrop_init(bd: *mut Backdrop, cv: *const Ca
 #[no_mangle]
 pub unsafe extern "C" fn termshot_backdrop_through(cv: *const Canvas, bd: *mut Backdrop, y: i64) -> c_int {
     let (cv, bd) = (&*cv, &mut *bd);
-    if bd.done >= bd.rows || y <= bd.done as i64 * bd.cell_h as i64 {
+    if !due(bd, y) {
         return 0;
     }
     match guarded(|| backdrop_through(cv, bd, y)) {
         Some(()) => 1,
         None => -1,
     }
+}
+
+/// Whether termshot_backdrop_through(cv, bd, y) would paint anything: a
+/// glyph with nothing due under it then costs no call and no clock read
+/// (src/glyphs.rs).
+#[inline]
+pub(crate) fn due(bd: &Backdrop, y: i64) -> bool {
+    bd.done < bd.rows && y > bd.done as i64 * bd.cell_h as i64
 }
 
 /// Paints the images of `layer` (LAYER_*), in their order, over the whole
@@ -422,19 +427,7 @@ fn sample_run(dst: &mut [u8], line: &[u8], from: i64, src_w: i64, w: i64, step: 
         // n pixels.
         unsafe {
             let src = s.add(sx as usize * 4);
-            let a = *src.add(3) as u32;
-            // At 255 and 0 the blend below is the source and the destination
-            // exactly.
-            if a == 255 {
-                *d = *src;
-                *d.add(1) = *src.add(1);
-                *d.add(2) = *src.add(2);
-            } else if a != 0 {
-                for c in 0..3 {
-                    let (sv, dv) = (*src.add(c) as u32, *d.add(c) as u32);
-                    *d.add(c) = ((sv * a + dv * (255 - a) + 127) / 255) as u8;
-                }
-            }
+            blend_pixel(d, [*src, *src.add(1), *src.add(2)], *src.add(3) as u32);
             d = d.add(BPP);
         }
         sx += step;
@@ -442,6 +435,28 @@ fn sample_run(dst: &mut [u8], line: &[u8], from: i64, src_w: i64, w: i64, step: 
         if rem >= w {
             sx += 1;
             rem -= w;
+        }
+    }
+}
+
+/// The blend of an image's pixels and of a glyph's coverage (src/glyphs.rs):
+/// `s` at `a` / 255 over the RGB pixel at `d`, `(s * a + d * (255 - a) +
+/// 127) / 255` in u32 as the C's unsigned (the glyphs' was int, never
+/// negative here, so the same). At 255 and 0 that is the source and the
+/// destination exactly, so those are a copy and nothing.
+///
+/// # Safety
+/// `d` must point to a pixel's 3 writable bytes.
+#[inline(always)]
+pub(crate) unsafe fn blend_pixel(d: *mut u8, s: [u8; 3], a: u32) {
+    if a == 255 {
+        *d = s[0];
+        *d.add(1) = s[1];
+        *d.add(2) = s[2];
+    } else if a != 0 {
+        for (c, &sv) in s.iter().enumerate() {
+            let dv = *d.add(c) as u32;
+            *d.add(c) = ((sv as u32 * a + dv * (255 - a) + 127) / 255) as u8;
         }
     }
 }

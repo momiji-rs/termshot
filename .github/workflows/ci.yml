@@ -49,6 +49,13 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin $(sed -n 's/^images_rev=//p' bench/c-vs-rust/run.sh)
           bench/c-vs-rust/run.sh images 1
+      # The glyphs, marks, lines and missing-glyph boxes in Rust paint what
+      # draw.c's did, through the CLI with each kind of font at several
+      # sizes, on each host (#12 step 2c).
+      - name: glyph painting matches the C it was ported from
+        run: |
+          git fetch --no-tags --depth=1 origin $(sed -n 's/^glyphs_rev=//p' bench/c-vs-rust/run.sh)
+          bench/c-vs-rust/run.sh glyphs 1
 
   sanitize:
     runs-on: macos-latest

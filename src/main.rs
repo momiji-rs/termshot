@@ -1,6 +1,7 @@
 //! Replay a PTY log into a cell grid and paint it.
 //! No crates. The rasterizer is draw.c (vendored stb, no window, no system font),
-//! with box drawing and blocks in geometry.rs and the compressor in deflate.rs.
+//! with box drawing and blocks in geometry.rs, the images in composite.rs, the
+//! text in glyphs.rs and the compressor in deflate.rs.
 
 use std::env;
 use std::fs;
@@ -8,7 +9,8 @@ use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use cell::{Cell, BOLD, DOUBLE_UNDERLINE, ITALIC, OPAQUE, STRIKE, TAIL, UNDERLINE, WIDE};
+use cell::{Cell, CellMarks, Marks, MAX_MARKS, BOLD, DOUBLE_UNDERLINE, ITALIC, OPAQUE, STRIKE, TAIL, UNDERLINE, WIDE};
+use glyphs::{EmptyGlyphs, EMPTY_IN_FALLBACK, EMPTY_IN_FONT};
 
 mod cast;
 mod cell;
@@ -17,6 +19,7 @@ mod composite;
 mod deflate;
 mod font;
 mod geometry;
+mod glyphs;
 mod graphics;
 mod metrics;
 #[rustfmt::skip]
@@ -47,37 +50,7 @@ const DEFAULT_FG: (u8, u8, u8) = (219, 231, 247);
 const DEFAULT_BG: (u8, u8, u8) = (17, 24, 35);
 
 
-/// The most combining marks a cell keeps after its character (#14). A cell
-/// holds one code point, so a mark with no precomposed form goes in a side
-/// table instead. Four is enough for Thai (a vowel and a tone mark), Hebrew
-/// points, stacked Latin accents and the three diacritics of a kitty Unicode
-/// placeholder; marks after the fourth are dropped.
-const MAX_MARKS: usize = 4;
-
-/// A cell's marks in the order they arrived; the unused slots are 0, which
-/// no mark is.
-type Marks = [u32; MAX_MARKS];
-
 const NO_MARKS: Marks = [0; MAX_MARKS];
-
-/// One cell's combining marks, for --text, --json and draw.c: the cell's
-/// index in screen order (row * cols + col) and its marks. A list of them is
-/// sorted by cell, one per cell. As CellMarks in src/draw.c.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CellMarks {
-    cell: u32,
-    marks: Marks,
-}
-
-const _: () = assert!(std::mem::size_of::<CellMarks>() == 4 + 4 * MAX_MARKS);
-
-impl CellMarks {
-    /// The marks, without the unused slots.
-    fn code_points(&self) -> &[u32] {
-        &self.marks[..self.marks.iter().position(|&m| m == 0).unwrap_or(MAX_MARKS)]
-    }
-}
 
 /// The marks of the cell at index (row * cols + col) in a sorted list, or none.
 fn marks_of(marks: &[CellMarks], cell: usize) -> &[u32] {
@@ -171,22 +144,6 @@ impl Cell {
         }
     }
 }
-
-/// The cells draw.c drew as a box because a font maps the character to an
-/// empty glyph, as color bitmap fonts do: how many, and the first one, its
-/// character and which fonts did. As EmptyGlyphs in src/draw.c.
-#[repr(C)]
-#[derive(Default)]
-struct EmptyGlyphs {
-    cp: u32,
-    fonts: u32,
-    col: i32,
-    row: i32,
-    cells: usize,
-}
-
-const EMPTY_IN_FONT: u32 = 1;
-const EMPTY_IN_FALLBACK: u32 = 2;
 
 extern "C" {
     fn draw_face_cell_size(font: *const font::Face, px: f64, w: *mut i32, h: *mut i32) -> i32;
