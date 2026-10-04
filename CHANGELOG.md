@@ -203,6 +203,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   takes 7.9 ms instead of 9.9 and a 5800×3840 one 27.6 instead of 40.5; on
   an Apple M2 Max up to 9% less, most at high resolution.
   `docs/performance.md` has the measurements.
+- Replaying a log is faster and leaves the same screen (#21). Character
+  widths come from a two-level table instead of two binary searches, marks
+  that compose with nothing skip the composition search, the pen's colours
+  are mixed once per SGR rather than once per character, erasing a row
+  copies instead of filling cell by cell, CSI digits skip the general byte
+  match, and long ASCII runs are scanned eight bytes at a time. A raw log
+  without a LF is no longer scanned to its end to decide whether it is a
+  cast. The 4.7 MB ANSI replay renders in 18.3 ms instead of 21.9 on an
+  Apple M2 Max and in 16.1 instead of 19.2 on a Ryzen 7 8745HS, and Thai,
+  mixed-script and scrolling logs parse 1.8-2.6 times as fast.
+  `docs/performance.md` has the measurements.
 
 ### Fixed
 
