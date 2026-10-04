@@ -123,10 +123,17 @@ unsafe extern "C" fn get_glyph_bitmap_box(info: *const FontInfo, glyph: c_int, s
 unsafe extern "C" fn make_glyph_bitmap(_info: *const FontInfo, out: *mut u8, w: c_int, h: c_int, stride: c_int,
                                        s: f32, _sy: f32, glyph: c_int) {
     note(format!("stb bitmap {glyph} {s}"));
+    // HOLLOW has a box but no points, as a composite of an empty glyph
+    // has: stb's rasterizer then writes nothing.
+    if glyph == HOLLOW {
+        return;
+    }
     for y in 0..h {
         std::ptr::write_bytes(out.add((y * stride) as usize), 200, w as usize);
     }
 }
+
+const HOLLOW: c_int = 0x391;
 
 unsafe extern "C" fn rasterize(bm: *mut StbBitmap, _flatness: f32, v: *mut Vertex, n: c_int, s: f32, _sy: f32,
                                _shift_x: f32, _shift_y: f32, _x: c_int, _y: c_int, _invert: c_int,
@@ -575,4 +582,21 @@ fn each_allocation_failure_fails_the_render() {
     // The cache, the scratch at 512, 1024 and 5000 vertices, and five
     // bitmaps (two glyphs of each font and the mark).
     assert_eq!(allocations, 9);
+}
+
+/// A glyph with a box but no points (in the built-in font with 'A' emptied,
+/// Α and А, composites of 'A') makes stb write nothing into its bitmap. The
+/// C blended whatever malloc had left there, an evicted glyph's coverage on
+/// glibc; the bitmap starts zeroed now, so it draws nothing, upright as
+/// italic (whose box comes from the points).
+#[test]
+fn a_glyph_with_no_points_draws_nothing() {
+    for _ in 0..3 {
+        let row = [cell('a' as u32, 0), cell(HOLLOW as u32, 0), cell(HOLLOW as u32 + 1024, 0), cell(HOLLOW as u32, 0)];
+        let p = plain(&row, &[]);
+        assert_eq!((p.code, p.stats.glyphs, p.stats.missing, p.stats.evictions), (0, 4, 0, 2));
+        for y in 0..CELL_H {
+            assert!(p.lit(y).iter().all(|&x| x < CELL_W || (2 * CELL_W..3 * CELL_W).contains(&x)), "row {y}");
+        }
+    }
 }

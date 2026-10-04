@@ -133,12 +133,18 @@ if [ "$mode" = glyphs ]; then
         system_cjk=${CJK_FONT:-/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc}
         [ -e "$system_cjk" ] && set -- "$@" "--fallback-font $system_cjk#3"
         n=0
+        # The C left a glyph's bitmap as malloc gave it when stb wrote
+        # nothing there: a glyph with a box but no points, such as Α and А,
+        # composites of the hollow font's empty 'A'. The Rust zeroes it, so
+        # those draw nothing. glibc's perturb gives the C zeroed blocks too;
+        # macOS's malloc (which zeroes freed blocks) gave it zeroed ones in
+        # every run here.
         compare() {
             log=$1
             shift
             rm -f "$work/out/c.png" "$work/out/rust.png"
             set +e
-            "$old" "$@" "$log" "$work/out/c.png" 2>"$work/out/c.err"
+            GLIBC_TUNABLES=glibc.malloc.perturb=255 "$old" "$@" "$log" "$work/out/c.png" 2>"$work/out/c.err"
             c=$?
             ./termshot "$@" "$log" "$work/out/rust.png" 2>"$work/out/rust.err"
             r=$?
