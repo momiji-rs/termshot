@@ -58,7 +58,7 @@ def main():
     print()
     head = ' | '.join(f'{label} wall med / p95' for label in labels)
     print(f'| case | {head} | ' + ' | '.join(f'{label} CPU' for label in labels)
-          + ' | ' + ' | '.join(f'{label} RSS MiB' for label in labels) + ' | PNG bytes |')
+          + ' | ' + ' | '.join(f'{label} RSS MiB' for label in labels) + ' | output bytes |')
     print('| --- |' + ' ---: |' * (3 * len(labels) + 1))
     for name, case in first['cases'].items():
         walls = ' | '.join(f"{fmt(case[l]['wall_ms']['median'])} / {fmt(case[l]['wall_ms']['p95'])}" for l in labels)

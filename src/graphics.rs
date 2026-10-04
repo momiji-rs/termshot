@@ -374,7 +374,60 @@ impl Command {
 /// but that id is at most the count of named transmissions so far, so a put
 /// by any id up to that bound counts. Payloads are not decoded here: a failed
 /// transmission counts too, which only loads fonts that were not needed.
+///
+/// `crate::needs_cell_metrics` walks the log once and hands every APC string
+/// to [`CellMetricsScan::string`], in order.
+#[derive(Default)]
+pub struct CellMetricsScan {
+    /// (is a number, value) for every i or I a transmission named so far.
+    sent: std::collections::HashSet<(bool, u32)>,
+    named: u32,
+    free_ids: u32,
+}
+
+impl CellMetricsScan {
+    /// Whether this APC string (its bytes after ESC _, through the terminator
+    /// `crate::skip_string` stopped after) is a kitty command that needs
+    /// cell metrics. Only a string that ST ends is a command.
+    pub fn string(&mut self, s: &[u8]) -> bool {
+        let Some(bytes) = s.strip_prefix(b"G").and_then(|s| s.strip_suffix(b"\x1b\\")) else {
+            return false;
+        };
+        let header = bytes.split(|&b| b == b';').next().unwrap_or_default();
+        let Some(c) = Command::parse(header) else {
+            return false;
+        };
+        let name = if c.id != 0 { (false, c.id) } else { (true, c.number) };
+        let moves = match c.action {
+            b't' | b'T' => {
+                if name.1 != 0 {
+                    self.sent.insert(name);
+                    self.named = self.named.saturating_add(1);
+                }
+                if c.number != 0 {
+                    self.free_ids = self.named;
+                }
+                c.action == b'T'
+            }
+            b'p' => self.sent.contains(&name) || (c.id != 0 && c.id <= self.free_ids),
+            _ => false,
+        };
+        // Neither a relative nor a virtual placement moves the cursor.
+        moves && !c.no_move && c.parent_id == 0 && !c.virtual_put
+    }
+}
+
+/// The kitty half of `crate::needs_cell_metrics`, for tests.
+#[cfg(test)]
 pub fn needs_cell_metrics(data: &[u8]) -> bool {
+    let mut scan = CellMetricsScan::default();
+    crate::any_string(data, |kind, s| kind == b'_' && scan.string(s))
+}
+
+/// The byte-at-a-time scan `CellMetricsScan` replaced (main `a8a95e0`),
+/// kept as the reference the differential test compares it with.
+#[cfg(test)]
+pub fn needs_cell_metrics_reference(data: &[u8]) -> bool {
     // (is a number, value) for every i or I a transmission named so far.
     let mut sent = std::collections::HashSet::new();
     let (mut named, mut free_ids) = (0u32, 0u32);

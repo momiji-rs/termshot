@@ -225,6 +225,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Apple M2 Max and in 16.1 instead of 19.2 on a Ryzen 7 8745HS, and Thai,
   mixed-script and scrolling logs parse 1.8-2.6 times as fast.
   `docs/performance.md` has the measurements.
+- `--text` and `--json` runs without a PNG decide whether they need fonts in
+  one pass over the log, sixteen bytes at a time, instead of two passes a
+  byte at a time; they read a font for exactly the same logs as before. The
+  4.7 MB ANSI replay's text takes 13.6 ms instead of 18.8 on an Apple M2 Max,
+  and the decision 0.66 ms instead of 5.9. `scripts/bench.py --suite text`
+  measures these runs; `docs/performance.md` has the measurements.
 
 ### Fixed
 
