@@ -305,8 +305,9 @@ fn nothing_to_paint_on_or_with() {
     assert!(r.buf.iter().all(|&v| v == 7));
 }
 
-/// A crop outside its image, which the C would have read past, panics; the
-/// panic is caught, and remembered to fail the render.
+/// A crop outside its image, which the C would have read past or across a
+/// row's end, panics; the panic is caught, and remembered to fail the
+/// render.
 #[test]
 fn a_crop_outside_the_image_fails_the_render() {
     unsafe { crate::geometry::termshot_geometry_free(crate::geometry::termshot_geometry_new(0)) };
@@ -325,6 +326,20 @@ fn a_crop_outside_the_image_fails_the_render() {
     assert_eq!(paint(&mut r, &[im], LAYER_OVER_TEXT), -1);
     assert_eq!(termshot_paint_failed(), 1);
     unsafe { crate::geometry::termshot_geometry_free(crate::geometry::termshot_geometry_new(0)) };
+    // Inside the buffer but across a row's end: painting the first row only
+    // would read the second row's first pixel.
+    (im.src_x, im.src_w, im.clip_bottom) = (1, 2, 1);
+    assert_eq!(paint(&mut r, &[im], LAYER_OVER_TEXT), -1);
+    assert_eq!(termshot_paint_failed(), 1);
+    unsafe { crate::geometry::termshot_geometry_free(crate::geometry::termshot_geometry_new(0)) };
+    // Past the bottom, though the rows painted stay inside it.
+    (im.src_x, im.src_w, im.src_y, im.src_h) = (0, 2, 1, 2);
+    assert_eq!(paint(&mut r, &[im], LAYER_OVER_TEXT), -1);
+    assert_eq!(termshot_paint_failed(), 1);
+    unsafe { crate::geometry::termshot_geometry_free(crate::geometry::termshot_geometry_new(0)) };
+    (im.src_y, im.src_h) = (1, 1);
+    assert_eq!(paint(&mut r, &[im], LAYER_OVER_TEXT), 0);
+    assert_eq!(termshot_paint_failed(), 0);
 }
 
 /// The C's paint_image_rows, transcribed per pixel: the source column is

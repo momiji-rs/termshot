@@ -361,12 +361,16 @@ unsafe fn paint_image(px: &mut [u8], cw: i64, ch: i64, stride: usize, im: &Image
     // x0 a column at a time.
     let (w, src_w) = (im.w, im.src_w as i64);
     let (step, carry) = (src_w / w, src_w % w);
+    // A crop outside the image, which graphics.rs never makes, would read
+    // another row's pixels, or past the image: refused, failing the render.
+    let inside = |at: u32, len: u32, size: u32| at as u64 + len as u64 <= size as u64;
+    assert!(inside(im.src_x, im.src_w, im.width) && inside(im.src_y, im.src_h, im.height), "image crop outside its image");
     let pixels = std::slice::from_raw_parts(im.pixels, im.width as usize * im.height as usize * 4);
     let span = (x1 - x0) as usize;
     for y in y0..y1 {
         // y >= im.y and y < im.y + h likewise (so h > 0).
         let sy = im.src_y as usize + ((y - im.y) * im.src_h as i64 / im.h) as usize;
-        // The crop's row: a crop outside the image panics here.
+        // The crop's row, inside the image's row sy < src_y + src_h.
         let from = (sy * im.width as usize + im.src_x as usize) * 4;
         let line = &pixels[from..from + im.src_w as usize * 4];
         let at = y as usize * stride + x0 as usize * BPP;
