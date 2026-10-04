@@ -29,13 +29,25 @@ tab=$(printf '\t')
 # once every outline is in.
 version=$(hb-vector --version)
 unicodes=$(hb-info --list-unicodes "$font")
-map=$(printf '%s\n' "$unicodes" | sed -n "s/^U+\([0-9A-F]*\)${tab}gid\([0-9]*\)\$/\1 \2/p")
+# A font with glyph names lists characters by name, so --list-glyphs gives
+# their ids; one without lists them as gidN.
+glyphs=$(hb-info --list-glyphs "$font")
+map=$(printf '%s\n@@\n%s\n' "$glyphs" "$unicodes" | awk -F "$tab" '
+    $0 == "@@" { chars = 1; next }
+    !chars { if ($1 ~ /^[0-9]+$/) id[$2] = $1; next }
+    $1 ~ /^U\+[0-9A-F]+$/ {
+        gid = $2 ~ /^gid[0-9]+$/ ? substr($2, 4) : id[$2]
+        if (gid != "") print substr($1, 3), gid
+    }')
 [ -n "$map" ] || { echo "hb-info listed no characters" >&2; exit 1; }
 {
     printf '# %s, from tools/cff2-outlines.sh\n' "$(printf '%s\n' "$version" | head -n 1)"
     [ -z "$variations" ] || printf '# variations: %s\n' "$variations"
-    while read -r cp gid; do
-        svg=$(hb-vector --font-size=1000 --precision=9 --variations="$variations" -u "$cp" "$font")
+    # Drawn by glyph id, not by character: shaping a character could pick
+    # another glyph, as GSUB's FeatureVariations do at some instances, or
+    # move a combining mark off its outline's origin.
+    while read -r _ gid; do
+        svg=$(hb-vector --font-size=1000 --precision=9 --variations="$variations" --glyphs "$font" "gid$gid")
         path=$(printf '%s\n' "$svg" | sed -n 's/.*<path d="\([^"]*\)".*/\1/p' | awk '{
             out = ""; s = $0
             while (match(s, /-?[0-9]+(\.[0-9]+)?/)) {
