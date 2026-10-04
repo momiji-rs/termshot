@@ -24,6 +24,8 @@ mod cff_tests;
 #[cfg(test)]
 mod draw_tests;
 #[cfg(test)]
+mod prescan_tests;
+#[cfg(test)]
 mod tests;
 
 const DEFAULT_COLS: usize = 100;
@@ -1396,6 +1398,67 @@ fn skip_string(data: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// The bytes of an eight-byte word equal to `byte`, as their high bits.
+/// Exact for every byte: `(x & 0x7f) + 0x7f` cannot carry into the next one.
+fn bytes_equal(word: u64, byte: u8) -> u64 {
+    const LOW: u64 = u64::from_le_bytes([0x7f; 8]);
+    let x = word ^ u64::from_le_bytes([byte; 8]);
+    !((x & LOW).wrapping_add(LOW) | x | LOW)
+}
+
+/// Calls `found` with the introducer (`P` or `_`) and the bytes of each DCS
+/// and APC string of a log, from after the introducer through where
+/// `skip_string` ends it, in order, until `found` returns true. Like the
+/// byte-at-a-time scans it replaced, it looks only at each ESC and the byte
+/// after it, not at the parser's state. Those scans also skipped OSC, PM
+/// and SOS strings, but a skip passes no ESC except the one of an ST, so
+/// it never hid an ESC P or ESC _: every one of those is a string here.
+/// Sixteen bytes at a time are tested for them (#21).
+fn any_string(data: &[u8], mut found: impl FnMut(u8, &[u8]) -> bool) -> bool {
+    let mut i = 0;
+    while i + 1 < data.len() {
+        // With no branch on where the ESCs are: in an escape-heavy log,
+        // which word holds one is hard to predict.
+        let at = match data.get(i..i + 17) {
+            Some(block) => {
+                let word = |at: usize| u64::from_le_bytes(block[at..at + 8].try_into().unwrap());
+                let hits = |at: usize| {
+                    bytes_equal(word(at), 0x1b) & (bytes_equal(word(at + 1), b'P') | bytes_equal(word(at + 1), b'_'))
+                };
+                let both = u128::from(hits(0)) | u128::from(hits(8)) << 64;
+                if both == 0 {
+                    i += 16;
+                    continue;
+                }
+                i + both.trailing_zeros() as usize / 8
+            }
+            None if data[i] == 0x1b && matches!(data[i + 1], b'P' | b'_') => i,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+        let end = skip_string(data, at + 2);
+        if found(data[at + 1], &data[at + 2..end]) {
+            return true;
+        }
+        i = end;
+    }
+    false
+}
+
+/// Whether a run without a PNG must still read fonts: a kitty command or a
+/// Sixel image whose placement can move the text cursor by cells of the
+/// font's size. One pass over the log for both (#21).
+fn needs_cell_metrics(data: &[u8]) -> bool {
+    let mut kitty = graphics::CellMetricsScan::default();
+    any_string(data, |kind, s| match kind {
+        b'_' => kitty.string(s),
+        b'P' => sixel::string_needs_cell_metrics(s),
+        _ => false,
+    })
+}
+
 /// Whether a log looks like it never went through a PTY: it has line feeds
 /// but no CR at all, which `onlcr` would have added before each one.
 /// Checks CR first, so a PTY log stops at its first line end.
@@ -2384,8 +2447,7 @@ fn main() -> ExitCode {
     let mut font_timings = [font::LoadTimings::default(); 2];
     // Plain text/JSON logs need no fonts. Graphics also need cell metrics,
     // even without a PNG, because placement can move the text cursor.
-    let needs_fonts =
-        options.out.is_some() || graphics::needs_cell_metrics(&data) || sixel::needs_cell_metrics(&data);
+    let needs_fonts = options.out.is_some() || needs_cell_metrics(&data);
     let fonts = match needs_fonts.then(|| load_fonts(&options, &mut font_timings)).transpose() {
         Ok(fonts) => fonts,
         Err(error) => return cleanup(1, error),

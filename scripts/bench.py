@@ -37,12 +37,14 @@ class Case:
     (as every earlier report did); the others use options, so the built-in
     font and --fallback-font can be measured."""
 
-    def __init__(self, name, src, px, cols, rows, fonts=None, legacy=False, group='legacy', checks=()):
+    def __init__(self, name, src, px, cols, rows, fonts=None, legacy=False, group='legacy', checks=(), text=False):
         self.name, self.src, self.px, self.cols, self.rows = name, Path(src), px, cols, rows
         self.fonts = fonts or []
-        self.legacy, self.group, self.checks = legacy, group, checks
+        self.legacy, self.group, self.checks, self.text = legacy, group, checks, text
 
     def command(self, binary, out):
+        if self.text:
+            return [binary, '--size', f'{self.cols}x{self.rows}', '--text', str(out), str(self.src)]
         if self.legacy:
             return [binary, str(self.src), str(out), str(FONT), str(self.px), str(self.cols), str(self.rows)]
         return [binary, *self.fonts, '--px', str(self.px), '--size', f'{self.cols}x{self.rows}', str(self.src), str(out)]
@@ -276,6 +278,39 @@ def parser_workloads(directory, wanted=None):
     return cases
 
 
+TEXT_CASES = ('text-ansi-replay', 'text-ascii-overflow', 'text-dense-sgr', 'text-mixed-unicode',
+              'text-reply-sent', 'text-kitty', 'text-sixel')
+
+
+def text_workloads(directory, wanted=None):
+    """Text-only runs (--text, no PNG). Fonts are read only when the log has
+    an image that needs cell metrics, so most of these read none; text-kitty
+    (an a=T upload) and text-sixel do. font_builtin says which happened.
+    The two parser logs are made only when --case names one of them (or none)."""
+    no_font = (('font_builtin', '==', 0), ('font_bytes', '==', 0))
+    font = (('font_builtin', '==', 1),)
+    logs = {
+        'text-ansi-replay': ((ROOT / 'examples/reply-sent.pty').read_bytes() * 250, no_font),
+        'text-ascii-overflow': (b'x' * 4_000_000, no_font),
+        'text-reply-sent': ((ROOT / 'examples/reply-sent.pty').read_bytes(), no_font),
+        'text-kitty': (b'\x1b[H' + kitty_image(128, 128, 60, 20, 1, 22) + b'\x1b[H' + b'text\r\n' * 20, font),
+        'text-sixel': ((ROOT / 'tests/fixtures/sixel-magick.pty').read_bytes(), font),
+    }
+    if not wanted or set(wanted) & {'text-dense-sgr', 'text-mixed-unicode'}:
+        parser = parser_logs()
+        logs['text-dense-sgr'] = (parser['dense-sgr'], no_font)
+        logs['text-mixed-unicode'] = (parser['mixed-unicode'], no_font)
+    cases = []
+    for name in TEXT_CASES:
+        if name not in logs:
+            continue
+        data, checks = logs[name]
+        path = directory / f'{name}.pty'
+        path.write_bytes(data)
+        cases.append(Case(name, path, 48, 100, 30, group='text', checks=checks, text=True))
+    return cases
+
+
 def font_workloads(cjk):
     """The font-path matrix (#19). checks are (counter, op, value) on the
     profile record, verified on every profiled run of a binary that has it."""
@@ -416,13 +451,13 @@ def main():
     p.add_argument('--warmups', type=int, default=2)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--case', action='append')
-    p.add_argument('--suite', choices=('all', 'legacy', 'fonts', 'draw', 'parser'), default='all')
+    p.add_argument('--suite', choices=('all', 'legacy', 'fonts', 'draw', 'parser', 'text'), default='all')
     p.add_argument('--cjk-font', type=Path, default=SYSTEM_CJK if SYSTEM_CJK.exists() else None,
                    help=f'full NotoSansCJK-Regular.ttc for the *-full cases (default: {SYSTEM_CJK} if present)')
     p.add_argument('--memory-runs', type=int, default=0, help='separate peak-RSS runs using /usr/bin/time')
     p.add_argument('--cold-runs', type=int, default=0, help='Linux: runs after dropping the page cache (sudo -n)')
     p.add_argument('--cold-case', action='append', help='cases for --cold-runs (default: all selected)')
-    p.add_argument('--verify-identical', action='store_true', help='require byte-identical PNGs across binaries')
+    p.add_argument('--verify-identical', action='store_true', help='require byte-identical outputs (PNG or text) across binaries')
     p.add_argument('--reference', help='binary label for paired speedup estimates')
     p.add_argument('--unchecked', action='append', default=[],
                    help='binary label exempt from the path checks, for one that predates the counters (repeatable)')
@@ -471,6 +506,8 @@ def main():
             cases += draw_workloads(directory)
         if args.suite in ('all', 'parser'):
             cases += parser_workloads(directory, args.case)
+        if args.suite in ('all', 'text'):
+            cases += text_workloads(directory, args.case)
         if args.case:
             unknown = set(args.case) - {case.name for case in cases}
             if unknown:
@@ -481,7 +518,7 @@ def main():
             if unknown:
                 p.error('--cold-case names a case not selected: ' + ', '.join(sorted(unknown)))
         for case in cases:
-            out = {label: directory / f'{label}.png' for label in binaries}
+            out = {label: directory / f'{label}.{"txt" if case.text else "png"}' for label in binaries}
             plain = {label: [] for label in binaries}
             cpu = {label: [] for label in binaries}
             profiled_wall = {label: [] for label in binaries}
@@ -502,7 +539,7 @@ def main():
                     elapsed = round((time.perf_counter_ns() - start) / 1e6, 4)
                     after = resource.getrusage(resource.RUSAGE_CHILDREN)
                     profile = profile_records(result.stderr) if profiled else None
-                    # Every run's PNG, outside the timed interval.
+                    # Every run's output, outside the timed interval.
                     seen[label].add(sha256(out[label]))
                     if run < 0:
                         continue
@@ -532,13 +569,14 @@ def main():
                     seen[label].add(sha256(out[label]))
             varied = {label: sorted(hashes) for label, hashes in seen.items() if len(hashes) != 1}
             if varied:
-                raise RuntimeError(f'PNG bytes vary between runs in {case.name}: {varied}')
+                raise RuntimeError(f'Output bytes vary between runs in {case.name}: {varied}')
             hashes = {label: next(iter(seen[label])) for label in binaries}
             if args.verify_identical and len(set(hashes.values())) != 1:
-                raise RuntimeError(f'PNG bytes differ in {case.name}: {hashes}')
+                raise RuntimeError(f'Output bytes differ in {case.name}: {hashes}')
             entry = report['cases'][case.name] = {
                 'workload': {'group': case.group, 'px': case.px, 'cols': case.cols, 'rows': case.rows,
                              'cli': 'positional' if case.legacy else 'options', 'fonts': case.font_files(),
+                             'output': 'text' if case.text else 'png',
                              'input': relative(case.src),
                              'input_bytes': case.src.stat().st_size, 'input_sha256': sha256(case.src),
                              'checks': [' '.join(map(str, c)) for c in case.checks]},
@@ -552,7 +590,10 @@ def main():
                     'profile_overhead': paired_ratio(profiled_wall[label], plain[label]),
                     'profile': {key: summary([s[key] for s in profiles[label]]) for key in keys},
                     'profile_samples': {key: [s[key] for s in profiles[label]] for key in keys},
-                    'png_bytes': out[label].stat().st_size, 'png_sha256': hashes[label],
+                    # output_* for every case; png_* too for a PNG, as in
+                    # earlier reports (a text case's output is no PNG).
+                    'output_bytes': out[label].stat().st_size, 'output_sha256': hashes[label],
+                    **({} if case.text else {'png_bytes': out[label].stat().st_size, 'png_sha256': hashes[label]}),
                     'peak_rss_bytes': summary(rss[label]) if rss[label] else None,
                     'peak_rss_samples_bytes': rss[label],
                 }
@@ -573,13 +614,13 @@ def main():
                 rng.shuffle(labels)
                 for label in labels:
                     drop_caches()
-                    png = directory / f'{label}-cold.png'
-                    command = case.command(binaries[label], png)
+                    cold_out = directory / f'{label}-cold.{"txt" if case.text else "png"}'
+                    command = case.command(binaries[label], cold_out)
                     start = time.perf_counter_ns()
                     subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                     cold[label].append(round((time.perf_counter_ns() - start) / 1e6, 4))
-                    if sha256(png) != report['cases'][case.name][label]['png_sha256']:
-                        raise RuntimeError(f'{case.name}: a cold run of {label} wrote a different PNG')
+                    if sha256(cold_out) != report['cases'][case.name][label]['output_sha256']:
+                        raise RuntimeError(f'{case.name}: a cold run of {label} wrote a different output')
             report['cold'][case.name] = {label: {'wall_ms': summary(cold[label]), 'wall_samples_ms': cold[label]}
                                          for label in binaries}
             for label in binaries:

@@ -53,40 +53,65 @@ sequences (ZWJ, skin tones, VS16) are not joined into one picture.
 How long a run takes depends on the log, the image size, the fonts, the disk
 cache and the machine, so termshot has no single latency figure. The current
 figures below come from the **[versioned benchmark report](docs/performance.md)**,
-whose JSON files keep every raw sample of the round with the binary hashes,
-toolchains, fonts and inputs. The historical figure at the end of this section
-has no retained samples and is quoted only to say where it came from.
+whose JSON files keep every raw sample of each round with the binary hashes,
+toolchains, fonts and inputs. Older figures at the end of this section are
+history: other revisions, and one with no retained samples.
 
-Current baseline: measured 2026-10-03 with `scripts/bench.py`, on termshot
-built from `22b77e8` (main `d83c8fd` plus profiling timers that change no
-output; on main since #57) with `build.sh`'s flags. Each figure is the median
-of 40 **whole CLI runs**, wall time from spawn to exit: start-up, reading the
-log and the fonts, parsing, drawing, PNG encoding and closing the file, with a
-warm page cache and no `fsync`. They are not `TERMSHOT_PROFILE`'s internal
-stage timers, which leave out process start-up and exit. Two batches with
+Current figures: measured 2026-10-03 with `scripts/bench.py` in the
+[painting round](docs/performance.md#painting-and-geometry-2026-10-03-721d3fe-22)
+(#22), on termshot built from `721d3fe` with `build.sh`'s flags. That is
+main after the PNG compression (#20), parser (#21) and painting (#22) work;
+main `a8a95e0` has the same build inputs and builds the same macOS binary
+(sha256 `345dc4507209…`). Each figure is the median of 40 **whole CLI
+runs**, wall time from spawn to exit: start-up, reading the log and the
+fonts, parsing, drawing, PNG encoding and closing the file, with a warm page
+cache and no `fsync`. They are not `TERMSHOT_PROFILE`'s internal stage
+timers, which leave out process start-up and exit. Two batches with
 different run orders are shown as A / B.
 
 | workload | grid / px | image | fonts | Apple M2 Max, macOS 26.6.2 (ms) | Ryzen 7 8745HS, Arch Linux (ms) |
 | --- | --- | --- | --- | ---: | ---: |
-| `examples/reply-sent.pty` (`font-builtin`) | 100×30 / 48 | 2200×1440 | built-in JetBrains Mono | 9.27 / 9.24 | 9.64 / 9.58 |
-| same log (`reply-24px`) | 100×30 / 24 | 1100×720 | JetBrains Mono file | 5.83 / 5.97 | 5.63 / 5.59 |
-| same log (`reply-128px`) | 100×30 / 128 | 5800×3840 | JetBrains Mono file | 31.56 / 33.73 | 38.06 / 38.42 |
-| `large` (generated) | 240×80 / 48 | 5280×3840 | JetBrains Mono file | 41.91 / 41.96 | 49.24 / 49.57 |
-| `tests/perf/cjk-dense.pty` (`cjk-full`) | 100×30 / 24 | 1100×720 | built-in + `--fallback-font NotoSansCJK-Regular.ttc#3` (19 MB) | 12.67 / 13.53 | 14.85 / 14.67 |
+| `examples/reply-sent.pty` (`font-builtin`) | 100×30 / 48 | 2200×1440 | built-in JetBrains Mono | 8.90 / 8.92 | 7.49 / 7.56 |
+| same log (`reply-24px`) | 100×30 / 24 | 1100×720 | JetBrains Mono file | 5.82 / 5.79 | 5.17 / 5.15 |
+| same log (`reply-128px`) | 100×30 / 128 | 5800×3840 | JetBrains Mono file | 28.82 / 29.17 | 24.30 / 24.34 |
+| `large` (generated) | 240×80 / 48 | 5280×3840 | JetBrains Mono file | 38.14 / 38.25 | 34.26 / 34.94 |
+| `ansi-replay` (`reply-sent.pty` × 250, 4.7 MB) | 100×30 / 48 | 2200×1440 | JetBrains Mono file | 18.47 / 18.54 | 16.14 / 16.03 |
+| `tests/perf/cjk-dense.pty` (`cjk-full`) | 100×30 / 24 | 1100×720 | built-in + `--fallback-font NotoSansCJK-Regular.ttc#3` (19 MB) | 12.38 / 12.62 ¹ | 13.55 / 13.57 |
 
-The report covers 25 workloads; their batch-A medians range from 5.17 ms
-(macOS) and 4.90 ms (Linux) for `cjk-none` to 41.91 and 49.24 ms for `large`.
-It also gives p95, child CPU time, peak RSS, a per-stage breakdown and a
-Linux cold-cache run, which adds 6.9-8.2 ms to three small-font cases. These
-are two machines with warm caches; a different log, font, disk or a busy
-machine can take longer. The release archives use the same compiler flags
-but link musl statically on Linux; they were not measured.
+¹ The painting round's macOS batches had no full Noto CJK collection; this
+is the [parser round](docs/performance.md#ansi-replay-parsing-2026-10-03-10f1ea1-21)'s
+(#21, built from `10f1ea1`, the same Mac and harness), from before #22,
+whose changes are for rounded corners, diagonals, images and rasters over
+16 MiB, none of which this case has.
 
-Earlier rounds (2026-10-01, Apple M3, revisions up to `c44d83c`) are kept in
-the report as history. They used a different machine, revision and harness, so
-their numbers must not be subtracted from these. The "~20 ms for 2200×1440"
-quoted in older descriptions was a 21 ms mean of 40 hyperfine runs on that M3
-at `fb714a5`, whose samples were not kept; the report records
+That round covers 38 workloads on macOS and 41 on Linux; their batch-A
+medians range from 5.02 ms (`cjk-none`, macOS) and 4.07 ms (`blank`,
+Linux) to 143.91 and 136.36 ms for `large-color` (240×80 on 216 background
+colours). The report also gives p95, child CPU time, peak RSS and a
+per-stage breakdown. These are two machines with warm caches; a different
+log, font, disk or a busy machine can take longer. The release archives use
+the same compiler flags but link musl statically on Linux; they were not
+measured.
+
+Without a PNG, `--text` and `--json` read no font unless the log has an
+image that needs cell metrics. The 4.7 MB `ansi-replay` log as text
+(`--size 100x30 --text`) takes 13.61 / 13.53 ms on the M2 Max, CLI wall
+medians of 40 runs, built from `ad35b1e`; main `a8a95e0` took 18.82 / 18.77
+([text-only pre-scan](docs/performance.md#text-only-runs-one-pre-scan-instead-of-two-2026-10-03-macos-only),
+macOS only).
+
+History. The first 2026-10-03 baseline, built from `22b77e8` before #20,
+#21 and #22 (the report's
+[font-path baseline](docs/performance.md#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)),
+measured the same six rows at 9.27, 5.83, 31.56, 41.91, 20.80 and 12.67 ms
+on the M2 Max and 9.64, 5.63, 38.06, 49.24, 19.69 and 14.85 ms on the Ryzen
+(batch-A CLI wall medians). Its Linux cold-cache run, the
+only one, found that dropping the page cache adds 6.9-8.2 ms to three
+small-font cases. Earlier rounds (2026-10-01, Apple M3, revisions up to
+`c44d83c`) used a different machine, revision and harness, so their numbers
+must not be subtracted from these. The "~20 ms for 2200×1440" quoted in
+older descriptions was a 21 ms mean of 40 hyperfine runs on that M3 at
+`fb714a5`, whose samples were not kept; the report records
 [what is known about it](docs/performance.md#published-claims-and-their-evidence-checked-2026-10-03).
 
 ## Build
