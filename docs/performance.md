@@ -92,7 +92,10 @@ would have to replay the log again after the first image, and its answer
 
 Raw results: [batch A](performance-2026-10-03-prescan-macos-a.json),
 [batch B](performance-2026-10-03-prescan-macos-b.json). Linux was not
-measured.
+measured. These two files predate `output_bytes` and `output_sha256`: their
+`png_bytes` and `png_sha256` are the text file's (`workload.output` is
+`text`); `bench.py` now writes `output_*` for every case and `png_*` only
+for a PNG.
 
 ```sh
 ./build.sh && cp termshot /tmp/ts/branch   # and main a8a95e0 as /tmp/ts/main

@@ -457,7 +457,7 @@ def main():
     p.add_argument('--memory-runs', type=int, default=0, help='separate peak-RSS runs using /usr/bin/time')
     p.add_argument('--cold-runs', type=int, default=0, help='Linux: runs after dropping the page cache (sudo -n)')
     p.add_argument('--cold-case', action='append', help='cases for --cold-runs (default: all selected)')
-    p.add_argument('--verify-identical', action='store_true', help='require byte-identical PNGs across binaries')
+    p.add_argument('--verify-identical', action='store_true', help='require byte-identical outputs (PNG or text) across binaries')
     p.add_argument('--reference', help='binary label for paired speedup estimates')
     p.add_argument('--unchecked', action='append', default=[],
                    help='binary label exempt from the path checks, for one that predates the counters (repeatable)')
@@ -539,7 +539,7 @@ def main():
                     elapsed = round((time.perf_counter_ns() - start) / 1e6, 4)
                     after = resource.getrusage(resource.RUSAGE_CHILDREN)
                     profile = profile_records(result.stderr) if profiled else None
-                    # Every run's PNG, outside the timed interval.
+                    # Every run's output, outside the timed interval.
                     seen[label].add(sha256(out[label]))
                     if run < 0:
                         continue
@@ -590,7 +590,10 @@ def main():
                     'profile_overhead': paired_ratio(profiled_wall[label], plain[label]),
                     'profile': {key: summary([s[key] for s in profiles[label]]) for key in keys},
                     'profile_samples': {key: [s[key] for s in profiles[label]] for key in keys},
-                    'png_bytes': out[label].stat().st_size, 'png_sha256': hashes[label],
+                    # output_* for every case; png_* too for a PNG, as in
+                    # earlier reports (a text case's output is no PNG).
+                    'output_bytes': out[label].stat().st_size, 'output_sha256': hashes[label],
+                    **({} if case.text else {'png_bytes': out[label].stat().st_size, 'png_sha256': hashes[label]}),
                     'peak_rss_bytes': summary(rss[label]) if rss[label] else None,
                     'peak_rss_samples_bytes': rss[label],
                 }
@@ -611,13 +614,13 @@ def main():
                 rng.shuffle(labels)
                 for label in labels:
                     drop_caches()
-                    png = directory / f'{label}-cold.png'
-                    command = case.command(binaries[label], png)
+                    cold_out = directory / f'{label}-cold.{"txt" if case.text else "png"}'
+                    command = case.command(binaries[label], cold_out)
                     start = time.perf_counter_ns()
                     subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                     cold[label].append(round((time.perf_counter_ns() - start) / 1e6, 4))
-                    if sha256(png) != report['cases'][case.name][label]['png_sha256']:
-                        raise RuntimeError(f'{case.name}: a cold run of {label} wrote a different PNG')
+                    if sha256(cold_out) != report['cases'][case.name][label]['output_sha256']:
+                        raise RuntimeError(f'{case.name}: a cold run of {label} wrote a different output')
             report['cold'][case.name] = {label: {'wall_ms': summary(cold[label]), 'wall_samples_ms': cold[label]}
                                          for label in binaries}
             for label in binaries:
