@@ -56,7 +56,7 @@ rev=bd726a6b53957c389722f018dbabb6b093ac90bb
 deflate_rev=a8a95e0bd7b8ba998688554e09680b34a40a8d4e
 geometry_rev=24d71feb5e80a0df5c079a64b1e31b8b2bc7f46b
 images_rev=431ed233a1d24cd8e7e4b471343e5dac70fc3462
-glyphs_rev=533e909ef75e5ff0f603c5dea4e46b1f610a9810
+glyphs_rev=c0b7b02f41da34f687b86b911f743841422db1d7
 
 # Workloads, parsed by the current termshot parser. build.sh leaves the
 # current C in libtermshot_c.a; link it the way test.sh does.
@@ -124,12 +124,13 @@ if [ "$mode" = glyphs ]; then
         # empty-glyph warning included) must be the same bytes. The fonts:
         # the built-in TrueType alone and as a file, with CFF, CFF2 and the
         # marks font as fallback and as primary, the hollow font, which
-        # sends 'A' to the fallback, and the system Noto CJK when there is
-        # one (starship).
+        # sends 'A' to the fallback, CFF2 instances, and the system Noto CJK
+        # when there is one (starship; CJK_FONT names another copy).
         set -- "" "--font $jb --fallback-font $cff" "--font $cff --fallback-font $jb" "--font $vf" \
             "--fallback-font $vf" "--fallback-font $marks" "--font $marks --fallback-font $cff" \
-            "--fallback-font $jb" "--font $hollow --fallback-font $jb" "--font $hollow --fallback-font $vf"
-        system_cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc
+            "--fallback-font $jb" "--font $hollow --fallback-font $jb" "--font $hollow --fallback-font $vf" \
+            "--font $vf#wght=900 --fallback-font $marks" "--font $jb --fallback-font $vf#wght=350.5"
+        system_cjk=${CJK_FONT:-/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc}
         [ -e "$system_cjk" ] && set -- "$@" "--fallback-font $system_cjk#3"
         n=0
         compare() {
