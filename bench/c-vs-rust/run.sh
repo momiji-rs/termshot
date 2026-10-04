@@ -182,7 +182,7 @@ if [ "$mode" = glyphs ]; then
     # foreground_ms all of the text.
     echo "== glyph stages per render, median of $rounds alternating rounds (ms, Rust/C)"
     t() {
-        "$work/glyphs" time "$rounds" "$old" ./termshot "$@"
+        "$work/glyphs" time "$rounds" "$old" ./termshot "$work/out/time.png" "$@"
     }
     t examples/reply-sent.pty --px 48
     t examples/reply-sent.pty --px 128

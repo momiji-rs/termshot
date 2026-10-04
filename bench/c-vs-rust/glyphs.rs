@@ -32,8 +32,9 @@
 //!           wide, blank, missing, a space, box drawing), italic and bold,
 //!           four marks deep, and marks after ignorables and fillers.
 //!
-//!     glyphs time ROUNDS OLD NEW LOG [ARGS...]
-//!         Renders LOG ROUNDS times with each CLI, alternating, under
+//!     glyphs time ROUNDS OLD NEW OUT LOG [ARGS...]
+//!         Renders LOG ROUNDS times with each CLI, alternating, to OUT (a
+//!         path in a directory of the caller's, not a shared one), under
 //!         TERMSHOT_PROFILE, and prints the median glyph_ms, blend_ms and
 //!         foreground_ms of each and their ratio.
 
@@ -337,13 +338,12 @@ fn median(v: &mut [f64]) -> f64 {
     v[v.len() / 2]
 }
 
-fn time(rounds: usize, old: &str, new: &str, log: &str, args: &[String]) {
+fn time(rounds: usize, old: &str, new: &str, out: &str, log: &str, args: &[String]) {
     const KEYS: [&str; 3] = ["glyph_ms", "blend_ms", "foreground_ms"];
     let mut samples = [[Vec::new(), Vec::new(), Vec::new()], [Vec::new(), Vec::new(), Vec::new()]];
-    let out = std::env::temp_dir().join(format!("termshot-glyphs-time-{}.png", std::process::id()));
     for _ in 0..rounds {
         for (side, binary) in [old, new].iter().enumerate() {
-            let run = Command::new(binary).args(args).arg(log).arg(&out).env("TERMSHOT_PROFILE", "1").output().unwrap();
+            let run = Command::new(binary).args(args).arg(log).arg(out).env("TERMSHOT_PROFILE", "1").output().unwrap();
             assert!(run.status.success(), "{binary} {args:?} {log} failed");
             let stderr = String::from_utf8_lossy(&run.stderr);
             for (k, key) in KEYS.iter().enumerate() {
@@ -351,7 +351,7 @@ fn time(rounds: usize, old: &str, new: &str, log: &str, args: &[String]) {
             }
         }
     }
-    let _ = fs::remove_file(&out);
+    let _ = fs::remove_file(out);
     let name = Path::new(log).file_name().unwrap().to_string_lossy();
     let mut line = format!("{:<22} {:<28}", name, args.join(" "));
     for k in 0..KEYS.len() {
@@ -365,9 +365,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("logs") if args.len() >= 3 => logs(Path::new(&args[2]), &args[3..]),
-        Some("time") if args.len() >= 6 => time(args[2].parse().unwrap(), &args[3], &args[4], &args[5], &args[6..]),
+        Some("time") if args.len() >= 7 => {
+            time(args[2].parse().unwrap(), &args[3], &args[4], &args[5], &args[6], &args[7..])
+        }
         _ => {
-            eprintln!("usage: glyphs logs DIR [FONT...] | glyphs time ROUNDS OLD NEW LOG [ARGS...]");
+            eprintln!("usage: glyphs logs DIR [FONT...] | glyphs time ROUNDS OLD NEW OUT LOG [ARGS...]");
             std::process::exit(2);
         }
     }
