@@ -33,10 +33,16 @@ jobs:
       - name: c-vs-rust bench links and agrees (aarch64)
         if: matrix.os == 'ubuntu-24.04-arm'
         run: |
-          revs=$(sed -n 's/^\(deflate_\)\{0,1\}rev=//p' bench/c-vs-rust/run.sh)
+          revs=$(sed -n 's/^[a-z_]*rev=//p' bench/c-vs-rust/run.sh)
           git fetch --no-tags --depth=1 origin $revs
           bench/c-vs-rust/run.sh 1
           bench/c-vs-rust/run.sh deflate 1
+      # Box drawing in Rust paints what draw.c's did, pixel for pixel, at every
+      # cell size, on each host's compiler and libm (#12 step 2a).
+      - name: geometry matches the C it was ported from
+        run: |
+          git fetch --no-tags --depth=1 origin $(sed -n 's/^geometry_rev=//p' bench/c-vs-rust/run.sh)
+          bench/c-vs-rust/run.sh geometry 1
 
   sanitize:
     runs-on: macos-latest
