@@ -25,17 +25,27 @@
 #                                             and cursor fixture through the
 #                                             CLI built at $images_rev and
 #                                             now, then the time of each
+#   bench/c-vs-rust/run.sh glyphs [rounds]    2026-10-04: draw.c's glyph
+#                                             painting as of $glyphs_rev
+#                                             against the shipped
+#                                             src/glyphs.rs (#12 step 2c):
+#                                             every fixture and generated
+#                                             logs (bench/c-vs-rust/glyphs.rs)
+#                                             through the CLI built at
+#                                             $glyphs_rev and now, with each
+#                                             font kind at several sizes,
+#                                             then the glyph stages' time
 #
 # src/deflate.c is gone from the tree since #12 step 1, draw.c's geometry
-# since step 2a and its image layers since step 2b; the comparisons still
-# take them from the old revisions. All
+# since step 2a, its image layers since step 2b and its glyphs since step
+# 2c; the comparisons still take them from the old revisions. All
 # check that the outputs are byte-identical before timing both sides in
 # one process. Default 61 rounds. CC picks the C compiler of the deflate
 # comparison (default cc); RUSTFLAGS adds rustc flags to its Rust side.
 set -eu
 cd "$(dirname "$0")/../.."
 mode=poc
-if [ "${1:-}" = deflate ] || [ "${1:-}" = geometry ] || [ "${1:-}" = images ]; then
+if [ "${1:-}" = deflate ] || [ "${1:-}" = geometry ] || [ "${1:-}" = images ] || [ "${1:-}" = glyphs ]; then
     mode=$1
     shift
 fi
@@ -46,6 +56,7 @@ rev=bd726a6b53957c389722f018dbabb6b093ac90bb
 deflate_rev=a8a95e0bd7b8ba998688554e09680b34a40a8d4e
 geometry_rev=24d71feb5e80a0df5c079a64b1e31b8b2bc7f46b
 images_rev=431ed233a1d24cd8e7e4b471343e5dac70fc3462
+glyphs_rev=533e909ef75e5ff0f603c5dea4e46b1f610a9810
 
 # Workloads, parsed by the current termshot parser. build.sh leaves the
 # current C in libtermshot_c.a; link it the way test.sh does.
@@ -72,6 +83,111 @@ if [ "$mode" = geometry ]; then
     echo "Rust: $(rustc --version), -C opt-level=2"
     echo "host: $(uname -sm), load: $(uptime | sed 's/.*load average[s]*: //')"
     "$work/geometry" third_party/jetbrains-mono/JetBrainsMono-Regular.ttf "$rounds"
+    echo "load after: $(uptime | sed 's/.*load average[s]*: //')"
+    exit 0
+fi
+
+if [ "$mode" = glyphs ]; then
+    cc=${CC:-cc}
+    work=target/c-vs-rust-glyphs
+    rm -rf "$work"
+    mkdir -p "$work/snapshot" "$work/out"
+    # The CLI as of $glyphs_rev, whose draw.c painted the glyphs, and now.
+    # Both use the same parser, geometry, images and compressor, so their
+    # PNGs differ only if the glyph painting does.
+    git archive "$glyphs_rev" build.sh src third_party | tar -x -C "$work/snapshot"
+    (cd "$work/snapshot" && ./build.sh)
+    ./build.sh
+    old="$work/snapshot/termshot"
+    rustc --edition 2021 -C opt-level=2 bench/c-vs-rust/glyphs.rs -o "$work/glyphs"
+    jb=third_party/jetbrains-mono/JetBrainsMono-Regular.ttf
+    cff=third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf
+    vf=third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf
+    marks=third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf
+    "$work/glyphs" logs "$work/logs" "$jb" "$cff" "$vf" "$marks"
+    # tests/glyphs.c writes the built-in font with no outline for 'A' (an
+    # empty glyph, as color bitmap fonts have), running its checks against
+    # the Rust on the way.
+    rust_libs=$(tests/rust_lib.sh "$work/rust.a")
+    $cc -c tests/png_read.c -o "$work/png_read.o" -O2 -I third_party/stb
+    # shellcheck disable=SC2086
+    $cc tests/glyphs.c "$work/png_read.o" "$work/rust.a" -o "$work/glyph-checks" -O2 -Wno-deprecated-declarations \
+        -I src -I third_party/stb -lm $rust_libs
+    hollow="$work/hollow-A.ttf"
+    "$work/glyph-checks" "$jb" "$work/out/glyphs.png" "$hollow" "$work/out/fb-reference.png"
+    echo "== draw.c's glyph painting at $glyphs_rev vs src/glyphs.rs, through the CLI"
+    echo "C: $($cc --version | head -n 1)"
+    echo "Rust: $(rustc --version), -C opt-level=2"
+    echo "host: $(uname -sm), load: $(uptime | sed 's/.*load average[s]*: //')"
+    if [ -z "${TIME_ONLY:-}" ]; then
+        # Each log through both CLIs, whose PNGs, exit codes and stderr (the
+        # empty-glyph warning included) must be the same bytes. The fonts:
+        # the built-in TrueType alone and as a file, with CFF, CFF2 and the
+        # marks font as fallback and as primary, the hollow font, which
+        # sends 'A' to the fallback, and the system Noto CJK when there is
+        # one (starship).
+        set -- "" "--font $jb --fallback-font $cff" "--font $cff --fallback-font $jb" "--font $vf" \
+            "--fallback-font $vf" "--fallback-font $marks" "--font $marks --fallback-font $cff" \
+            "--fallback-font $jb" "--font $hollow --fallback-font $jb" "--font $hollow --fallback-font $vf"
+        system_cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc
+        [ -e "$system_cjk" ] && set -- "$@" "--fallback-font $system_cjk#3"
+        n=0
+        compare() {
+            log=$1
+            shift
+            rm -f "$work/out/c.png" "$work/out/rust.png"
+            set +e
+            "$old" "$@" "$log" "$work/out/c.png" 2>"$work/out/c.err"
+            c=$?
+            ./termshot "$@" "$log" "$work/out/rust.png" 2>"$work/out/rust.err"
+            r=$?
+            set -e
+            if [ "$c" -ne "$r" ] || ! cmp -s "$work/out/c.err" "$work/out/rust.err" ||
+                { [ -e "$work/out/c.png" ] && ! cmp -s "$work/out/c.png" "$work/out/rust.png"; } ||
+                { [ ! -e "$work/out/c.png" ] && [ -e "$work/out/rust.png" ]; }; then
+                echo "FAIL $log $*: exit $c vs $r, or the PNGs or stderr differ" >&2
+                diff "$work/out/c.err" "$work/out/rust.err" >&2 || true
+                exit 1
+            fi
+            n=$((n + 1))
+        }
+        for log in examples/*.pty tests/fixtures/*.pty tests/vt/real/*.log tests/perf/*.pty "$work"/logs/*.pty; do
+            # Every font at a common size and at 46, where FMA would show.
+            for fonts in "$@"; do
+                for px in 24 46; do
+                    # shellcheck disable=SC2086
+                    compare "$log" $fonts --px "$px"
+                done
+            done
+            # Small, fractional and large cells, with TrueType, CFF and marks.
+            for fonts in "" "--font $cff --fallback-font $jb" "--fallback-font $marks"; do
+                for px in '9' '47.5' '128 --size 40x12'; do
+                    # shellcheck disable=SC2086
+                    compare "$log" $fonts --px $px
+                done
+            done
+        done
+        rm -f "$work/out/c.png" "$work/out/rust.png"
+        echo "ok, $n renders byte-identical to the CLI at $glyphs_rev, with the same exit code and stderr"
+    fi
+    # The glyph stages' time in each CLI (TERMSHOT_PROFILE): bench.py's text
+    # cases, glyph_ms finding and rasterizing, blend_ms blending, and
+    # foreground_ms all of the text.
+    echo "== glyph stages per render, median of $rounds alternating rounds (ms, Rust/C)"
+    t() {
+        "$work/glyphs" time "$rounds" "$old" ./termshot "$@"
+    }
+    t examples/reply-sent.pty --px 48
+    t examples/reply-sent.pty --px 128
+    t tests/perf/glyph-overflow.pty --px 24
+    t tests/perf/cjk-dense.pty --px 24 --fallback-font "$cff"
+    t tests/perf/cjk-dense.pty --px 24 --font "$cff"
+    t tests/perf/mixed-script.pty --px 24 --fallback-font "$cff"
+    t tests/fixtures/italic.pty --px 48
+    t "$work/logs/marks.pty" --px 48 --fallback-font "$marks"
+    t "$work/logs/cover-jetbrainsmono-regular-00-italic.pty" --px 48
+    t "$work/logs/cover-notosanscjktc-subset-00-bold.pty" --px 48 --font "$cff"
+    t "$work/logs/cover-notosanscjktc-vf-subset-00-upright.pty" --px 48 --font "$vf"
     echo "load after: $(uptime | sed 's/.*load average[s]*: //')"
     exit 0
 fi
