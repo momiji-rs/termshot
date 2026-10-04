@@ -1,6 +1,10 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[box-drawing-in-Rust round](#box-drawing-in-rust-2026-10-04-629a4d4-12-step-2a)
+(2026-10-04, `629a4d4`, #12 step 2a) moved box drawing, blocks and the stroke
+cache from `src/draw.c` to `src/geometry.rs` and remeasured every case against
+main `24d71fe` on the same two machines. The
 [deflate-in-Rust round](#png-compression-in-rust-2026-10-04-6396b8d-12-step-1)
 (2026-10-04, `6396b8d`, #12 step 1) replaced `src/deflate.c` with
 `src/deflate.rs` and remeasured every case against main `63d6de8` on the same
@@ -29,6 +33,184 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## Box drawing in Rust (2026-10-04, `629a4d4`, #12 step 2a)
+
+#12 step 2a moves box drawing, block elements and the stroke cache (`Stamps`)
+from `src/draw.c` to `src/geometry.rs`; draw.c calls it once per cell. The
+bar was no regression beyond noise on the geometry cases and `reply-sent`.
+Every pixel is the same: `bench/c-vs-rust/run.sh geometry` paints all 160
+characters with draw.c as of `24d71fe` and with the Rust (1,442,400 cells,
+every cell size up to 40x100 and the widest row and tallest column at every
+`--px`, cached and not) and the canvases are byte-identical on both hosts;
+all 48 cases below gave one output per case on both binaries and batches, and
+every PNG `./test.sh` writes (399 files) hashes the same as on main, on both
+hosts.
+
+### Result
+
+| | macOS arm64 (M2 Max) | Linux x86-64 (Ryzen 7 8745HS) |
+| --- | --- | --- |
+| end to end, 48 cases, paired wall speedup (main/branch) | 0.977-1.037 over both batches | 0.823-1.084 over both batches (batch B under a rising load) |
+| slower with confidence in both batches | none | `thai-combining` 0.973 / 0.972 (parsing; see below) |
+| faster with confidence in both batches | none | `geometry-all` 1.010 / 1.010, `cursor-moves` 1.018 / 1.018 |
+| geometry alone (`run.sh geometry 61`), Rust ÷ C | 0.970-1.008 | 0.860-1.039 |
+
+The six cases asked about, wall median / p95 (ms) from batch A, the paired
+speedup (main/branch, above 1 is faster) with its 95% bootstrap interval for
+both batches, and the `geometry` stage (batch A medians):
+
+macOS arm64:
+
+| case | main wall | branch wall | speedup A | speedup B | geometry_ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `rounded-boxes` | 10.81 / 17.11 | 11.00 / 17.71 | 0.983 [0.965, 1.020] | 1.004 [0.983, 1.018] | 1.38 → 1.32 |
+| `rounded-128px` | 31.87 / 32.71 | 31.99 / 32.66 | 0.997 [0.990, 1.004] | 1.002 [0.993, 1.009] | 4.87 → 4.71 |
+| `geometry-all` | 91.54 / 92.99 | 91.71 / 93.49 | 0.998 [0.993, 1.003] | 0.996 [0.993, 1.001] | 3.41 → 3.45 |
+| `box-grid` | 7.54 / 8.06 | 7.55 / 7.89 | 0.998 [0.985, 1.017] | 1.004 [0.987, 1.024] | 0.17 → 0.18 |
+| `block-grid` | 10.61 / 11.30 | 10.63 / 11.31 | 0.999 [0.985, 1.008] | 1.008 [0.988, 1.028] | 0.62 → 0.64 |
+| `reply-sent` | 8.79 / 9.07 | 8.90 / 9.38 | 0.987 [0.976, 0.999] | 1.001 [0.985, 1.026] | 0.06 → 0.06 |
+
+Linux x86-64:
+
+| case | main wall | branch wall | speedup A | speedup B | geometry_ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `rounded-boxes` | 8.18 / 8.79 | 8.23 / 8.94 | 0.993 [0.982, 1.012] | 1.016 [0.987, 1.043] | 1.38 → 1.36 |
+| `rounded-128px` | 23.46 / 24.98 | 23.00 / 24.23 | 1.020 [1.009, 1.041] | 1.016 [0.997, 1.029] | 3.78 → 3.28 |
+| `geometry-all` | 77.43 / 79.87 | 76.70 / 80.32 | 1.010 [1.004, 1.015] | 1.010 [1.003, 1.023] | 3.36 → 3.19 |
+| `box-grid` | 5.96 / 6.37 | 5.93 / 6.44 | 1.005 [0.984, 1.031] | 0.994 [0.964, 1.028] | 0.19 → 0.18 |
+| `block-grid` | 9.51 / 10.10 | 9.58 / 10.34 | 0.993 [0.972, 1.018] | 0.938 [0.863, 1.033] | 1.33 → 1.39 |
+| `reply-sent` | 7.68 / 8.84 | 7.52 / 8.50 | 1.021 [0.986, 1.043] | 1.004 [0.976, 1.029] | 0.07 → 0.07 |
+
+`bench-report.py` on the raw files gives every case. No geometry case is
+slower with confidence in both batches on either host. `block-grid` batch B
+on Linux (0.938, interval [0.863, 1.033]) ran while the load climbed from 3.5
+to 5.6; its geometry stage there went 1.89 → 1.77 ms, faster.
+
+`thai-combining` on Linux is 2.7% slower in both batches, and
+`text-mixed-unicode` 1.4-1.6%; both are parser-bound (`parse` 17.88 → 18.26
+ms in batch A), and `text-mixed-unicode` writes no PNG, so it never reaches
+geometry. The parser's source is unchanged; what changed is the crate it is
+compiled in, which gained a module and so may be split into codegen units
+differently. That is a hypothesis, not a measurement. macOS shows neither
+(1.000 / 0.997 and 1.000 / 1.000).
+
+### Geometry alone
+
+`bench/c-vs-rust/run.sh geometry 61` paints bench.py's geometry screens with
+both after the pixel check, in alternating rounds, median ms per screen:
+
+| screen | Apple clang 21 C | Rust | Rust ÷ C | GCC 16 C | Rust | Rust ÷ C |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `geometry-all` 240x80 | 4.039 | 4.026 | 0.997 | 8.887 | 8.929 | 1.005 |
+| `rounded-boxes` | 0.985 | 0.983 | 0.998 | 1.044 | 1.033 | 0.989 |
+| `rounded-128px` | 5.784 | 5.608 | 0.970 | 5.673 | 5.114 | 0.901 |
+| `box-grid` | 0.196 | 0.192 | 0.980 | 0.191 | 0.164 | 0.860 |
+| `block-grid` | 0.485 | 0.489 | 1.008 | 0.683 | 0.710 | 1.039 |
+
+macOS ran at a load of 6.6 → 6.9, Linux at 2.6 → 2.6. Three changes from a
+straight port were needed to get there; each was measured with this harness
+and kept:
+
+1. **Fills write through a pointer.** A rectangle, a kept stroke's run and a
+   pixel are each checked to be on the canvas once (`clip_rect`, the cell, or
+   `put`'s own test); the row loop then stores 3 bytes a pixel, as the C
+   does. Slice indexing per pixel, or a checked span per row, was up to 25%
+   slower than the C on `box-grid` (short bars) and 7% on `rounded-128px`
+   (short runs).
+2. **The disc test writes the mask through a row slice**, so the inner loop
+   has no bounds check: `rounded-128px` went from 1.07 to 0.97-0.98 of the C
+   on the M2.
+3. **Shades blend 16 pixels at a time** against the colour repeated as often,
+   in u16 (`629a4d4`). A pixel at a time the blend didn't vectorize on x86-64,
+   and `block-grid` was 1.28 of GCC's C; now 1.04, and unchanged on arm64.
+   Filling from a 16-pixel pattern was tried for plain fills too and
+   rejected: on Linux it took `geometry-all` from 1.02 to 1.00-1.01 but
+   `box-grid` from 0.85 to 1.06, and on the M2 `box-grid` and `block-grid`
+   to 1.27 and 1.35.
+
+### What was measured
+
+- **main**: `24d71fe` (main after #73), built with `./build.sh`.
+- **branch**: `629a4d4`, the step 2a commits on top of it. Later commits
+  change documentation and add one check per call outside the paint loops
+  (`f967bfc`: a canvas with a null pixel pointer paints nothing).
+
+Each host built both binaries itself (on Linux from fresh clones of the
+pushed branch and main in a temp dir, since removed). Method as in the
+[step 1 round](#png-compression-in-rust-2026-10-04-6396b8d-12-step-1):
+`bench.py` with every suite (the `draw` workloads included), 5 warmups and
+40 shuffled rounds of plain and profiled runs per case and binary, 5 peak-RSS
+runs, seeds 17 (batch A) and 29 (batch B), `--verify-identical`, and the full
+CJK collection (sha256 `b76b0433…`) on both hosts.
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, macOS 26.6.2 | `starship`, kernel 7.2.5-3-omarchy, glibc 2.44, governor `performance` |
+| compilers | rustc 1.98.1, Apple clang 21.0.0 (clang-2100.3.34.2) | rustc 1.98.1, GCC 16.2.1 20260810 |
+| main / branch sha256 | `a8832d9980d4…` / `627fc0ec3fc0…` | `78c0f613a4c1…` / `6f6bd8017f4d…` |
+| load average (1 min), start → end | A 7.90 → 7.47, B 7.47 → 6.73: a shared desktop, other sessions busy | A 2.54 → 3.47, B 3.47 → 5.63 |
+
+Raw results: macOS [batch A](performance-2026-10-04-geometry-rust-macos-a.json)
+and [batch B](performance-2026-10-04-geometry-rust-macos-b.json); Linux
+[batch A](performance-2026-10-04-geometry-rust-linux-a.json) and
+[batch B](performance-2026-10-04-geometry-rust-linux-b.json). They hold every
+sample; none was discarded.
+
+### Validation
+
+- `./test.sh`, `SANITIZE=1 ./test.sh`, `SANITIZE=1 ./tests/run.sh` and
+  `./test.sh` under rustc 1.70.0 on macOS; `./test.sh`, `./tests/run.sh` and
+  `bench/c-vs-rust/run.sh geometry` on starship (x86-64, GCC 16).
+- `tests/boxes.c` (37,804 checks: each character against its Unicode name,
+  and reused strokes against fresh ones in every cell of a 500-column row and
+  a 200-row column) runs against the Rust, linked as a static library.
+- The unit tests fail each of the cache's allocations in turn (the stroke
+  grid that was `tests/stamps_alloc.c`; every site fails at least once) and
+  shrink its budget from 4 MiB to 0: the pixels never change and the cache
+  never holds more than its budget. `tests/run.sh` does the same through the
+  CLI with a `--cfg termshot_alloc_faults` build: each of 71 failures draws
+  the same PNG.
+- `bench/c-vs-rust/sincos.c`: on macOS, `__sincosf_stret` (what clang makes
+  of draw.c's `sinf` and `cosf` of one angle) differs from `cosf` in the last
+  bit for 2,549,753 of the 2,154,089,679 floats from -1.6 to 4.75, and for
+  2.6% of the angles arcs of 12 to 4,000 steps take. LLVM merged Rust's
+  `f32::sin` and `f32::cos` at some call sites and not others, so
+  `geometry.rs` calls `__sincosf_stret` (macOS) or `sincosf` (Linux) by name.
+  glibc 2.44's `sincosf` agrees with its `sinf` and `cosf` on every one.
+- `scripts/release.sh macos-universal`: both slices render the samples like
+  the host build; the x86_64 slice (Rosetta), main and the branch also render
+  `geometry-all` and a screen of every rounded corner and diagonal alike at
+  13 sizes from px 1 to 255.
+
+### Remaining limits
+
+- One batch pair per host, and the Mac under a load of 6.7-7.9.
+- `block-grid`'s geometry is 4% slower than GCC's C on x86-64 (0.7 ms of a
+  9.5 ms run).
+- The musl release builds were not run locally; `release.yml` builds and
+  checks them on this pull request. musl's `sincosf` was not compared with
+  its `sinf` and `cosf`; the release check renders the samples, which
+  include rounded corners, like the host build.
+
+### Reproduce
+
+```sh
+git worktree add /tmp/termshot-main 24d71fe && (cd /tmp/termshot-main && ./build.sh)
+./build.sh && cp termshot /tmp/termshot-branch
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
+    --describe main=24d71fe --describe branch=629a4d4 \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 \
+    --verify-identical --cjk-font "$cjk" \
+    --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
+done
+python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+bench/c-vs-rust/run.sh geometry 61
+cc -O2 bench/c-vs-rust/sincos.c -lm -o /tmp/sincos && /tmp/sincos
+```
 
 ## PNG compression in Rust (2026-10-04, `6396b8d`, #12 step 1)
 

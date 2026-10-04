@@ -180,6 +180,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   than GCC's build of the C; `reply-sent` renders 5-6% faster on Linux x86-64
   and the same on macOS arm64, where a few glyph-heavy cases are 1-2% slower
   (docs/performance.md).
+- Box drawing, block elements and the cache of rounded corners and diagonals
+  are Rust (`src/geometry.rs`) instead of C, step 2a of #12; draw.c calls it
+  once per cell. Every pixel is the same: `bench/c-vs-rust/run.sh geometry`
+  compares it with the C it replaced at every cell size, and CI runs that on
+  all three hosts. Geometry renders take the same time on macOS arm64 and
+  Linux x86-64 (docs/performance.md). `TERMSHOT_PROFILE`'s `geometry_cache_bytes` is
+  16 KiB higher once a stroke is kept: a cache slot is 32 bytes in Rust, 16
+  in C.
 - After a kitty placement, the cursor moves as kitty moves it
   (`handle_put_command`, `screen_handle_graphics_command`): right by the
   placement's columns and down by its rows less one, so it ends beside the
