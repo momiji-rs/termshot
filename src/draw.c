@@ -877,7 +877,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
 
     /* termshot_fill_rect has no result of its own: a fill that failed says
        so here, before an incomplete image is written. */
-    if (termshot_paint_failed()) return paint_failed(cv, cache, &scratch, "box drawing failed");
+    if (termshot_paint_failed()) return paint_failed(cv, cache, &scratch, "painting a rectangle failed");
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
     GeometryStats stamps;
     termshot_geometry_stats(cv->geometry, &stamps);
