@@ -280,9 +280,10 @@ HarfBuzz is the reference throughout, so each step is done as `hb_font_set_varia
 - **Metrics** ([#77](https://github.com/momiji-rs/termshot/issues/77)): `src/metrics.rs`
   varies each glyph's advance by HVAR, as `hb_font_get_glyph_h_advance` does: hmtx's advance
   plus the delta, the delta summed in f32 in row order and rounded with `roundf`, and the sum
-  at least 0, only when some coordinate is not 0. It varies hhea's ascender, descender and
-  line gap by MVAR's `hasc`, `hdsc` and `hlgp` at any instance chosen, as
-  `hb_font_get_h_extents` does: the ascender made positive and the descender negative. So the
+  at least 0. It varies hhea's ascender, descender and line gap by MVAR's `hasc`, `hdsc` and
+  `hlgp`, as `hb_font_get_h_extents` does: the ascender made positive and the descender
+  negative. Neither table is read when every coordinate is 0, so a setting at the default
+  draws as none does, and a damaged table refuses the font only where it would be used. So the
   cell size, the centering of wide and fallback glyphs, and the baseline follow the instance:
   at wght=900 Noto Sans CJK VF advances `M` 877 units, not 770, and the cell widens with it
   (`test.sh` checks it). An ideograph advances 1000 at every weight. VVAR is not read, as

@@ -206,7 +206,7 @@ fn crafted_mvar() -> Vec<u8> {
 }
 
 /// A damaged HVAR or MVAR is refused with a reason at an instance, at load,
-/// and ignored at the default instance, where neither is read.
+/// and ignored at the default instance, chosen or not, where neither is read.
 #[test]
 fn damaged_metrics_tables_are_refused_at_an_instance() {
     let one = || store(2, &regions(), &[data(&[0], 0, &[&[1]])]);
@@ -244,6 +244,7 @@ fn damaged_metrics_tables_are_refused_at_an_instance() {
         let got = load(Some("ax0=1")).err().unwrap_or_else(|| panic!("{path} ({tag}: {error}) loaded"));
         assert_eq!(got, format!("{path}: not a usable font: {tag} table: {error}"));
         assert!(load(None).is_ok(), "{path} at its default instance");
+        assert!(load(Some("ax0=0")).is_ok(), "{path} with the default chosen");
     }
 }
 

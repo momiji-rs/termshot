@@ -229,9 +229,11 @@ struct Varied<'a> {
 }
 
 /// Read the HVAR and MVAR of the face at `start` for the instance at
-/// `coords`, as cff::Font::parse_cff2 takes them.
+/// `coords`, as cff::Font::parse_cff2 takes them. Coordinates that are all
+/// 0 are the default instance, which neither table moves, so neither is
+/// read: a setting at the default draws as no setting does.
 fn varied<'a>(d: &'a [u8], start: usize, coords: &[i32]) -> Result<Varied<'a>, String> {
-    if coords.is_empty() {
+    if coords.iter().all(|&c| c == 0) {
         return Ok(Varied { advances: None, vertical: None });
     }
     let advances = match table(d, start, b"HVAR")? {
@@ -245,9 +247,6 @@ fn varied<'a>(d: &'a [u8], start: usize, coords: &[i32]) -> Result<Varied<'a>, S
         ),
         None => None,
     };
-    // HarfBuzz varies advances only away from the default, and MVAR at any
-    // instance chosen.
-    let advances = advances.filter(|_| coords.iter().any(|&c| c != 0));
     Ok(Varied { advances, vertical })
 }
 
