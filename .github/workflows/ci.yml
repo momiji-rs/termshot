@@ -27,15 +27,16 @@ jobs:
         with:
           name: renders-${{ matrix.os }}
           path: target/test/
-      # Link-and-run check for the C vs Rust POC on the host where the old
-      # -C link-arg order broke (#30): 1 round, no timing kept. The script
-      # archives an old commit, so fetch just that one into the shallow clone.
+      # Link-and-run check for the C vs Rust comparisons on the host where the
+      # old -C link-arg order broke (#30): 1 round, no timing kept. The script
+      # archives older commits, so fetch just those into the shallow clone.
       - name: c-vs-rust bench links and agrees (aarch64)
         if: matrix.os == 'ubuntu-24.04-arm'
         run: |
-          rev=$(sed -n 's/^rev=//p' bench/c-vs-rust/run.sh)
-          git fetch --no-tags --depth=1 origin "$rev"
+          revs=$(sed -n 's/^\(deflate_\)\{0,1\}rev=//p' bench/c-vs-rust/run.sh)
+          git fetch --no-tags --depth=1 origin $revs
           bench/c-vs-rust/run.sh 1
+          bench/c-vs-rust/run.sh deflate 1
 
   sanitize:
     runs-on: macos-latest
