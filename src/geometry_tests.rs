@@ -355,6 +355,19 @@ fn fill_rect_clips_to_the_canvas() {
 }
 
 #[test]
+fn a_canvas_without_pixels_is_left_alone() {
+    let g = termshot_geometry_new(1);
+    for (w, h) in [(30, 40), (0, 40), (30, 0), (-5, 40)] {
+        let cv = Canvas { px: ptr::null_mut(), filtered: ptr::null_mut(), w, h, stride: 90, geometry: g };
+        for cp in [0x2500, 0x256D, 0x2573, 0x2588, 0x2592] {
+            assert_eq!(unsafe { termshot_paint_geometry(&cv, 0, 0, 10, 20, cp, 0, 1, 2, 3) }, 1);
+        }
+        unsafe { termshot_fill_rect(&cv, 0, 0, 30, 40, 1, 2, 3) };
+    }
+    unsafe { termshot_geometry_free(g) };
+}
+
+#[test]
 fn stats_without_a_cache_are_zero() {
     let mut s = GeometryStats { hits: 1, misses: 2, uncached: 3, bytes: 4, peak: 5 };
     unsafe { termshot_geometry_stats(ptr::null(), &mut s) };

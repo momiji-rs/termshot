@@ -220,13 +220,13 @@ impl<'a> Pixels<'a> {
     /// # Safety
     /// As termshot_paint_geometry says of `cv`.
     unsafe fn of(cv: &'a Canvas) -> Pixels<'a> {
-        let px: &mut [u8] = if cv.px.is_null() || cv.w <= 0 || cv.h <= 0 {
-            &mut []
-        } else {
-            // The last row ends with its last pixel: filtered has no byte past it.
-            std::slice::from_raw_parts_mut(cv.px, (cv.h as usize - 1) * cv.stride + cv.w as usize * BPP)
-        };
-        Pixels { px, w: cv.w.max(0), h: cv.h.max(0), stride: cv.stride, clip: None }
+        if cv.px.is_null() || cv.w <= 0 || cv.h <= 0 {
+            // Nothing is on such a canvas, so nothing is painted.
+            return Pixels { px: &mut [], w: 0, h: 0, stride: 0, clip: None };
+        }
+        // The last row ends with its last pixel: filtered has no byte past it.
+        let px = std::slice::from_raw_parts_mut(cv.px, (cv.h as usize - 1) * cv.stride + cv.w as usize * BPP);
+        Pixels { px, w: cv.w, h: cv.h, stride: cv.stride, clip: None }
     }
 
     /// Whether [x0, x1) of row y is on the canvas.
