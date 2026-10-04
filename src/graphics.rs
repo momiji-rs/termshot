@@ -130,6 +130,7 @@ pub struct Placement {
 }
 
 /// Borrowed only for the duration of draw_png_images; pixels remain Rust-owned.
+/// As ImageView in src/draw.c, which asserts the same size.
 #[repr(C)]
 pub struct ImageView {
     pixels: *const u8,
@@ -153,6 +154,10 @@ pub struct ImageView {
     /// from 0 over both.
     z: i32,
 }
+
+// 104 bytes on the 64-bit targets termshot supports: a pointer, two u32, eight
+// i64, five 32-bit fields and 4 bytes of tail padding. Checked in src/draw.c too.
+const _: () = assert!(std::mem::size_of::<ImageView>() == 104);
 
 /// A visible vertical part of a placement. `y` is the translated origin of
 /// the full source image, preserving sampling after a partial-region scroll.
