@@ -379,13 +379,14 @@ struct Store {
 
 /// Read the CFF2 variation store at `at`, for the instance at `coords`
 /// (normalized, in F2Dot14 units; none for the default instance, whose
-/// deltas are dropped). Only the region list and the region indexes are
+/// deltas are dropped). `fvar_axes` is the count of fvar's axes when an
+/// instance was chosen, which the region list must have, or 0. Only the region list and the region indexes are
 /// used, so the rest of the store is only checked to lie inside it. Sizes
 /// are worked out in u64, which the 16- and 32-bit fields can't overflow,
 /// and each ItemVariationData is checked once however many offsets name it,
 /// and each region evaluated once, so reading a store costs at most its
 /// size.
-fn read_store(cff: &[u8], at: usize, coords: &[i32]) -> Result<Store, String> {
+fn read_store(cff: &[u8], at: usize, coords: &[i32], fvar_axes: usize) -> Result<Store, String> {
     let length = u16_at(cff, at)?;
     let store = cff.get(at + 2..at + 2 + length).ok_or("runs past the table")?;
     let fits = |end: u64| end <= store.len() as u64;
@@ -396,6 +397,11 @@ fn read_store(cff: &[u8], at: usize, coords: &[i32]) -> Result<Store, String> {
     let list = u32_at(store, 2)?;
     let count = u16_at(store, 6)?;
     let (axes, regions) = (u16_at(store, list)?, u16_at(store, list + 2)?);
+    // HarfBuzz reads an axis the coordinates lack as 0 and drops one past
+    // the region list's, so a mismatch would draw something else quietly.
+    if fvar_axes != 0 && axes != fvar_axes {
+        return Err(format!("the region list's axis count is {axes} and fvar's {fvar_axes}"));
+    }
     if !fits(list as u64 + 4 + regions as u64 * axes as u64 * 6) {
         return Err("the region list runs past the store".into());
     }
@@ -446,12 +452,13 @@ fn read_store(cff: &[u8], at: usize, coords: &[i32]) -> Result<Store, String> {
 
 /// The scalar of the region whose (start, peak, end) triples are `region`,
 /// at `coords`: the product of each axis's, 0 as soon as one is, in f32 as
-/// HarfBuzz works it out. An axis past `coords` is at 0.
+/// HarfBuzz works it out. read_store has checked that `coords` has an
+/// entry per axis.
 fn region_scalar(region: &[u8], coords: &[i32]) -> f32 {
     let mut v = 1.0f32;
     for (i, axis) in region.chunks_exact(6).enumerate() {
         let at = |k: usize| i16::from_be_bytes([axis[k], axis[k + 1]]) as i32;
-        let factor = axis_scalar(at(0), at(2), at(4), coords.get(i).copied().unwrap_or(0));
+        let factor = axis_scalar(at(0), at(2), at(4), coords[i]);
         if factor == 0.0 {
             return 0.0;
         }
@@ -639,6 +646,7 @@ impl<'a> Font<'a> {
     pub fn parse_cff2(cff: &'a [u8], glyphs: usize, coords: &[i32]) -> Result<Font<'a>, String> {
         // HarfBuzz draws coordinates that are all 0 as the default instance,
         // blending nothing, even where a region would count at 0.
+        let fvar_axes = coords.len();
         let coords = if coords.iter().all(|&c| c == 0) { &[][..] } else { coords };
         let major = *cff.first().ok_or("header truncated")?;
         if major != 2 {
@@ -658,7 +666,7 @@ impl<'a> Font<'a> {
         let [vstore] = ints::<1>(find(&top, 24), 24)?;
         let store = match vstore {
             0 => Store::default(),
-            at => read_store(cff, at, coords).map_err(|reason| format!("vstore: {reason}"))?,
+            at => read_store(cff, at, coords, fvar_axes).map_err(|reason| format!("vstore: {reason}"))?,
         };
         if charstrings == 0 {
             return Err("no CharStrings".into());

@@ -324,6 +324,9 @@ fn vary(font: &mut Font, axes: &str, path: &str) -> Result<(), String> {
         None => Vec::new(),
     };
     font.coords = variations::coords(&all, &maps, &settings).map_err(|reason| format!("{path}: {reason}"))?;
+    // The store is checked against fvar only at an instance, so check it
+    // again now, at load, rather than when drawing.
+    cff_outlines(&font.data, font.start, &font.coords).map_err(|reason| format!("{path}: not a usable font: {reason}"))?;
     font.instance = Some(variations::instance(&all, &settings));
     Ok(())
 }

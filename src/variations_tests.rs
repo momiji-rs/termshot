@@ -279,3 +279,22 @@ fn coordinates_of_0_are_the_default_instance() {
     let font = load_with("peak-0.otf", &data, "ax0=0.5").unwrap();
     assert_eq!((first_x(&font), &font.coords[..]), (16384, &[8192][..]));
 }
+
+/// HarfBuzz reads a region list axis that fvar lacks as 0, and ignores an
+/// fvar axis past the list's; termshot refuses either at an instance, and
+/// draws the default instance, which reads no axes, as before.
+#[test]
+fn the_store_has_the_axes_of_fvar_at_an_instance() {
+    let up = [0, 0x4000, 0x4000];
+    let one = craft::fvar(&[(b"ax0 ", -1.0, 0.0, 1.0)]);
+    let two = craft::fvar(&[(b"ax0 ", -1.0, 0.0, 1.0), (b"ax1 ", -1.0, 0.0, 1.0)]);
+    for (fvar, axes, region, store, fvar_axes) in [(&one, 2, vec![up, up], 2, 1), (&two, 1, vec![up], 1, 2)] {
+        let data = craft::cff2_scalars_with(fvar, axes, &[region]);
+        assert!(font::prepare(data.clone()).is_ok());
+        let err = load_with("axes-differ.otf", &data, "ax0=0.5").err().unwrap();
+        let reason = format!("the region list's axis count is {store} and fvar's {fvar_axes}");
+        assert!(err.contains(&reason), "{err}");
+        // A setting at the default is still checked.
+        assert!(load_with("axes-differ.otf", &data, "ax0=0").is_err());
+    }
+}

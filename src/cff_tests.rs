@@ -348,9 +348,6 @@ fn region_scalars_are_harfbuzz_s() {
         ("the negative direction", 1, vec![vec![[-ONE, -ONE, 0]]], vec![-8192], 8192),
         ("two axes multiply", 2, vec![vec![up, up]], vec![8192, 4096], 2048),
         ("one axis at 0", 2, vec![vec![up, up]], vec![8192, 0], 0),
-        ("an axis past the coordinates is at 0", 2, vec![vec![up, up]], vec![8192], 0),
-        ("an ignored axis past them", 2, vec![vec![up, [0, 0, 0]]], vec![8192], 8192),
-        ("a coordinate past the axes is unused", 1, vec![vec![up]], vec![8192, 16384], 8192),
         ("two regions add", 1, vec![vec![up], vec![[0, 8192, ONE]]], vec![12288], 20480),
     ] {
         let font = craft::cff2_scalars(axes, &regions);
@@ -1112,13 +1109,17 @@ pub(crate) mod craft {
     /// -1 to 1 by default 0, so that a setting is its normalized coordinate
     /// and hb-vector can draw it at any.
     pub fn cff2_scalars(axes: u16, regions: &[Region]) -> Vec<u8> {
+        let tags: Vec<[u8; 4]> = (0..axes).map(|i| [b'a', b'x', b'0' + i as u8, b' ']).collect();
+        cff2_scalars_with(&fvar(&tags.iter().map(|tag| (tag, -1.0, 0.0, 1.0)).collect::<Vec<_>>()), axes, regions)
+    }
+
+    /// cff2_scalars, with the given fvar, whose axes need not be the store's.
+    pub fn cff2_scalars_with(fvar: &[u8], axes: u16, regions: &[Region]) -> Vec<u8> {
         let deltas = num(16384).repeat(regions.len());
         let glyph = [num(0), deltas, num(1), vec![BLEND], num(0), vec![RMOVE], sides()].concat();
         let all = (0..regions.len() as u16).collect();
         let vstore = store_full(axes, regions, &[all], &[0]);
-        let tags: Vec<[u8; 4]> = (0..axes).map(|i| [b'a', b'x', b'0' + i as u8, b' ']).collect();
-        let fvar = fvar(&tags.iter().map(|tag| (tag, -1.0, 0.0, 1.0)).collect::<Vec<_>>());
-        sfnt_with(&Cff2 { vstore, ..Cff2::new(vec![square2(), glyph]) }.build(), 2, b"CFF2", &[(b"fvar", &fvar)])
+        sfnt_with(&Cff2 { vstore, ..Cff2::new(vec![square2(), glyph]) }.build(), 2, b"CFF2", &[(b"fvar", fvar)])
     }
 
     /// An fvar of `axes`, each a tag and its minimum, default and maximum.

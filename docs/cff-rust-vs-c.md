@@ -268,7 +268,9 @@ HarfBuzz is the reference throughout, so each step is done as `hb_font_set_varia
 - **What is refused**: fvar is checked as HarfBuzz checks it (version 1, 20-byte axis records,
   instance records of at least 4 × axes + 4 bytes, arrays inside the table). Where HarfBuzz
   would quietly read a bad fvar as no axes, termshot refuses the font, as it does an avar of
-  another version (avar 2 is not read) or of a different axis count. An axis the font lacks
+  another version (avar 2 is not read) or of a different axis count, and a variation store
+  whose region list has another axis count than fvar, at an instance (HarfBuzz reads a
+  missing axis as 0 and drops an extra one). An axis the font lacks
   is refused with the axes it has, where HarfBuzz ignores the setting, and a TrueType or CFF
   face with that reason: `glyf` variations (gvar) are not read.
 - **Metrics stay the default's** ([#77](https://github.com/momiji-rs/termshot/issues/77)):
