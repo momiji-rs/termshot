@@ -1180,6 +1180,8 @@ fn poc_workloads() {
             .collect();
         fs::write(dir.join(format!("{name}.cells")), bytes).unwrap();
         fs::write(dir.join(format!("{name}.meta")), format!("{cols} {rows} {px}\n")).unwrap();
+        // The log too, so bench/c-vs-rust/deflate_inputs.py can render it with the CLI.
+        fs::write(dir.join(format!("{name}.pty")), log).unwrap();
     };
     let reply = fs::read("examples/reply-sent.pty").unwrap();
     dump("1-reply-px48", &reply, 100, 30, 48.0);
