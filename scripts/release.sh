@@ -35,7 +35,9 @@ case $platform in
         CFLAGS='-arch x86_64' TARGET=x86_64-apple-darwin build x86_64
         lipo -create "$work/arm64" "$work/x86_64" -output "$work/termshot"
         strip -x "$work/termshot"
-        lipo "$work/termshot" -verify_arch arm64 x86_64
+        # One arch per check: Xcode 26's lipo takes a second one for an input file.
+        lipo "$work/termshot" -verify_arch arm64
+        lipo "$work/termshot" -verify_arch x86_64
         ;;
     linux-x86_64-musl | linux-aarch64-musl)
         arch=${platform#linux-}

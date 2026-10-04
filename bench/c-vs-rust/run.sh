@@ -9,9 +9,11 @@
 #                                             $deflate_rev against its Rust port
 #                                             (deflate.rs): default, portable-Adler
 #                                             and zeroed-table C, safe and
-#                                             unchecked Rust
+#                                             unchecked Rust, and the shipped
+#                                             src/deflate.rs (#12 step 1)
 #
-# Both check that the outputs are byte-identical before timing both sides in
+# src/deflate.c is gone from the tree since #12 step 1; both comparisons
+# still take it from the old revisions. Both check that the outputs are byte-identical before timing both sides in
 # one process. Default 61 rounds. CC picks the C compiler of the deflate
 # comparison (default cc); RUSTFLAGS adds rustc flags to its Rust side.
 set -eu
