@@ -81,6 +81,8 @@ fn ascii_scroll_batches_match_individual_prints() {
                             s.pen.attrs = BOLD | UNDERLINE | STRIKE;
                             s.pen.dim = true;
                             s.pen.reverse = true;
+                            // As SGR would: printing takes the pen's cell.
+                            s.pen_cell = s.pen.cell();
                             // Keep an image across both scroll margins so the
                             // optimized text path must preserve its outside parts.
                             s.graphics.command(format!("a=T,f=24,s=1,v=1,c={rows},r={rows},C=1;/wAA").as_bytes(),
@@ -95,6 +97,13 @@ fn ascii_scroll_batches_match_individual_prints() {
                                    (reference.row, reference.col, reference.pending, reference.last, reference.last_at));
                         assert_eq!(fast.graphics.placements, reference.graphics.placements,
                                    "cols={cols} rows={rows} wrap={wrap} alternate={alternate} len={len}");
+                        // The run is printed in the pen's style, not the default one.
+                        let want = fast.pen.cell();
+                        let styled = |s: &Screen| s.cells.iter().any(|c| {
+                            c.ch != ' ' as u32 && (fg(c), bg(c), c.attrs & !(WIDE | TAIL)) == (fg(&want), bg(&want), want.attrs)
+                        });
+                        assert_eq!(styled(&fast), len > 0, "cols={cols} rows={rows} wrap={wrap} len={len}");
+                        assert_eq!(styled(&reference), len > 0);
                         fast.combine(0x0301);
                         reference.combine(0x0301);
                         assert_eq!(fast.screen_marks(), reference.screen_marks());
@@ -605,6 +614,27 @@ fn repeated_writes_over_overlapping_sixel_images() {
 fn truncated_sequences_do_not_panic() {
     for s in [&b"\x1b"[..], b"\x1b[", b"\x1b[12;", b"\x1b]0;t", b"\x1bPq", b"\x1b]0;\x1b"] {
         assert_eq!(grid(s).len(), C * R);
+    }
+}
+
+#[test]
+fn printable_runs_end_at_the_first_other_byte() {
+    // Every byte value at every offset of a run long enough for the
+    // eight-byte steps, from every start.
+    let naive = |data: &[u8], mut i: usize| {
+        while i < data.len() && (0x20..0x7f).contains(&data[i]) {
+            i += 1;
+        }
+        i
+    };
+    for at in 0..40 {
+        for byte in 0..=255u8 {
+            let mut data = vec![b'x'; 40];
+            data[at] = byte;
+            for start in 0..data.len() {
+                assert_eq!(printable_end(&data, start), naive(&data, start), "byte {byte:#x} at {at}, from {start}");
+            }
+        }
     }
 }
 
@@ -1298,6 +1328,22 @@ fn widths() {
     for (ch, want) in cases {
         assert_eq!(unicode::width(ch as u32), want, "U+{:04X}", ch as u32);
     }
+}
+
+#[test]
+fn the_width_table_matches_the_width_ranges() {
+    // Every code point, and past the end, as utf8_at never decodes there.
+    for cp in 0..0x11_0100 {
+        assert_eq!(unicode::width(cp), unicode::width_in_ranges(cp), "U+{cp:04X}");
+    }
+}
+
+#[test]
+fn every_composition_passes_the_mark_filter() {
+    for &(base, mark, composed) in crate::unicode_tables::COMPOSE.iter() {
+        assert_eq!(unicode::compose(base, mark), Some(composed), "U+{base:04X} U+{mark:04X}");
+    }
+    assert_eq!(unicode::compose('ก' as u32, 0x0E48), None);
 }
 
 #[test]

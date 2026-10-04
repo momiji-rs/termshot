@@ -84,6 +84,109 @@ def legacy_workloads(directory):
     return cases
 
 
+PARSER_CASES = ('dense-sgr', 'cursor-moves', 'scrolling', 'mixed-unicode', 'thai-combining')
+
+
+def parser_logs():
+    """Long logs for the parser (#21), each about 4-5 MB so parsing is a
+    large part of the run. Deterministic: the same bytes on every host. The
+    logs share one random sequence, so they are made together, in order."""
+    rng = random.Random(21)
+    pick = rng.randrange
+
+    def dense_sgr():
+        # Every character in its own SGR: palette, 256-colour, truecolour in
+        # both separators, attributes on and off, resets.
+        forms = [
+            lambda: f'{30 + pick(8)};{40 + pick(8)}',
+            lambda: f'{90 + pick(8)};{100 + pick(8)}',
+            lambda: f'38;5;{pick(256)};48;5;{pick(256)}',
+            lambda: f'38;2;{pick(256)};{pick(256)};{pick(256)}',
+            lambda: f'48;2;{pick(256)};{pick(256)};{pick(256)}',
+            lambda: f'38:2::{pick(256)}:{pick(256)}:{pick(256)}',
+            lambda: f'1;3;4;{30 + pick(8)}',
+            lambda: '22;23;24;39;49',
+            lambda: f'4:{pick(4)};7',
+            lambda: '0',
+            lambda: '',
+        ]
+        line = lambda: ''.join(f'\x1b[{rng.choice(forms)()}m{chr(pick(33, 127))}' for _ in range(100))
+        return '\r\n'.join(line() for _ in range(3_000)).encode()
+
+    def cursor_moves():
+        # Absolute and relative moves, each followed by a character, with the
+        # C0 moves (CR, BS, HT) in between.
+        def move():
+            k = pick(13)
+            if k < 4:
+                return f'\x1b[{pick(1, 31)};{pick(1, 101)}H'
+            return [f'\x1b[{pick(1, 9)}A', f'\x1b[{pick(1, 9)}B', f'\x1b[{pick(1, 30)}C', f'\x1b[{pick(1, 30)}D',
+                    f'\x1b[{pick(1, 101)}G', f'\x1b[{pick(1, 31)}d', '\r', '\b\b', '\t'][k - 4]
+        return ''.join(move() + chr(pick(33, 127)) for _ in range(700_000)).encode()
+
+    def scrolling():
+        # Lines that scroll the whole screen, then a scroll region with IND,
+        # RI, IL, DL, SU and SD, then the margins reset.
+        parts = []
+        for block in range(2_000):
+            parts += [f'line {block}.{n} ' + 'abcdefghij' * 4 + '\r\n' for n in range(30)]
+            parts.append(f'\x1b[{pick(2, 10)};{pick(15, 30)}r\x1b[{pick(10, 15)};1H')
+            parts += ['scrolled text\x1bD', '\x1bM', '\x1b[2L', '\x1b[3M', '\x1b[2S', '\x1b[T', 'region\n' * 8]
+            parts.append('\x1b[r')
+        return ''.join(parts).encode()
+
+    def mixed_unicode():
+        # ASCII words between Latin-1, Greek, Cyrillic, box drawing, CJK and
+        # a rare emoji, so UTF-8 decoding and the width lookup take turns.
+        words = ['terminal', 'output', 'naïve', 'café', 'Ελληνικά', 'Кириллица', '│', '├──', '漢字', '日本語',
+                 '한국어', '→', '✓', '🙂', '42', 'ß', 'µs']
+        line = lambda: ' '.join(rng.choice(words) for _ in range(14))
+        return '\r\n'.join(line() for _ in range(40_000)).encode()
+
+    def thai_combining():
+        # Thai syllables with above and below vowels and tone marks (kept as
+        # marks: no precomposed form), Latin with a composing acute, and
+        # Hebrew with points.
+        consonants = [chr(c) for c in range(0x0e01, 0x0e2f)]
+        above = ['ั', 'ิ', 'ี', 'ึ', 'ื', '็']
+        tones = ['่', '้', '๊', '๋']
+        below = ['ุ', 'ู']
+
+        def syllable():
+            s = rng.choice(consonants)
+            k = pick(4)
+            if k == 0:
+                s += rng.choice(above) + rng.choice(tones)
+            elif k == 1:
+                s += rng.choice(below) + rng.choice(tones)
+            elif k == 2:
+                s += rng.choice(above)
+            return s
+        words = lambda: ''.join(syllable() for _ in range(pick(2, 6)))
+        line = lambda: ' '.join([words() for _ in range(10)] + ['café', 'שָׁלוֹם'])
+        return '\r\n'.join(line() for _ in range(16_000)).encode()
+
+    return {'dense-sgr': dense_sgr(), 'cursor-moves': cursor_moves(), 'scrolling': scrolling(),
+            'mixed-unicode': mixed_unicode(), 'thai-combining': thai_combining()}
+
+
+def parser_workloads(directory, wanted=None):
+    """The parser matrix (#21), at 24 px. With ansi-replay and ascii-overflow
+    from the legacy suite it covers each kind of input the parser handles.
+    Making the logs takes seconds, so when --case names none of them
+    (wanted), they are not made."""
+    if wanted and not set(wanted) & set(PARSER_CASES):
+        return []
+    cases = []
+    logs = parser_logs()
+    assert tuple(logs) == PARSER_CASES
+    for name, data in logs.items():
+        path = directory / f'{name}.pty'
+        path.write_bytes(data)
+        cases.append(Case(name, path, 24, 100, 30, legacy=True, group='parser'))
+    return cases
+
+
 def font_workloads(cjk):
     """The font-path matrix (#19). checks are (counter, op, value) on the
     profile record, verified on every profiled run of a binary that has it."""
@@ -224,7 +327,7 @@ def main():
     p.add_argument('--warmups', type=int, default=2)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--case', action='append')
-    p.add_argument('--suite', choices=('all', 'legacy', 'fonts'), default='all')
+    p.add_argument('--suite', choices=('all', 'legacy', 'fonts', 'parser'), default='all')
     p.add_argument('--cjk-font', type=Path, default=SYSTEM_CJK if SYSTEM_CJK.exists() else None,
                    help=f'full NotoSansCJK-Regular.ttc for the *-full cases (default: {SYSTEM_CJK} if present)')
     p.add_argument('--memory-runs', type=int, default=0, help='separate peak-RSS runs using /usr/bin/time')
@@ -275,6 +378,8 @@ def main():
             cases += font_workloads(args.cjk_font)
         if args.suite in ('all', 'legacy'):
             cases += legacy_workloads(directory)
+        if args.suite in ('all', 'parser'):
+            cases += parser_workloads(directory, args.case)
         if args.case:
             unknown = set(args.case) - {case.name for case in cases}
             if unknown:

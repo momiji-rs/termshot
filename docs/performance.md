@@ -1,10 +1,14 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[ANSI replay parsing round](#ansi-replay-parsing-2026-10-03-10f1ea1-21)
+(2026-10-03, `10f1ea1`, #21) changed only the parser, the screen model,
+the width and composition lookups and cast detection, and remeasured every
+case against main `76f18ee` on the same two machines. The
 [PNG compression round](#png-compression-adler-32-and-deflate-matching-2026-10-03-3bf2ffc-20)
 (2026-10-03, `3bf2ffc`, #20) changed only `src/deflate.c` and remeasured
-every case on the same two machines; for everything outside PNG compression,
-the [font-path baseline](#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)
+every case on the same two machines; for everything outside parsing and PNG
+compression, the [font-path baseline](#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)
 after it (main `d83c8fd`, Apple M2 Max and AMD Ryzen 7 8745HS) is still the
 reference. The [third optimization round](#historical-third-optimization-round-2026-10-01-c44d83c-apple-m3)
 below them (2026-10-01, `c44d83c`, Apple M3) is history: a different revision,
@@ -15,6 +19,312 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## ANSI replay parsing (2026-10-03, `10f1ea1`, #21)
+
+Issue #21 asked where the parse time of ANSI-heavy logs goes, and to make it
+faster without changing what any log replays to. The starting point is main
+`76f18ee` (#66's combining marks, #65's Sixel erasing and #67's kitty Unicode
+placeholders included). Only the parser, the screen model, the width and
+composition lookups and the cast detection changed; drawing and encoding
+did not, and every PNG is the same.
+
+### Result
+
+| | macOS arm64 (M2 Max, rustc 1.98.1) | Linux x86-64 (Ryzen 7 8745HS, rustc 1.98.1) |
+| --- | --- | --- |
+| `ansi-replay` (4.7 MB) wall median, paired speedup | 21.86 → 18.32 ms, 1.193 | 19.24 → 16.10 ms, 1.206 |
+| `ansi-replay` `parse_ms`, paired speedup | 10.20 → 8.21 ms, 1.249 | 9.12 → 7.15 ms, 1.265 |
+| `ansi-replay` `input_read_ms` | 2.00 → 0.57 ms | 2.03 → 0.99 ms |
+| parser cases, paired wall speedup, default build | 1.03-1.80 | 1.02-1.72 |
+| parser cases, paired `parse_ms` speedup, default / aligned loops | 1.08-5.05 / 1.07-5.38 | 1.06-2.42 / 1.08-2.54 |
+| other 23 cases, paired wall speedup (all four columns) | 0.981-1.034 | 0.943-1.070 |
+
+Speedups are main/branch ratios per interleaved round (above 1 is faster),
+the range over the cases and both batches. "Aligned" compares main and the
+branch both built with `-C llvm-args=-align-loops=64`, the control the
+[font-path baseline](#instrumentation-overhead) asked for after a 10% swing
+of the ASCII loop on Zen 4 with no code change. The default and aligned
+builds' parse speedups agree within 8% on every parser case and batch (the
+largest gaps are `ascii-overflow`'s, 6.5% on macOS and 7.9% on Linux), so
+none of the gains is a loop landing somewhere luckier. Main's ASCII loop is
+still sensitive to it: in a first run of this round against `7892c11`, its
+Linux `ascii-overflow` parse took 1.86 ms in the default build and 1.10 ms
+aligned, while the branch took 0.45 ms in both.
+
+### What was measured
+
+Four binaries per host, built on that host from the same sources (on Linux
+from a fresh clone of the pushed branch):
+
+- **main**: `76f18ee` (the merge of #68), `scripts/build-baseline.py --revision 76f18ee`.
+- **branch**: `10f1ea1`, this round's changes merged with `76f18ee`.
+- **main-al**, **branch-al**: the same, with `RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64'`
+  (build.sh appends it to the rustc command).
+
+`scripts/bench.py` gained a `parser` suite (in `all`): five generated logs
+of 3.5-4.3 MB, the same bytes on every host (the JSON records their hashes):
+
+| case | what each byte is |
+| --- | --- |
+| `dense-sgr` | 3,000 lines of 100 characters, each after its own SGR: palette, 256-colour, truecolour with `;` and `:`, attributes on and off, resets |
+| `cursor-moves` | 700,000 moves (CUP, CUU, CUD, CUF, CUB, CHA, VPA, CR, BS, HT), each followed by a character |
+| `scrolling` | full-screen lines, then a scroll region with IND, RI, IL, DL, SU, SD and bare LFs, 2,000 times |
+| `mixed-unicode` | words of ASCII, Latin-1, Greek, Cyrillic, box drawing, CJK, Hangul and an emoji |
+| `thai-combining` | Thai syllables with above and below vowels and tone marks (kept as marks), `café`, Hebrew with points |
+
+With `ansi-replay` (`reply-sent.pty` × 250) and `ascii-overflow` (4 MB of
+`x`) from the legacy suite they are the seven parser cases. Method as in the
+earlier rounds: 5 warmups, 40 rounds, each running every binary plain and
+with `TERMSHOT_PROFILE=1` in a shuffled order, 5 peak-RSS runs, seeds 17
+(batch A) and 29 (batch B), the full Noto CJK collection (same sha256) on
+both hosts, `--verify-identical`. Every run of a case, on all four binaries,
+both batches and both hosts, wrote one PNG.
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, macOS 26.6.2 | `starship`, Arch Linux, kernel 7.2.5-3-omarchy, glibc 2.44, governor `performance`; outputs on tmpfs |
+| compilers | rustc 1.98.1, Apple clang 21.0.0 | rustc 1.98.1, GCC 16.2.1 |
+| main / branch sha256 | `d3a3c621beb4…` / `0880e7c6af32…`, aligned `e066c9d86c8a…` / `288c57f75c84…` | `308474a7f13f…` / `956b25423881…`, aligned `1a814d8ceb6d…` / `f69e48bf110f…` |
+| load average (1 min) during the batches | 4.4-5.6: a shared desktop, other sessions busy | 1.3-3.1: other sessions active, after a kernel build earlier in the day |
+
+Raw results: macOS [batch A](performance-2026-10-03-parser-macos-a.json) and
+[batch B](performance-2026-10-03-parser-macos-b.json); Linux
+[batch A](performance-2026-10-03-parser-linux-a.json) and
+[batch B](performance-2026-10-03-parser-linux-b.json), every sample of all
+four binaries.
+
+### Where the parse time went
+
+Sampled with `samply` at 4 kHz, 50 `--text` runs per log and binary (main
+`7892c11` and this branch merged with it, `88488d8`, before #67 and #68
+were merged; both built with `-g` at `opt-level=2`; their
+`parse_ms` speedups, 1.12 on `dense-sgr` and 1.25 on `ansi-replay` in 15
+interleaved runs, match the release builds'). A sample counts as parsing
+when its stack holds `replay_sized`; its stage is the innermost inlined
+function (`atos -i`) that names one. Shares of the parse samples, main → branch:
+
+| stage, % of parse samples | ansi | ascii | dense-sgr | cursor-moves | scrolling | mixed-unicode | thai-combining |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| CSI parameters | 41.9 → 42.7 | 0.0 → 0.0 | 52.6 → 48.7 | 32.8 → 33.0 | 0.9 → 1.7 | 0.0 → 0.0 | 0.0 → 0.0 |
+| CSI dispatch | 8.9 → 11.5 | 0.0 → 0.0 | 7.3 → 8.6 | 26.3 → 29.1 | 2.6 → 7.0 | 0.5 → 0.7 | 0.1 → 0.1 |
+| SGR and pen colours | 9.9 → 12.4 | 0.0 → 0.0 | 20.2 → 23.4 | 5.4 → 0.0 | 1.1 → 0.0 | 9.7 → 0.0 | 3.7 → 0.0 |
+| grid writes | 16.0 → 12.2 | 0.8 → 1.1 | 12.1 → 10.3 | 16.6 → 17.7 | 72.5 → 54.1 | 37.5 → 38.9 | 15.0 → 31.8 |
+| scrolling | 0.0 → 0.0 | 0.0 → 0.0 | 0.1 → 0.2 | 0.0 → 0.0 | 2.1 → 1.7 | 0.3 → 0.5 | 0.2 → 0.2 |
+| marks | 0.1 → 0.2 | 0.0 → 0.0 | 0.8 → 0.7 | 0.9 → 0.0 | 0.5 → 0.1 | 0.4 → 1.8 | 21.7 → 21.5 |
+| width lookup | 8.0 → 2.8 | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 | 22.7 → 9.6 | 36.9 → 10.5 |
+| UTF-8 decoding | 3.1 → 3.2 | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 | 10.7 → 16.8 | 10.8 → 16.9 |
+| replay loop and ASCII scan | 11.6 → 13.8 | 96.8 → 84.4 | 6.4 → 7.0 | 16.7 → 18.4 | 17.5 → 24.9 | 16.4 → 26.1 | 10.6 → 17.2 |
+| strings and images | 0.4 → 1.1 | 0.0 → 1.1 | 0.3 → 0.8 | 1.2 → 1.7 | 0.3 → 1.2 | 0.6 → 2.0 | 0.4 → 0.2 |
+| other | 0.2 → 0.1 | 2.4 → 13.3 | 0.3 → 0.5 | 0.1 → 0.1 | 2.5 → 9.2 | 1.2 → 3.6 | 0.6 → 1.7 |
+
+- **CSI parameters** are the largest stage of every escape-heavy log. An
+  ablation on the branch before change 7 below (scratch builds, `parse_ms`
+  medians of 10 interleaved runs, M2 Max) splits them: on 200,000
+  `ESC [ 38;2;100;100;100 m` + character, the whole parse took 7.14 ms,
+  5.70 ms without `Screen::csi` (parameters still parsed) and 2.36 ms with
+  the CSI skipped to its final byte; on `ansi-replay` 9.00, 7.88 and 4.34 ms.
+  So parameters cost about 3.3-3.5 ms there, dispatch and SGR about
+  1.1-1.4 ms (the skipped build also prints in other places, so this is an
+  estimate). The same log with random colours took 8.28 ms against 7.15:
+  mispredicted branches are a small part of it.
+- **Grid writes** (printing, splitting wide characters, erasing) and the
+  **width lookup** dominated the Unicode logs. The **marks** stage
+  (`combine`, the composition search, the `Screen::marks` table) is Thai's
+  second; change 5 below about halved its samples (its share stays, as the
+  whole parse halved too). It is under 2% of every other log.
+- **Scrolling** itself (rotating the row map) is small; what a scroll costs
+  is erasing the row it opens, counted in grid writes.
+- `(outside parse)` in `--text` mode is mostly `graphics::needs_cell_metrics`
+  and `sixel::needs_cell_metrics`; see Remaining limits.
+
+### Retained changes
+
+Each was measured on its own against the state before it: `parse_ms` medians
+of 15 interleaved `--text --json` runs per binary, default and aligned builds
+(ratio of medians for aligned), M2 Max, load 3.3-5.6. Above 1 is faster.
+
+| # | change | commit | default | aligned |
+| --- | --- | --- | --- | --- |
+| 1 | `cast::detect` tests the first byte before finding the first LF | `7624ec9` | `input_read_ms` 2.04 → 0.59 on `ansi-replay` | same |
+| 2 | keep `Pen::cell()` in the screen, updated on SGR, DECRC and RIS | `36c5f1c` | ansi 1.092, mixed 1.122, Thai 1.035, SGR 1.002, ASCII 0.996 | 1.109, 1.121, 1.042, 0.997, 1.005 |
+| 3 | erase a row by doubling `copy_within` instead of `fill` | `381673e` | scrolling 1.419, mixed 1.113, Thai 1.034, SGR 1.024, ansi 1.001 | 1.485, 1.108, 1.015, 1.018, 1.001 |
+| 4 | widths below U+40000 from a two-level table (7.6 KB) | `602a11f` | Thai 1.490, mixed 1.421, ansi 1.059 | 1.502, 1.413, 1.042 |
+| 5 | a mark not among the 72 that compose skips the composition search | `be90ca2` | Thai 1.290, mixed 0.989 | 1.216, 0.976 |
+| 6 | test for a wide-character half inline, split out of line | `09597a9` | cursor 1.088, mixed 1.043, Thai 1.025, ansi 1.000 | 1.099, 1.082, 1.041, 1.019 |
+| 7 | CSI digits, `:` and `;` before the general byte match | `26e5a6e` | SGR-only 1.195, ansi 1.106, SGR 1.074, cursor 1.007 | 1.108, 1.045, 1.037, 1.000 |
+| 8 | printable ASCII runs past 16 bytes scanned eight bytes at a time | `6114db3` | ASCII 4.574, scrolling 1.132, cursor 1.025, mixed 1.010, ansi 1.006 | 4.600, 1.081, 1.042, 1.009, 1.024 |
+
+Change 4 is generated: `tools/unicode-tables.rs` writes `WIDTH_BLOCKS` (a
+byte per 64-code-point block) and `WIDTH_ROWS` (223 distinct rows of 2-bit
+widths) from the same sets as the ranges, which stay for the code points
+above. Change 5's list (`COMPOSING_MARKS`) comes from the same generator.
+Mixed's 0.976 under change 5 does not come from the change: that log has no
+mark that reaches the search. Change 1 also helps `ascii-overflow`, a raw
+log with no LF (1.70 → 0.49 ms).
+
+### Rejected experiments
+
+Same harness, against the state before each.
+
+| experiment | default | aligned | why rejected |
+| --- | --- | --- | --- |
+| an inner loop over a run of CSI digits, inlined (on main) | ansi 0.937, SGR 0.866, cursor 0.908 | 0.914, 0.878, 0.849 | slower everywhere |
+| `#[inline(never)]` on the CSI parser, so its state stays in registers (on main) | ansi 0.983, SGR 0.994, cursor 0.956 | 0.950, 0.977, 0.953 | slower |
+| `utf8_at` with `(low, high)` bytes instead of a `RangeInclusive` (after change 5) | Thai 1.001, mixed 0.999, ansi 0.994 | 1.003, 0.994, 1.003 | no effect |
+| the u32 clamp as a sticky flag beside a wrapping u64, off the digit's dependency chain (after change 6) | SGR-only 1.007, SGR 1.003, cursor 1.008, ansi 0.993 | 0.987, 0.992, 0.998, 0.988 | no effect |
+| change 7 with separate digit and `;` tests | SGR-only 1.170, SGR 1.045, cursor 0.998, ansi 1.083 | 1.108, 1.025, 0.973, 1.057 | change 7's single range test is as fast and does not slow cursor moves |
+| change 7 plus `#[inline(never)]` on the CSI parser | SGR-only 1.264, SGR 1.035, cursor 0.963, ansi 1.064 | 1.265, 1.041, 0.965, 1.079 | cursor moves 3.5% slower: a call per short CSI |
+| the flag clamp on top of change 7 | SGR-only 1.007, SGR 0.986, cursor 1.004, ansi 0.959 | 1.025, 1.016, 1.027, 1.025 | ansi 4% slower in the default build |
+| change 8 from a run's first byte | ASCII 4.416, scrolling 1.233, ansi 0.983, mixed 0.988, cursor 0.957 | 4.500, 1.193, 1.025, 0.984, 0.991 | short runs (most of them) slower |
+| `#[inline]` on `Screen::csi` (after change 8) | SGR 1.001, cursor 1.000, ansi 1.022 | 0.995, 0.998, 0.995 | no effect |
+
+"SGR-only" is 200,000 `ESC [ 38;2;100;100;100 m x`; SGR is `dense-sgr`.
+
+### End-to-end results
+
+Batch A medians / p95 (ms) of plain wall time and of `parse_ms`, and the
+paired speedups (main/branch) of both batches, default and aligned builds.
+
+macOS arm64:
+
+| case | input | main wall | branch wall | wall speedup A / B | aligned A / B | main parse | branch parse | parse speedup A / B | aligned A / B |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ansi-replay` | 4.7 MB | 21.86 / 22.42 | 18.32 / 18.74 | 1.193 / 1.202 | 1.178 / 1.174 | 10.20 / 10.43 | 8.21 / 8.38 | 1.249 / 1.240 | 1.212 / 1.220 |
+| `ascii-overflow` | 4.0 MB | 8.50 / 8.74 | 5.87 / 6.17 | 1.428 / 1.448 | 1.450 / 1.447 | 1.73 / 1.79 | 0.35 / 0.37 | 5.049 / 5.040 | 5.380 / 5.104 |
+| `dense-sgr` | 3.9 MB | 32.69 / 33.85 | 31.62 / 32.42 | 1.037 / 1.031 | 1.034 / 1.029 | 13.29 / 13.66 | 12.20 / 12.46 | 1.089 / 1.082 | 1.071 / 1.073 |
+| `cursor-moves` | 4.0 MB | 30.70 / 31.12 | 27.66 / 28.31 | 1.109 / 1.106 | 1.100 / 1.097 | 17.83 / 18.18 | 16.11 / 16.58 | 1.104 / 1.106 | 1.090 / 1.098 |
+| `scrolling` | 3.5 MB | 15.09 / 15.69 | 9.69 / 10.25 | 1.558 / 1.543 | 1.560 / 1.562 | 8.80 / 9.07 | 3.45 / 3.57 | 2.558 / 2.544 | 2.529 / 2.545 |
+| `mixed-unicode` | 4.3 MB | 47.16 / 48.39 | 29.84 / 31.08 | 1.574 / 1.574 | 1.560 / 1.561 | 39.34 / 40.24 | 22.00 / 22.34 | 1.784 / 1.790 | 1.760 / 1.754 |
+| `thai-combining` | 4.3 MB | 44.28 / 45.36 | 24.73 / 25.81 | 1.788 / 1.804 | 1.792 / 1.789 | 38.13 / 38.70 | 18.49 / 18.81 | 2.066 / 2.074 | 2.069 / 2.069 |
+
+Linux x86-64:
+
+| case | input | main wall | branch wall | wall speedup A / B | aligned A / B | main parse | branch parse | parse speedup A / B | aligned A / B |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ansi-replay` | 4.7 MB | 19.24 / 21.53 | 16.10 / 18.47 | 1.206 / 1.188 | 1.200 / 1.195 | 9.12 / 9.85 | 7.15 / 7.92 | 1.265 / 1.274 | 1.305 / 1.309 |
+| `ascii-overflow` | 4.0 MB | 7.79 / 8.42 | 6.19 / 7.05 | 1.275 / 1.262 | 1.225 / 1.245 | 1.14 / 1.72 | 0.45 / 0.66 | 2.352 / 2.415 | 2.537 / 2.395 |
+| `dense-sgr` | 3.9 MB | 30.92 / 33.03 | 30.49 / 32.37 | 1.020 / 1.024 | 1.026 / 1.032 | 11.70 / 12.34 | 11.08 / 11.94 | 1.055 / 1.058 | 1.081 / 1.100 |
+| `cursor-moves` | 4.0 MB | 29.48 / 31.51 | 27.32 / 29.44 | 1.079 / 1.065 | 1.116 / 1.098 | 16.32 / 17.10 | 15.16 / 15.91 | 1.075 / 1.096 | 1.127 / 1.147 |
+| `scrolling` | 3.5 MB | 13.08 / 14.12 | 9.20 / 9.63 | 1.425 / 1.385 | 1.405 / 1.384 | 6.93 / 7.49 | 3.14 / 3.60 | 2.191 / 2.177 | 2.238 / 2.266 |
+| `mixed-unicode` | 4.3 MB | 42.50 / 45.08 | 27.00 / 28.74 | 1.575 / 1.565 | 1.577 / 1.561 | 35.52 / 37.13 | 20.11 / 21.59 | 1.759 / 1.758 | 1.758 / 1.780 |
+| `thai-combining` | 4.3 MB | 40.07 / 43.34 | 23.32 / 25.41 | 1.718 / 1.724 | 1.698 / 1.760 | 35.01 / 37.78 | 18.17 / 19.46 | 1.939 / 1.911 | 1.927 / 1.926 |
+
+The 95% intervals of the batch A wall speedups are narrow: the widest is
+`ascii-overflow`'s on both hosts, 1.428 [1.423, 1.466] on macOS and 1.275
+[1.255, 1.341] on Linux. One wall gain is within noise: Linux `dense-sgr`,
+1.020 [0.995, 1.040] in batch A (1.024 [1.009, 1.039] in B), whose parse
+gain is 1.055 [1.031, 1.067]; most of that run is drawing 3,000 cells in
+3,000 colours. Every other case, paired wall speedup with its 95% bootstrap
+interval:
+
+| case | macOS default A | macOS default B | macOS aligned A | macOS aligned B | Linux default A | Linux default B | Linux aligned A | Linux aligned B |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `font-builtin` | 0.996 [0.969, 1.020] | 0.999 [0.987, 1.031] | 1.008 [0.984, 1.033] | 1.015 [0.995, 1.029] | 1.043 [0.973, 1.073] | 0.988 [0.953, 1.036] | 0.982 [0.950, 1.010] | 0.991 [0.964, 1.019] |
+| `font-file` | 0.988 [0.977, 1.022] | 1.003 [0.984, 1.021] | 1.025 [0.997, 1.039] | 0.989 [0.968, 1.006] | 1.023 [1.003, 1.044] | 1.013 [0.971, 1.052] | 1.017 [0.995, 1.050] | 1.004 [0.961, 1.066] |
+| `cjk-none` | 1.005 [0.991, 1.031] | 0.990 [0.973, 1.020] | 0.991 [0.967, 1.021] | 1.018 [0.984, 1.035] | 0.958 [0.929, 1.021] | 1.037 [0.989, 1.075] | 0.991 [0.954, 1.057] | 1.070 [1.018, 1.140] |
+| `cjk-subset` | 1.006 [0.986, 1.023] | 0.990 [0.982, 1.019] | 1.022 [1.008, 1.031] | 1.011 [0.999, 1.021] | 1.005 [0.968, 1.027] | 0.998 [0.966, 1.013] | 1.006 [0.970, 1.042] | 0.994 [0.955, 1.043] |
+| `cjk-cff-primary` | 0.994 [0.970, 1.003] | 1.006 [0.989, 1.034] | 1.016 [1.004, 1.024] | 1.001 [0.975, 1.029] | 0.998 [0.969, 1.034] | 1.022 [0.986, 1.066] | 1.003 [0.955, 1.032] | 1.002 [0.971, 1.024] |
+| `mixed-subset` | 0.997 [0.985, 1.004] | 0.988 [0.972, 1.012] | 0.993 [0.987, 1.021] | 1.011 [0.991, 1.038] | 1.006 [0.981, 1.045] | 0.974 [0.929, 1.017] | 0.998 [0.969, 1.033] | 1.021 [0.979, 1.056] |
+| `glyph-overflow` | 0.993 [0.983, 1.002] | 1.005 [0.993, 1.013] | 0.991 [0.986, 0.997] | 1.002 [0.988, 1.014] | 0.985 [0.966, 1.023] | 1.000 [0.966, 1.021] | 0.999 [0.983, 1.014] | 1.009 [0.992, 1.024] |
+| `cjk-full` | 1.005 [0.995, 1.011] | 0.999 [0.982, 1.013] | 1.004 [0.994, 1.024] | 0.991 [0.972, 1.015] | 0.994 [0.970, 1.041] | 1.003 [0.969, 1.035] | 1.014 [1.000, 1.043] | 1.022 [0.988, 1.049] |
+| `mixed-full` | 1.018 [0.991, 1.030] | 0.995 [0.975, 1.008] | 1.005 [0.990, 1.013] | 0.993 [0.965, 1.025] | 1.017 [0.983, 1.042] | 1.003 [0.971, 1.045] | 1.034 [0.983, 1.078] | 1.005 [0.970, 1.043] |
+| `cjk-overflow-full` | 0.997 [0.982, 1.007] | 1.003 [0.985, 1.012] | 1.009 [0.994, 1.015] | 1.000 [0.992, 1.009] | 0.992 [0.971, 1.011] | 1.006 [0.982, 1.026] | 0.993 [0.984, 1.014] | 0.999 [0.977, 1.024] |
+| `reply-sent` | 0.986 [0.979, 1.010] | 1.013 [1.002, 1.030] | 1.007 [0.983, 1.020] | 1.016 [0.982, 1.038] | 0.985 [0.966, 0.998] | 0.994 [0.976, 1.010] | 1.005 [0.964, 1.018] | 0.986 [0.962, 1.024] |
+| `draft-ready` | 1.014 [0.999, 1.028] | 1.014 [0.988, 1.041] | 1.001 [0.982, 1.019] | 1.010 [0.989, 1.037] | 1.008 [0.991, 1.023] | 0.992 [0.959, 1.022] | 1.015 [0.987, 1.036] | 1.001 [0.972, 1.024] |
+| `reply-24px` | 0.981 [0.960, 1.011] | 1.003 [0.989, 1.029] | 1.001 [0.983, 1.022] | 0.985 [0.971, 1.036] | 0.998 [0.973, 1.069] | 1.002 [0.947, 1.032] | 0.992 [0.934, 1.038] | 0.943 [0.899, 1.027] |
+| `reply-128px` | 1.001 [0.985, 1.009] | 0.991 [0.982, 1.004] | 1.002 [0.994, 1.011] | 0.999 [0.990, 1.012] | 0.998 [0.978, 1.012] | 1.007 [0.991, 1.027] | 1.001 [0.983, 1.014] | 1.010 [0.988, 1.029] |
+| `real-shell` | 0.989 [0.981, 1.009] | 1.000 [0.976, 1.016] | 1.013 [1.002, 1.028] | 1.007 [0.985, 1.024] | 0.997 [0.969, 1.019] | 0.982 [0.934, 1.029] | 0.988 [0.963, 1.016] | 1.003 [0.982, 1.026] |
+| `real-less` | 0.996 [0.980, 1.014] | 0.991 [0.975, 1.014] | 1.005 [0.993, 1.012] | 1.006 [0.988, 1.030] | 1.024 [0.969, 1.070] | 0.996 [0.970, 1.025] | 0.993 [0.970, 1.019] | 1.018 [0.974, 1.054] |
+| `real-vi` | 1.005 [0.995, 1.016] | 1.010 [1.002, 1.030] | 1.001 [0.988, 1.010] | 1.000 [0.986, 1.009] | 1.037 [0.983, 1.076] | 0.984 [0.947, 1.030] | 1.019 [0.990, 1.055] | 1.013 [0.993, 1.030] |
+| `blank` | 0.999 [0.989, 1.014] | 1.004 [0.981, 1.015] | 1.000 [0.986, 1.016] | 0.982 [0.972, 1.005] | 1.005 [0.979, 1.053] | 1.009 [0.971, 1.042] | 1.023 [0.995, 1.050] | 0.989 [0.955, 1.041] |
+| `color-grid` | 1.010 [1.003, 1.012] | 1.001 [0.988, 1.018] | 1.003 [0.995, 1.010] | 1.000 [0.991, 1.012] | 1.009 [0.989, 1.024] | 0.978 [0.969, 1.025] | 0.995 [0.971, 1.027] | 0.995 [0.981, 1.024] |
+| `rounded-boxes` | 0.996 [0.991, 1.004] | 0.996 [0.983, 1.008] | 1.034 [1.025, 1.039] | 1.020 [1.005, 1.033] | 1.032 [0.977, 1.051] | 0.992 [0.985, 1.019] | 0.997 [0.978, 1.015] | 1.002 [0.991, 1.034] |
+| `dense` | 1.005 [0.992, 1.015] | 1.001 [0.989, 1.012] | 0.998 [0.983, 1.026] | 1.019 [1.002, 1.035] | 1.017 [0.981, 1.039] | 1.002 [0.985, 1.014] | 1.010 [0.987, 1.051] | 1.036 [1.009, 1.047] |
+| `large` | 0.997 [0.988, 1.004] | 0.996 [0.992, 1.003] | 0.995 [0.986, 1.006] | 0.997 [0.992, 1.001] | 0.999 [0.983, 1.016] | 0.999 [0.983, 1.015] | 1.006 [0.989, 1.016] | 1.001 [0.992, 1.018] |
+| `unicode` | 0.998 [0.987, 1.003] | 1.009 [0.992, 1.025] | 1.005 [0.988, 1.024] | 1.010 [0.987, 1.035] | 1.048 [0.975, 1.083] | 0.958 [0.946, 1.001] | 1.000 [0.961, 1.031] | 1.021 [0.976, 1.046] |
+
+Their parse is 0.01-0.27 ms; what moves them is start-up, drawing and
+encoding, which this round does not touch.
+
+Peak RSS medians move by about 1 MiB at most (macOS −0.9 to +1.0 MiB,
+Linux −0.3 to +1.4 MiB), the page-granular noise of the earlier rounds; the width table adds 7.6 KB of
+read-only data. `TERMSHOT_PROFILE` costs the same as before
+(profiled/plain 0.99-1.08).
+
+### Regressions, and what was checked
+
+- **No parser case is slower** on either host, build or batch.
+- Two other cases have an interval wholly below 1, each in one of its four
+  columns, and neither inside termshot:
+  - macOS `glyph-overflow`, aligned batch A: 0.991 [0.986, 0.997]. Its
+    `total_ms` is lower on the branch (13.427 → 13.325 ms), its parse
+    faster (0.057 → 0.041 ms); the other three columns are 0.993-1.005.
+  - Linux `reply-sent`, default batch A: 0.985 [0.966, 0.998], and 0.994
+    [0.976, 1.010] in batch B. Its `total_ms` is lower on the branch in both
+    (6.653 → 6.596 and 6.783 → 6.631 ms), so the 0.1-0.2 ms is process
+    start-up, loading and exit, which no timer covers; the aligned builds
+    give 1.005 and 0.986.
+- The widest intervals are Linux's 4-5 ms runs (`reply-24px` aligned B 0.943
+  [0.899, 1.027], `cjk-none` default A 0.958 [0.929, 1.021], and the same
+  case's 1.070 [1.018, 1.140] in aligned B), whose parse is 0.05 ms.
+- `blank` parses an empty log; its 0.01 ms `parse_ms` moves by timer noise.
+
+### Validation
+
+- `./test.sh`, `SANITIZE=1 ./test.sh` and `rustup run 1.70 ./test.sh` pass
+  on macOS arm64: the parser unit tests, the `tests/vt/` screens (malformed
+  and truncated escapes, extended colours, margins, autowrap, wide
+  characters, REP, combining marks) and the real sessions against tmux, the
+  grid-size fuzz, and every pixel golden and `--text`/`--json` grid,
+  unchanged. CI runs the same on Linux x86-64 and aarch64.
+- New tests: the width table against the ranges for every code point up to
+  U+110100; every composition through the mark filter; `printable_end`
+  against a byte loop for every byte value at every offset of a 40-byte run.
+- Differential replay (scratch, not committed): random logs over random
+  grid sizes (1-119 columns by 1-39 rows, a quarter with `--lf-newline`, a
+  tenth cut at a random byte), mixing SGR in every form, CSI with private
+  markers, intermediates, huge and zero-padded parameters, C0 controls
+  inside sequences, OSC, DCS, Sixel and kitty strings, wide characters,
+  marks and invalid UTF-8. Main's and the branch's `--text`, `--json`,
+  stderr and exit status are identical for all of them: 23,000 logs against
+  `7892c11`, and 25,000 against `76f18ee`, 5,000 of those with kitty Unicode
+  placeholders and SGR 58. A deliberately broken build (SGR dispatch
+  removed) fails on the second log.
+
+### Remaining limits
+
+- **Text-only runs scan the log twice before parsing it.** With `--text` or
+  `--json` and no PNG, `graphics::needs_cell_metrics` and
+  `sixel::needs_cell_metrics` look for an image that needs font metrics a
+  byte at a time: 5.9 ms on `ansi-replay` against 8.1 ms of parsing (M2
+  Max, `--text`, `10f1ea1`). They live in `graphics.rs` and `sixel.rs`,
+  which other work is changing, so this round leaves them; finding each ESC
+  eight bytes at a time, as change 8 does for printable runs, would remove
+  most of it.
+- CSI parameters are still about 40% of `ansi-replay`'s parse. None of the
+  restructurings above moved them further; what is left is the per-byte
+  classification itself.
+- One batch pair per host; the Mac is a shared desktop.
+
+### Reproduce
+
+```sh
+python3 scripts/build-baseline.py /tmp/ts/main --revision 76f18ee
+RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64' python3 scripts/build-baseline.py /tmp/ts/main-al --revision 76f18ee
+./build.sh && cp termshot /tmp/ts/branch
+RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64' ./build.sh && cp termshot /tmp/ts/branch-al
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # or a copy with the same sha256
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/ts/main/original --binary branch=/tmp/ts/branch \
+    --binary main-al=/tmp/ts/main-al/original --binary branch-al=/tmp/ts/branch-al \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 \
+    --verify-identical --cjk-font "$cjk" \
+    --seed "${batch#*:}" --output "/tmp/ts/${batch%%:*}.json"
+done
+python3 scripts/bench.py ... --suite parser   # the five new logs alone
+```
 
 ## PNG compression: Adler-32 and DEFLATE matching (2026-10-03, `3bf2ffc`, #20)
 
