@@ -313,6 +313,25 @@ fn shades_blend_over_what_is_painted() {
 }
 
 #[test]
+fn shades_are_the_c_blend_at_every_width() {
+    // Spans shorter and longer than a pattern block, over every byte value.
+    let mut rng = Rng(77);
+    for w in 1..=40 {
+        for k in 1..=3 {
+            let mut grid = Grid::new(w, 3, ptr::null_mut());
+            grid.px.iter_mut().for_each(|b| *b = rng.next() as u8);
+            let before = grid.px.clone();
+            let c = [rng.next() as u8, rng.next() as u8, rng.next() as u8];
+            assert_eq!(grid.paint(0, 0, w, 3, 0x2590 + k as u32, false, c), 1);
+            for (i, (&got, &was)) in grid.px.iter().zip(&before).enumerate() {
+                let want = (i32::from(c[i % 3]) * k + i32::from(was) * (4 - k) + 2) / 4;
+                assert_eq!(i32::from(got), want, "width {w}, k {k}, byte {i}");
+            }
+        }
+    }
+}
+
+#[test]
 fn fill_rect_clips_to_the_canvas() {
     let mut grid = Grid::new(5, 4, ptr::null_mut());
     let cv = grid.canvas();

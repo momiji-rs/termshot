@@ -184,6 +184,19 @@ pub unsafe extern "C" fn termshot_fill_rect(cv: *const Canvas, x0: c_int, y0: c_
 
 type Rgb = [u8; 3];
 
+/// Bytes in 16 pixels: shades blend that many at a time, against the
+/// colour repeated as often, so the blend vectorizes on x86-64 too (a pixel
+/// at a time, shaded blocks were 28% slower than GCC's C there).
+const PATTERN: usize = 16 * BPP;
+
+fn pixels_of(c: Rgb) -> [u8; PATTERN] {
+    let mut pattern = [0; PATTERN];
+    for p in pattern.chunks_exact_mut(BPP) {
+        p.copy_from_slice(&c);
+    }
+    pattern
+}
+
 #[derive(Clone, Copy)]
 struct Rect {
     x0: i32,
@@ -289,10 +302,21 @@ impl<'a> Pixels<'a> {
     /// cell's background unless an image under the text shows there.
     fn shade_rect(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, k: i32, c: Rgb) {
         let Some(r) = self.clip_rect(x0, y0, x1, y1) else { return };
+        // (s * k + d * (4 - k) + 2) / 4, as the C's int arithmetic, which is
+        // never negative here, so u16 and a shift give the same.
+        let (k, j) = (k as u16, (4 - k) as u16);
+        let blend = |d: &mut u8, s: u8| *d = ((u16::from(s) * k + u16::from(*d) * j + 2) >> 2) as u8;
+        let pattern = pixels_of(c);
         for y in r.y0..r.y1 {
-            for p in self.span(r.x0, r.x1, y).chunks_exact_mut(BPP) {
+            let mut blocks = self.span(r.x0, r.x1, y).chunks_exact_mut(PATTERN);
+            for block in &mut blocks {
+                for (d, &s) in block.iter_mut().zip(&pattern) {
+                    blend(d, s);
+                }
+            }
+            for p in blocks.into_remainder().chunks_exact_mut(BPP) {
                 for (d, &s) in p.iter_mut().zip(&c) {
-                    *d = ((i32::from(s) * k + i32::from(*d) * (4 - k) + 2) / 4) as u8;
+                    blend(d, s);
                 }
             }
         }
