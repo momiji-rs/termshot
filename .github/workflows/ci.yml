@@ -43,6 +43,12 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin $(sed -n 's/^geometry_rev=//p' bench/c-vs-rust/run.sh)
           bench/c-vs-rust/run.sh geometry 1
+      # The image layers and the backdrop in Rust paint what draw.c's did, on
+      # random scenes and through the CLI, on each host (#12 step 2b).
+      - name: image layers match the C they were ported from
+        run: |
+          git fetch --no-tags --depth=1 origin $(sed -n 's/^images_rev=//p' bench/c-vs-rust/run.sh)
+          bench/c-vs-rust/run.sh images 1
 
   sanitize:
     runs-on: macos-latest

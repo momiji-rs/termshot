@@ -6,6 +6,8 @@
 
 use std::rc::Rc;
 
+pub use crate::composite::ImageView;
+
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 /// How much larger than its decoded size a compressed RGB or RGBA payload may
 /// be, as kitty allows: room for the zlib framing of data that won't shrink.
@@ -132,36 +134,6 @@ pub struct Placement {
     virtual_root: Option<(u64, i64, i64)>,
 }
 
-/// Borrowed only for the duration of draw_png_images; pixels remain Rust-owned.
-/// As ImageView in src/draw.c, which asserts the same size.
-#[repr(C)]
-pub struct ImageView {
-    pixels: *const u8,
-    width: u32,
-    height: u32,
-    x: i64,
-    y: i64,
-    w: i64,
-    h: i64,
-    clip_top: i64,
-    clip_bottom: i64,
-    clip_left: i64,
-    clip_right: i64,
-    /// The source rectangle sampled, inside width x height; never empty.
-    src_x: u32,
-    src_y: u32,
-    src_w: u32,
-    src_h: u32,
-    /// Below INT32_MIN / 2 the image is drawn under non-default cell
-    /// backgrounds, below 0 over every background but under the text, and
-    /// from 0 over both.
-    z: i32,
-}
-
-// 104 bytes on the 64-bit targets termshot supports: a pointer, two u32, eight
-// i64, five 32-bit fields and 4 bytes of tail padding. Checked in src/draw.c too.
-const _: () = assert!(std::mem::size_of::<ImageView>() == 104);
-
 /// A visible vertical part of a placement. `y` is the translated origin of
 /// the full source image, preserving sampling after a partial-region scroll.
 /// Scrolling never splits a placement into independently moving parts.
@@ -204,32 +176,6 @@ impl Placement {
             src_h: self.src[3],
             z: self.z,
         })
-    }
-}
-
-impl ImageView {
-    /// A rectangle of one colour: the opaque pixel, stretched over it, in the
-    /// layer over the text, where the views are drawn in their order. The
-    /// pixel is borrowed; it must outlive the view.
-    pub fn solid(pixel: &[u8; 4], x: i64, y: i64, w: i64, h: i64) -> ImageView {
-        ImageView {
-            pixels: pixel.as_ptr(),
-            width: 1,
-            height: 1,
-            x,
-            y,
-            w,
-            h,
-            clip_top: y,
-            clip_bottom: y + h,
-            clip_left: x,
-            clip_right: x + w,
-            src_x: 0,
-            src_y: 0,
-            src_w: 1,
-            src_h: 1,
-            z: i32::MAX,
-        }
     }
 }
 

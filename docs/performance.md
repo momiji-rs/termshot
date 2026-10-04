@@ -1,6 +1,10 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[image-layers-in-Rust round](#image-layers-in-rust-2026-10-04-82c3f3d-12-step-2b)
+(2026-10-04, `82c3f3d`, #12 step 2b) moved image compositing and the
+backdrop under the text from `src/draw.c` to `src/composite.rs` and
+remeasured every case against main `431ed23` on the same two machines. The
 [box-drawing-in-Rust round](#box-drawing-in-rust-2026-10-04-629a4d4-12-step-2a)
 (2026-10-04, `629a4d4`, #12 step 2a) moved box drawing, blocks and the stroke
 cache from `src/draw.c` to `src/geometry.rs` and remeasured every case against
@@ -33,6 +37,182 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## Image layers in Rust (2026-10-04, `82c3f3d`, #12 step 2b)
+
+#12 step 2b moves image compositing (`paint_image_rows`: layers, crops,
+clips, the mask of default backgrounds, the blend) and the backdrop under
+the text (`backdrop_through`: the cell backgrounds and the two lower layers,
+by rows of cells) from `src/draw.c` to `src/composite.rs`; draw.c calls it
+per backdrop row or per layer. The bar was no regression beyond noise. Every
+pixel is the same: `bench/c-vs-rust/run.sh images` paints 20,005 scenes
+(386 million pixels) with draw.c as of `431ed23` and with the Rust, byte for
+byte, and renders 132 fixture PNGs with both CLIs, the same bytes, on both
+hosts; all 48 cases below gave one output per case on both binaries and
+batches; and every PNG `./test.sh` writes (399 files) hashes the same as on
+main, on both hosts.
+
+### Result
+
+| | macOS arm64 (M2 Max) | Linux x86-64 (Ryzen 7 8745HS) |
+| --- | --- | --- |
+| end to end, 48 cases, paired wall speedup (main/branch) | 0.979-1.021 over both batches | 0.960-1.050 over both batches (batch A under a falling load of 23 → 7) |
+| slower with confidence in both batches | none | none |
+| faster with confidence in both batches | `image-below` 1.019 / 1.018 | `image-below` 1.048 / 1.027, `image-under` 1.040 / 1.022, `image-over` 1.037 / 1.039, `large` 1.010 / 1.019, `geometry-all` 1.009 / 1.011, `rounded-128px` 1.017 / 1.023 |
+| image layers alone (`run.sh images 61`), Rust ÷ C | 0.738-0.970 | 0.680-0.985 |
+
+The cases asked about, wall median / p95 (ms) from batch A, the paired
+speedup (main/branch, above 1 is faster) with its 95% bootstrap interval for
+both batches, and the `background` stage (the backdrop: backgrounds and the
+images under the text) and `foreground` stage (glyphs, geometry and the
+images over the text), batch A medians:
+
+macOS arm64:
+
+| case | main wall | branch wall | speedup A | speedup B | background_ms | foreground_ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `image-below` | 22.11 / 22.84 | 21.73 / 22.62 | 1.019 [1.010, 1.029] | 1.018 [1.012, 1.022] | 2.37 → 1.89 | 1.60 → 1.63 |
+| `image-under` | 25.20 / 26.08 | 25.14 / 25.97 | 0.998 [0.990, 1.008] | 1.000 [0.993, 1.006] | 2.48 → 2.40 | 1.56 → 1.64 |
+| `image-over` | 20.18 / 20.95 | 20.12 / 21.06 | 1.004 [0.988, 1.008] | 1.006 [0.998, 1.015] | 0.89 → 0.90 | 3.17 → 3.12 |
+| `large` | 37.10 / 38.15 | 37.00 / 37.93 | 1.001 [0.995, 1.006] | 0.998 [0.986, 1.007] | 5.40 → 5.45 | 5.16 → 5.34 |
+| `large-color` | 147.05 / 153.38 | 147.28 / 151.92 | 0.998 [0.992, 1.006] | 1.002 [0.996, 1.004] | 5.53 → 5.55 | 8.69 → 9.00 |
+| `reply-128px` | 28.61 / 29.09 | 28.64 / 29.58 | 0.998 [0.985, 1.005] | 1.001 [0.986, 1.008] | 5.76 → 5.65 | 1.97 → 2.05 |
+| `geometry-all` | 89.48 / 90.23 | 89.36 / 90.00 | 1.002 [0.998, 1.005] | 1.004 [0.999, 1.007] | 5.56 → 5.51 | 3.85 → 3.86 |
+| `reply-sent` | 8.79 / 9.31 | 8.76 / 9.36 | 0.998 [0.982, 1.010] | 0.997 [0.980, 1.004] | 0.91 → 0.90 | 0.60 → 0.62 |
+
+Linux x86-64:
+
+| case | main wall | branch wall | speedup A | speedup B | background_ms | foreground_ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `image-below` | 20.49 / 21.47 | 19.59 / 20.91 | 1.048 [1.026, 1.061] | 1.027 [1.012, 1.051] | 2.45 → 1.90 | 2.11 → 2.03 |
+| `image-under` | 23.08 / 24.25 | 22.20 / 23.29 | 1.040 [1.014, 1.053] | 1.022 [1.010, 1.036] | 2.79 → 2.21 | 2.15 → 2.06 |
+| `image-over` | 18.48 / 19.51 | 17.81 / 19.05 | 1.037 [1.026, 1.050] | 1.039 [1.024, 1.055] | 0.77 → 0.78 | 4.08 → 3.38 |
+| `large` | 32.28 / 34.04 | 31.97 / 33.39 | 1.010 [1.003, 1.024] | 1.019 [1.006, 1.028] | 3.67 → 3.69 | 6.26 → 6.36 |
+| `large-color` | 132.92 / 140.06 | 131.64 / 140.92 | 1.004 [0.999, 1.011] | 1.008 [1.003, 1.015] | 3.87 → 3.90 | 11.10 → 11.19 |
+| `reply-128px` | 26.44 / 39.27 | 25.52 / 38.25 | 0.999 [0.993, 1.018] | 1.015 [0.996, 1.022] | 4.57 → 4.58 | 2.20 → 2.25 |
+| `geometry-all` | 78.64 / 104.48 | 77.79 / 94.30 | 1.009 [1.004, 1.017] | 1.011 [1.001, 1.016] | 3.79 → 3.81 | 3.76 → 3.77 |
+| `reply-sent` | 7.16 / 7.80 | 7.06 / 7.84 | 1.016 [0.990, 1.035] | 0.988 [0.970, 1.004] | 0.78 → 0.77 | 0.69 → 0.69 |
+
+`bench-report.py` on the raw files gives every case. The images are where
+the time moved: on Linux the backdrop of `image-below` and `image-under`
+went 2.45 → 1.90 and 2.79 → 2.21 ms, and `image-over`'s foreground 4.08 →
+3.38 ms. No case is slower with confidence in both batches on either host.
+On Linux, `unicode` was 0.960 [0.932, 0.982] in batch A, at a load of 20
+and falling, and 0.996 [0.967, 1.014] in batch B; it is parser-bound.
+
+On the M2, `foreground_ms` of `large` and `large-color` is 3-4% higher in
+both batches (5.16 → 5.34, 8.69 → 9.00 ms) with no wall difference (1.001 /
+0.998, 0.998 / 1.002). It is their glyph `blend_ms` (3.87 → 4.04, 6.55 →
+6.87), draw.c's `blend`, which this branch doesn't change. 30 alternating
+profiled runs of `large-color` gave the same (6.55 → 6.82 ms); built with
+`CFLAGS=-falign-loops=64`, main and the branch read 6.88 and 6.82 ms. So
+the difference is the alignment of that C loop, which moving the image code
+out of draw.c shifted, not the Rust; step 2c moves `blend` to Rust.
+
+### Image layers alone
+
+`bench/c-vs-rust/run.sh images 61` paints the backdrop (a row of cells at a
+time, as draw_png calls it, or whole as it decides) and the images over the
+text of bench.py's image screens with both, after the pixel check, in
+alternating rounds, median ms per screen (cells 22x48, `--px 48`):
+
+| screen | Apple clang 21 C | Rust | Rust ÷ C | GCC 16 C | Rust | Rust ÷ C |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `image-below` 100x30, whole | 2.335 | 1.724 | 0.738 | 2.432 | 1.654 | 0.680 |
+| `image-under` 100x30, whole | 2.438 | 2.328 | 0.955 | 2.812 | 2.126 | 0.756 |
+| `image-over` 100x30, whole | 2.431 | 2.358 | 0.970 | 2.808 | 2.128 | 0.758 |
+| `large-below` 240x80, rows | 3.722 | 3.068 | 0.824 | 4.896 | 4.100 | 0.837 |
+| `large-none` 240x80, rows, no image | 1.530 | 1.438 | 0.940 | 2.578 | 2.540 | 0.985 |
+
+macOS ran at a load of 3.2, Linux at 1.6. Two differences from a straight
+port, not measured apart:
+
+1. **The sampler checks once and writes through pointers.** A row of the
+   crop and a row of the canvas are sliced (checked) once per row, and the
+   last column's source pixel once per run; the pixel loop then reads and
+   writes through pointers, as the C does. Step 2a found a check per pixel
+   cost up to 25% on short spans.
+2. **The mask goes a cell at a time.** Below the backgrounds the C tested
+   each pixel's cell; the Rust paints a run per cell and skips a run over an
+   opaque one, recomputing the source column at the next run.
+
+The cell backgrounds' first scanline is filled inside Rust now, not through
+`termshot_fill_rect` once per cell; with no image (`large-none`) that is
+0.94-0.99 of the C.
+
+### What was measured
+
+- **main**: `431ed23` (main after #75), built with `./build.sh`.
+- **branch**: `82c3f3d`, the step 2b commits on top of it. Later commits
+  change documentation and add one check per image outside the paint loops
+  (`4fd0d28`: a crop must lie inside its image).
+
+Method as in the
+[step 2a round](#box-drawing-in-rust-2026-10-04-629a4d4-12-step-2a):
+`bench.py` with every suite (the `draw` workloads included), 5 warmups and
+40 shuffled rounds of plain and profiled runs per case and binary, 5 peak-RSS
+runs, seeds 17 (batch A) and 29 (batch B), `--verify-identical`, and the full
+CJK collection (sha256 `b76b0433…`) on both hosts. On Linux both binaries
+were built from fresh clones of the pushed branch and of main in a temp dir,
+since removed.
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, macOS 26.6.2 | `starship`, kernel 7.2.5-3-omarchy, glibc 2.44, governor `performance` |
+| compilers | rustc 1.98.1, Apple clang 21.0.0 (clang-2100.3.34.2) | rustc 1.98.1, GCC 16.2.1 20260810 |
+| main / branch sha256 | `56398602405a…` / `16f1125b5205…` | `ebdef544b2b3…` / `041b9518130b…` |
+| load average (1 min), start → end | A 4.49 → 5.83, B 5.83 → 4.09 | A 22.91 → 7.15, B 7.15 → 2.18: another session was compiling as batch A began |
+
+Raw results: macOS [batch A](performance-2026-10-04-images-rust-macos-a.json)
+and [batch B](performance-2026-10-04-images-rust-macos-b.json); Linux
+[batch A](performance-2026-10-04-images-rust-linux-a.json) and
+[batch B](performance-2026-10-04-images-rust-linux-b.json). They hold every
+sample; none was discarded.
+
+### Validation
+
+- `./test.sh`, `SANITIZE=1 ./test.sh`, `SANITIZE=1 ./tests/run.sh` and
+  `./test.sh` under rustc 1.70.0 on macOS; `./test.sh`, `./tests/run.sh` and
+  `bench/c-vs-rust/run.sh images` on starship (x86-64, GCC 16).
+- `tests/graphics.rs` (its 2.9 million kitty, Sixel, placeholder and
+  relative-placement pixel checks) passes unchanged.
+- The unit tests carry over `tests/draw.c`'s image checks (layers, crops,
+  clips, the mask, rows against whole) and compare the Rust with a per-pixel
+  transcription of the C on 3,000 random views; `tests/draw.c` still runs
+  the backdrop and the layer over the text through draw.c's declarations.
+- Nothing in the image layers allocates, in the C or the Rust, so there is
+  no allocation to fail in turn. The raster they paint is draw.c's:
+  `tests/run.sh` fails it on Linux with `ulimit -v` (exit 2, no PNG or
+  `--text` left). A panic (a crop outside its image) fails the render in
+  each layer with exit 2 and no PNG (`a_failed_image_layer_fails_the_render`).
+- `scripts/release.sh macos-universal`: both slices render the samples like
+  the host build, and the 22 kitty, Sixel and cursor fixtures at three sizes
+  (66 PNGs) like it too, the x86_64 slice under Rosetta.
+
+### Remaining limits
+
+- One batch pair per host; on Linux batch A began under another session's
+  compile.
+- The musl release builds were not run locally; `release.yml` builds and
+  checks them on this pull request.
+
+### Reproduce
+
+```sh
+git worktree add /tmp/termshot-main 431ed23 && (cd /tmp/termshot-main && ./build.sh)
+./build.sh && cp termshot /tmp/termshot-branch
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
+    --describe main=431ed23 --describe branch=82c3f3d \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 \
+    --verify-identical --cjk-font "$cjk" \
+    --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
+done
+python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+bench/c-vs-rust/run.sh images 61
+```
 
 ## Box drawing in Rust (2026-10-04, `629a4d4`, #12 step 2a)
 

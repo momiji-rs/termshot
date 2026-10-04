@@ -3,117 +3,12 @@
 #define BACKDROP_ROW_BYTES 0
 #include "../src/draw.c"
 #include <assert.h>
-static void images(void) {
-    unsigned char pixels[4 * 4] = {255,0,0,255, 0,255,0,128, 0,0,255,0, 255,255,0,255};
-    unsigned char buffer[4 * 13] = {0};
-    Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = 4, .h = 4, .stride = 13};
-    // Negative origins, vertical clipping and partial alpha exercise the actual
-    // painter with guarded scanlines. Source quadrants expand to 2x2 pixels.
-    ImageView image = {.pixels = pixels, .width = 2, .height = 2,
-        .x = -1, .y = -1, .w = 4, .h = 4, .clip_top = 0, .clip_bottom = 2, .clip_left = INT64_MIN, .clip_right = INT64_MAX,
-        .src_w = 2, .src_h = 2};
-    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
-    assert(buffer[1] == 255); // red at (0,0)
-    assert(buffer[5] == 128); // half-alpha green at (1,0)
-    assert(buffer[14] == 0);  // transparent blue at (0,1)
-    assert(buffer[17] == 255 && buffer[18] == 255); // yellow at (1,1)
-    for (int y = 0; y < 4; y++) {
-        assert(buffer[y * 13] == 0); // filter/guard byte
-        for (int c = 0; c < 3; c++) assert(buffer[y * 13 + 10 + c] == 0);
-    }
-    for (int i = 26; i < 52; i++) assert(buffer[i] == 0);
-}
-
-/* Crops, layers and the mask of default backgrounds, on a 4x4 canvas of two
-   2x4 cells: the first in the default background, the second red. */
-static void layered_images(void) {
-    unsigned char pixels[4 * 4] = {255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255};
-    unsigned char buffer[4 * 13];
-    Cell cells[2] = {{.ch = ' ', .br = 17, .bg = 24, .bb = 35}, {.ch = ' ', .br = 205, .attrs = ATTR_OPAQUE}};
-    Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = 4, .h = 4, .stride = 13};
-    /* The bottom right source pixel, yellow, stretched over the canvas. */
-    ImageView image = {.pixels = pixels, .width = 2, .height = 2, .x = 0, .y = 0, .w = 4, .h = 4,
-                       .clip_top = 0, .clip_bottom = 4, .clip_left = INT64_MIN, .clip_right = INT64_MAX, .src_x = 1, .src_y = 1, .src_w = 1, .src_h = 1};
-    for (int32_t z = -3; z <= 3; z++) assert(image_layer(z) == (z < 0 ? LAYER_UNDER_TEXT : LAYER_OVER_TEXT));
-    assert(image_layer(INT32_MIN / 2) == LAYER_UNDER_TEXT);
-    assert(image_layer(INT32_MIN / 2 - 1) == LAYER_BELOW && image_layer(INT32_MIN) == LAYER_BELOW);
-    assert(image_layer(INT32_MAX) == LAYER_OVER_TEXT);
-    for (int layer = LAYER_BELOW; layer <= LAYER_OVER_TEXT; layer++) {
-        image.z = layer == LAYER_BELOW ? INT32_MIN : layer == LAYER_UNDER_TEXT ? -1 : 0;
-        for (int mask = 0; mask < 2; mask++) {
-            memset(buffer, 0, sizeof buffer);
-            /* Another layer paints nothing. */
-            paint_images(&cv, &image, 1, (layer + 1) % 3, mask ? cells : NULL, 2, 4);
-            for (size_t i = 0; i < sizeof buffer; i++) assert(buffer[i] == 0);
-            paint_images(&cv, &image, 1, layer, mask ? cells : NULL, 2, 4);
-            for (int y = 0; y < 4; y++) {
-                for (int x = 0; x < 4; x++) {
-                    const unsigned char *p = buffer + y * 13 + 1 + x * 3;
-                    int shown = !mask || x < 2;
-                    assert(p[0] == (shown ? 255 : 0) && p[1] == (shown ? 255 : 0) && p[2] == 0);
-                }
-            }
-        }
-    }
-    /* Only ATTR_OPAQUE decides, whatever the colour or other attributes. */
-    cells[0].attrs = ATTR_OPAQUE;
-    assert(!clear_background(&cells[0]) && !clear_background(&cells[1]));
-    cells[1].attrs = ATTR_BOLD | ATTR_ITALIC;
-    assert(clear_background(&cells[1]));
-    /* A crop of the top row, sampled across: red then green. */
-    image = (ImageView){.pixels = pixels, .width = 2, .height = 2, .x = 0, .y = 0, .w = 4, .h = 1,
-                        .clip_top = 0, .clip_bottom = 4, .clip_left = INT64_MIN, .clip_right = INT64_MAX, .src_x = 0, .src_y = 0, .src_w = 2, .src_h = 1};
-    memset(buffer, 0, sizeof buffer);
-    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 2, 4);
-    assert(buffer[1] == 255 && buffer[4] == 255 && buffer[8] == 255 && buffer[11] == 255);
-    assert(buffer[2] == 0 && buffer[7] == 0 && buffer[10] == 0);
-    for (int i = 13; i < 52; i++) assert(buffer[i] == 0);
-}
-
-/* A Unicode placeholder run shows the columns of its cells only: the image
-   is sampled as a whole and cut at clip_left and clip_right, so runs side by
-   side join without a seam. */
-static void clipped_across(void) {
-    unsigned char pixels[4 * 4] = {255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255};
-    unsigned char buffer[4 * 13], whole[4 * 13];
-    Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = 4, .h = 4, .stride = 13};
-    ImageView image = {.pixels = pixels, .width = 2, .height = 2, .x = -1, .y = 0, .w = 5, .h = 4,
-                       .clip_top = 0, .clip_bottom = 4, .clip_left = INT64_MIN, .clip_right = INT64_MAX,
-                       .src_w = 2, .src_h = 2};
-    memset(whole, 0, sizeof whole);
-    cv.px = whole + 1;
-    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
-    memset(buffer, 0, sizeof buffer);
-    cv.px = buffer + 1;
-    for (int64_t left = 0; left < 4; left += 2) {
-        image.clip_left = left;
-        image.clip_right = left + 2;
-        paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
-    }
-    assert(memcmp(buffer, whole, sizeof buffer) == 0);
-    /* One run alone leaves the other columns untouched. */
-    memset(buffer, 0, sizeof buffer);
-    image.clip_left = 1;
-    image.clip_right = 3;
-    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
-    for (int y = 0; y < 4; y++) {
-        for (int x = 0; x < 4; x++) {
-            const unsigned char *p = buffer + y * 13 + 1 + x * 3, *q = whole + y * 13 + 1 + x * 3;
-            for (int c = 0; c < 3; c++) assert(p[c] == (x >= 1 && x < 3 ? q[c] : 0));
-        }
-    }
-    /* An empty or reversed clip draws nothing. */
-    memset(buffer, 0, sizeof buffer);
-    image.clip_left = 3;
-    image.clip_right = 3;
-    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
-    image.clip_left = 4;
-    image.clip_right = 1;
-    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
-    for (size_t i = 0; i < sizeof buffer; i++) assert(buffer[i] == 0);
-}
+/* The image layers and the backdrop are Rust (src/composite.rs), whose unit
+   tests check what this file did of the C: layers, crops, clips, the mask of
+   default backgrounds. This checks the backdrop through draw.c's own
+   declarations of it, so the shared structs agree in use as in size. */
 /* The backdrop painted a row of cells at a time and all at once (as for a
-   small raster, or with more than BACKDROP_ROW_IMAGES images under the
+   small raster, or with more than 64 images under the
    text) is the same: cell
    backgrounds of both kinds, and images below them and under the text that
    overlap, cross rows of cells, hang off the canvas and blend. */
@@ -133,20 +28,32 @@ static void backdrop_rows(void) {
         unsigned char *buffer = mode ? whole : rows;
         memset(buffer, 0xee, STRIDE * H);
         Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = W, .h = H, .stride = STRIDE};
-        Backdrop bd = backdrop_for(&cv, cells, COLS, ROWS, CW, CH, views, 3);
-        assert(!bd.whole);
+        Backdrop bd;
+        termshot_backdrop_init(&bd, &cv, cells, COLS, ROWS, CW, CH, views, 3, BACKDROP_ROW_BYTES);
+        assert(!bd.whole && bd.done == 0 && bd.cells == cells && bd.images == views && bd.image_count == 3);
         bd.whole = mode;
         for (int y = 1; y <= H; y += 3) backdrop_through(&cv, &bd, y);
         backdrop_through(&cv, &bd, H);
         assert(bd.done == ROWS);
     }
     assert(memcmp(rows, whole, sizeof rows) == 0);
+    /* The images over the text, and a solid one, as the cursor marks are. */
+    unsigned char red[4] = {200, 0, 0, 255};
+    ImageView over[2] = {views[0], {.pixels = red, .width = 1, .height = 1, .x = 4, .y = 2, .w = 3, .h = 9,
+                                    .clip_top = 2, .clip_bottom = 11, .clip_left = 4, .clip_right = 7,
+                                    .src_w = 1, .src_h = 1, .z = INT32_MAX}};
+    over[0].z = 0;
+    Canvas cv = {.filtered = rows, .px = rows + 1, .w = W, .h = H, .stride = STRIDE};
+    assert(termshot_paint_images(&cv, over, 2, LAYER_OVER_TEXT) == 0);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            const unsigned char *p = rows + y * STRIDE + 1 + x * 3;
+            if (x >= 4 && x < 7 && y >= 2 && y < 11) assert(p[0] == 200 && p[1] == 0 && p[2] == 0);
+        }
+    assert(!termshot_paint_failed());
 }
 
 int main(int argc, char **argv) {
-    images();
-    layered_images();
-    clipped_across();
     backdrop_rows();
     if (argc != 3) return 1;
     /* Only the trusted vendored fixture is used by this C harness. Production

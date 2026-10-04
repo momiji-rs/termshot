@@ -8,8 +8,12 @@ use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use cell::{Cell, BOLD, DOUBLE_UNDERLINE, ITALIC, OPAQUE, STRIKE, TAIL, UNDERLINE, WIDE};
+
 mod cast;
+mod cell;
 mod cff;
+mod composite;
 mod deflate;
 mod font;
 mod geometry;
@@ -36,22 +40,6 @@ const DEFAULT_ROWS: usize = 30;
 const DEFAULT_FG: (u8, u8, u8) = (219, 231, 247);
 const DEFAULT_BG: (u8, u8, u8) = (17, 24, 35);
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Cell {
-    ch: u32,
-    fr: u8,
-    fg: u8,
-    fb: u8,
-    br: u8,
-    bg: u8,
-    bb: u8,
-    /// BOLD, UNDERLINE, DOUBLE_UNDERLINE, STRIKE, ITALIC, WIDE, TAIL and
-    /// OPAQUE bits, as ATTR_* in draw.c.
-    attrs: u8,
-}
-
-const _: () = assert!(std::mem::size_of::<Cell>() == 12);
 
 /// The most combining marks a cell keeps after its character (#14). A cell
 /// holds one code point, so a mark with no precomposed form goes in a side
@@ -96,22 +84,6 @@ fn marks_of(marks: &[CellMarks], cell: usize) -> &[u32] {
     }
 }
 
-const BOLD: u8 = 1;
-const UNDERLINE: u8 = 2;
-const DOUBLE_UNDERLINE: u8 = 4;
-const STRIKE: u8 = 8;
-/// The first cell of a double-width character; draw.c spans its glyph over two.
-const WIDE: u8 = 16;
-/// The second cell of a double-width character: ch is 0 and nothing is drawn.
-const TAIL: u8 = 32;
-/// draw.c slants the glyph; box drawing and blocks stay upright.
-const ITALIC: u8 = 64;
-/// The background hides an image placed below the cell backgrounds
-/// (z < -2^30). Reverse video and the block cursor set it as kitty treats
-/// those cells, even in the default colour; before drawing,
-/// `opaque_backgrounds` sets it on every other colour, so draw.c needs no
-/// copy of DEFAULT_BG.
-const OPAQUE: u8 = 128;
 
 /// The colours and attributes SGR sets, applied to each printed character.
 /// Reverse, dim and conceal change the cell's colours as it is printed.
