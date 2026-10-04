@@ -3,10 +3,11 @@
 This file holds dated comparisons, newest first, for
 [#12](https://github.com/momiji-rs/termshot/issues/12): should termshot's own C
 (`src/draw.c` painting and `src/deflate.c` compression) move to Rust? It is
-moving: compression and box drawing are Rust now. The vendored stb
+moving: compression, box drawing and the image layers are Rust now. The vendored stb
 libraries are not part of it. Each comparison ports the C as of one commit to Rust,
 checks that both write the same bytes, and times both in one process.
 
+- [Step 2b shipped: the image layers are Rust (2026-10-04)](#step-2b-shipped-the-image-layers-are-rust-2026-10-04).
 - [Step 2a shipped: box drawing is Rust (2026-10-04)](#step-2a-shipped-box-drawing-is-rust-2026-10-04).
 - [Step 1 shipped: deflate is Rust (2026-10-04)](#step-1-shipped-deflate-is-rust-2026-10-04).
 - [Deflate, current code (2026-10-03, `a8a95e0`)](#deflate-current-code-2026-10-03-a8a95e0):
@@ -14,6 +15,67 @@ checks that both write the same bytes, and times both in one process.
 - [Painting and deflate POC (2026-10-01, `bd726a6`), history](#painting-and-deflate-poc-2026-10-01-bd726a6-history):
   the first port of both files. Its deflate C is two optimization rounds old and its
   painting C predates #61, #66 and #69, so do not compare its numbers with the current code.
+
+## Step 2b shipped: the image layers are Rust (2026-10-04)
+
+Step 2b moves what draw.c did with `ImageView`s to `src/composite.rs`:
+`paint_image_rows` (layers by z, nearest-neighbour sampling of the crop,
+the clips of scrolled slices and Unicode placeholder runs, the mask of
+default backgrounds that `ATTR_OPAQUE` sets, the blend) and the backdrop
+(`Backdrop`, `backdrop_through`: the cell backgrounds and the two layers
+under the text, a row of cells ahead of the glyphs, or all at once under
+16 MiB or past 64 images). kitty and Sixel images and the underline and
+bar cursors all reach it as views, as before.
+
+- **FFI surface**, per backdrop row or per layer, never per pixel:
+  `termshot_backdrop_init(bd, canvas, cells, cols, rows, cell_w, cell_h,
+  images, count, row_bytes)`; `termshot_backdrop_through(canvas, bd, y)`
+  (1 painted, 0 nothing due, -1 a caught panic); and
+  `termshot_paint_images(canvas, images, count, layer)` for the layer over
+  the text (0, or -1). `Backdrop` is `#[repr(C)]`, 56 bytes, asserted on
+  both sides, and lives in draw.c's frame; draw.c makes the "nothing due"
+  test itself, so a glyph costs no call into Rust and no clock read, and
+  keeps `ms`.
+  `row_bytes` is draw.c's `BACKDROP_ROW_BYTES`, so `tests/draw.c` can still
+  force rows. A panic sets the flag `termshot_paint_failed` reports; draw.c
+  now paints the layer over the text before that check, so it covers images
+  (exit 2, "painting failed").
+- **Parity**: integers only, in the C's types: i64 positions, quotient and
+  remainder; size_t (usize) indexes; the blend in u32 like the C's
+  unsigned, `(s * a + d * (255 - a) + 127) / 255`, which is exact division
+  in both, with the same 255 (copy) and 0 (skip) shortcuts. The source
+  column is stepped exactly as the C stepped it. One change of shape: with a
+  mask, a run of columns is painted per cell instead of testing the cell per
+  pixel, and a run over an opaque cell is skipped, its quotient and
+  remainder recomputed at the next run. The pixels are the same.
+- **C UB edges**: signed overflow (positions within 2^24 cells and sizes
+  within 2^24 pixels, sources within 8192: unreachable) and reads past an
+  image or the cells, which the Rust turns into a caught panic instead.
+- **Bounds checks**: the sampler checks a row of the crop and a row of the
+  canvas once, and the last column's source pixel, then reads and writes
+  through pointers.
+- **Memory**: nothing in it allocates, in C or in Rust. The raster it paints
+  is draw.c's; `tests/run.sh` fails that allocation on Linux (ulimit -v):
+  exit 2, no output.
+- **Evidence**: `bench/c-vs-rust/run.sh images` (CI, all three hosts)
+  paints 20,000 random scenes and 5 at CLI sizes with draw.c as of `431ed23`
+  and with the Rust, byte for byte (386 million pixels), and renders every
+  kitty, Sixel and cursor fixture at six sizes with the CLI built at
+  `431ed23` and now (132 PNGs, the same bytes). Rust ÷ C on bench.py's image
+  screens: 0.74-0.97 under Apple clang 21 and 0.68-0.99 under GCC 16. End
+  to end no case is slower beyond noise on either host
+  ([docs/performance.md](performance.md#image-layers-in-rust-2026-10-04-82c3f3d-12-step-2b)).
+
+For 2c (glyphs): draw.c's `blend` is the same formula as the images',
+`sample_run`'s inner step without the sampling, so the two can share it.
+The glyph pass calls `backdrop_through` before each glyph and mark it
+blends; once the glyph pass is Rust, that test and the clock reads become
+Rust-internal, and `Backdrop.ms` with them. `termshot_paint_failed`'s flag
+is reset by `termshot_geometry_new`, so the render must still begin there.
+The C glyph `blend` loop's speed depends on its code alignment: in this
+round `blend_ms` read 4% slower on the M2 with no change to it, and built
+with `-falign-loops=64` main and the branch read the same
+([docs/performance.md](performance.md#image-layers-in-rust-2026-10-04-82c3f3d-12-step-2b)).
 
 ## Step 2a shipped: box drawing is Rust (2026-10-04)
 

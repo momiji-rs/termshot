@@ -188,6 +188,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Linux x86-64 (docs/performance.md). `TERMSHOT_PROFILE`'s `geometry_cache_bytes` is
   16 KiB higher once a stroke is kept: a cache slot is 32 bytes in Rust, 16
   in C.
+- The image layers (kitty and Sixel images and the underline and bar
+  cursors) and the cell backgrounds under them are Rust (`src/composite.rs`)
+  instead of C, step 2b of #12; draw.c calls it per row of cells or per
+  layer. Every pixel is the same: `bench/c-vs-rust/run.sh images` compares it
+  with the C it replaced on random scenes and renders every image and cursor
+  fixture with both CLIs, and CI runs that on all three hosts. A bug in it
+  fails the render with exit 2 ("painting failed") instead of reading past an
+  image. The image cases take the same time or less on macOS arm64 and Linux
+  x86-64 (docs/performance.md).
 - After a kitty placement, the cursor moves as kitty moves it
   (`handle_put_command`, `screen_handle_graphics_command`): right by the
   placement's columns and down by its rows less one, so it ends beside the

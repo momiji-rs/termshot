@@ -16,10 +16,11 @@
 //!   `(s * a + d * (255 - a) + 127) / 255` is exact integer division in both
 //!   languages, so there is no rounding to match.
 //! - C's signed overflow is undefined; Rust's wraps in release builds and
-//!   panics with overflow checks (SANITIZE=1). graphics.rs keeps positions
-//!   within 2^24 cells and sizes within 2^24 pixels and sources within 8192
-//!   pixels a side, so no product here comes near i64's range on the views
-//!   termshot makes, and the two agree on all of them.
+//!   panics with overflow checks (SANITIZE=1). graphics.rs keeps a view's
+//!   size within 2^24 pixels, its source within 16 MiB (so 2^22 pixels a
+//!   side) and its position within 2^24 cells of the screen, so the
+//!   sampler's products stay under 2^47 and no sum comes near i64's range
+//!   on the views termshot makes; the two agree on all of them.
 //! - Where the C read past an image (a crop outside it) or the cells, which
 //!   termshot never asks for, the Rust panics instead; the panic is caught,
 //!   and the render fails with exit 2 (termshot_paint_failed).

@@ -456,8 +456,8 @@ int termshot_paint_images(const Canvas *cv, const ImageView *images, size_t coun
 
 /* Paint the backdrop of every row of cells above pixel row y. The test is
    termshot_backdrop_through's own, made here so that a glyph with nothing
-   to paint under it costs neither a call nor, when profiling, the clock. A
-   failure is reported by termshot_paint_failed. */
+   to paint under it costs neither a call into Rust nor, when profiling,
+   the clock. A failure is reported by termshot_paint_failed. */
 static void backdrop_through(Canvas *cv, Backdrop *bd, int64_t y) {
     if (bd->done >= bd->rows || y <= (int64_t)bd->done * bd->cell_h) return;
     double tick = now_ms();
