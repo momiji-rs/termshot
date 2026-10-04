@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod cast;
 mod cff;
+mod deflate;
 mod font;
 mod graphics;
 #[rustfmt::skip]
