@@ -4,8 +4,11 @@
 //! algorithms; only the language differs. Results and method:
 //! docs/c-vs-rust.md. Run it with `bench/c-vs-rust/run.sh deflate`.
 //!
-//!   deflate <input dir> [rounds]   <name>.raw are deflate inputs (run.sh
-//!                                  writes them with deflate_inputs.py)
+//!   deflate <input dir> [rounds]   <name>.raw are deflate inputs
+//!   deflate --inputs <termshot> <poc dir> <input dir>
+//!                                  write them: render each workload with the
+//!                                  CLI and inflate its PNG's IDAT (run.sh
+//!                                  does this first; see make_inputs)
 //!
 //! Five variants run in every round, in a seeded random order per round, so
 //! each one follows every other about equally often:
@@ -568,7 +571,233 @@ fn stats(v: &mut [f64]) -> (f64, f64) {
     (v[v.len() / 2], v[p95])
 }
 
+// ---------------------------------------------------------------- inputs
+
+/// Python's random.Random(seed) for a seed below 2^32 (MT19937, seeded by
+/// init_by_array([seed])), with randrange as Python 3 computes it. Only for
+/// rebuilding scripts/bench.py's color-grid log byte for byte.
+struct PyRandom {
+    mt: [u32; 624],
+    i: usize,
+}
+
+impl PyRandom {
+    fn new(seed: u32) -> PyRandom {
+        let mut mt = [0u32; 624];
+        mt[0] = 19650218;
+        for i in 1..624 {
+            mt[i] = 1812433253u32.wrapping_mul(mt[i - 1] ^ (mt[i - 1] >> 30)).wrapping_add(i as u32);
+        }
+        // init_by_array with a one-word key: j is always 0.
+        let mut i = 1usize;
+        for _ in 0..624 {
+            mt[i] = (mt[i] ^ (mt[i - 1] ^ (mt[i - 1] >> 30)).wrapping_mul(1664525)).wrapping_add(seed);
+            i += 1;
+            if i >= 624 {
+                mt[0] = mt[623];
+                i = 1;
+            }
+        }
+        for _ in 0..623 {
+            mt[i] = (mt[i] ^ (mt[i - 1] ^ (mt[i - 1] >> 30)).wrapping_mul(1566083941)).wrapping_sub(i as u32);
+            i += 1;
+            if i >= 624 {
+                mt[0] = mt[623];
+                i = 1;
+            }
+        }
+        mt[0] = 0x8000_0000;
+        PyRandom { mt, i: 624 }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        if self.i >= 624 {
+            for k in 0..624 {
+                let y = (self.mt[k] & 0x8000_0000) | (self.mt[(k + 1) % 624] & 0x7fff_ffff);
+                self.mt[k] = self.mt[(k + 397) % 624] ^ (y >> 1) ^ if y & 1 != 0 { 0x9908_b0df } else { 0 };
+            }
+            self.i = 0;
+        }
+        let mut y = self.mt[self.i];
+        self.i += 1;
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9d2c_5680;
+        y ^= (y << 15) & 0xefc6_0000;
+        y ^ (y >> 18)
+    }
+
+    /// randrange(start, stop): getrandbits(n.bit_length()) until below n.
+    fn randrange(&mut self, start: u32, stop: u32) -> u32 {
+        let n = stop - start;
+        let k = 32 - n.leading_zeros();
+        loop {
+            let r = self.next_u32() >> (32 - k);
+            if r < n {
+                return start + r;
+            }
+        }
+    }
+}
+
+/// The logs of the #20 round's cases from scripts/bench.py's
+/// legacy_workloads: (name, log, px, cols, rows).
+fn bench_logs() -> Vec<(&'static str, Vec<u8>, u32, u32, u32)> {
+    let mut rng = PyRandom::new(13);
+    let mut colors = String::new();
+    for row in 0..30 {
+        for col in 0..100 {
+            let v: Vec<u32> = (0..6).map(|_| rng.randrange(0, 256)).collect();
+            let ch = char::from_u32(rng.randrange(33, 127)).unwrap();
+            colors.push_str(&format!(
+                "\x1b[{};{}H\x1b[38;2;{};{};{};48;2;{};{};{}m{ch}",
+                row + 1, col + 1, v[0], v[1], v[2], v[3], v[4], v[5]
+            ));
+        }
+    }
+    let large = vec!["Terminal benchmark 0123456789 ".repeat(9); 80].join("\r\n");
+    vec![("blank", Vec::new(), 48, 100, 30), ("color-grid", colors.into_bytes(), 24, 100, 30), ("large", large.into_bytes(), 48, 240, 80)]
+}
+
+/// LSB-first bit reader for inflate.
+struct Bits<'a> {
+    d: &'a [u8],
+    pos: usize,
+}
+
+impl Bits<'_> {
+    fn bit(&mut self) -> u32 {
+        let b = (self.d[self.pos >> 3] >> (self.pos & 7)) & 1;
+        self.pos += 1;
+        u32::from(b)
+    }
+    fn bits(&mut self, n: u32) -> u32 {
+        (0..n).fold(0, |v, k| v | self.bit() << k)
+    }
+    /// n more bits of a Huffman code, which is sent most significant bit first.
+    fn code(&mut self, n: u32, mut v: u32) -> u32 {
+        for _ in 0..n {
+            v = v << 1 | self.bit();
+        }
+        v
+    }
+}
+
+/// Inflates a zlib stream of stored and fixed-Huffman blocks, the only kinds
+/// deflate.c writes, and checks its Adler-32.
+fn inflate(z: &[u8]) -> Vec<u8> {
+    const LBASE: [u32; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+    const LEXTRA: [u32; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+    const DBASE: [u32; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+    const DEXTRA: [u32; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+    assert!(z.len() > 6 && z[0] & 0x0f == 8, "not a zlib stream");
+    let mut b = Bits { d: &z[2..], pos: 0 };
+    let mut out = Vec::new();
+    loop {
+        let last = b.bit();
+        match b.bits(2) {
+            0 => {
+                b.pos = (b.pos + 7) & !7;
+                let len = b.bits(16) as usize;
+                assert_eq!(b.bits(16) as usize, !len & 0xffff, "stored block length");
+                let at = b.pos >> 3;
+                out.extend_from_slice(&b.d[at..at + len]);
+                b.pos += 8 * len;
+            }
+            1 => loop {
+                let mut c = b.code(7, 0);
+                let sym = if c <= 0x17 {
+                    256 + c
+                } else {
+                    c = b.code(1, c);
+                    if (0x30..=0xbf).contains(&c) {
+                        c - 0x30
+                    } else if (0xc0..=0xc7).contains(&c) {
+                        280 + c - 0xc0
+                    } else {
+                        144 + b.code(1, c) - 0x190
+                    }
+                };
+                if sym < 256 {
+                    out.push(sym as u8);
+                } else if sym == 256 {
+                    break;
+                } else {
+                    let l = (sym - 257) as usize;
+                    let len = (LBASE[l] + b.bits(LEXTRA[l])) as usize;
+                    let d = b.code(5, 0) as usize;
+                    let dist = (DBASE[d] + b.bits(DEXTRA[d])) as usize;
+                    let from = out.len() - dist;
+                    for k in 0..len {
+                        out.push(out[from + k]);
+                    }
+                }
+            },
+            t => panic!("block type {t}: deflate.c writes only stored and fixed blocks"),
+        }
+        if last == 1 {
+            break;
+        }
+    }
+    let at = (b.pos + 7) / 8 + 2;
+    assert_eq!(u32::from_be_bytes(z[at..at + 4].try_into().unwrap()), adler32(&out), "Adler-32 of the inflated stream");
+    out
+}
+
+/// The deflate input of a PNG: its IDAT stream, inflated.
+fn idat(png: &[u8]) -> Vec<u8> {
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+    let (mut pos, mut z) = (8, Vec::new());
+    while pos + 8 <= png.len() {
+        let len = u32::from_be_bytes(png[pos..pos + 4].try_into().unwrap()) as usize;
+        if &png[pos + 4..pos + 8] == b"IDAT" {
+            z.extend_from_slice(&png[pos + 8..pos + 8 + len]);
+        }
+        pos += 12 + len;
+    }
+    inflate(&z)
+}
+
+/// Renders every workload with the current CLI and writes the bytes its
+/// compressor was given, <name>.raw, to out. The poc_workloads logs
+/// (<name>.pty and <name>.meta "cols rows px") use the CLI's defaults, cursor
+/// included, so 1-reply-px48 is what a plain reply-sent run compresses. The
+/// #20 round's blank, color-grid and large use bench.py's positional form.
+fn make_inputs(termshot: &str, poc: &str, out: &str) {
+    let out = std::path::Path::new(out);
+    std::fs::create_dir_all(out).unwrap();
+    let png = out.join("render.png");
+    let render = |args: Vec<String>, name: &str| {
+        let status = std::process::Command::new(termshot).args(&args).status().expect("run termshot");
+        assert!(status.success(), "termshot {args:?} failed");
+        std::fs::write(out.join(format!("{name}.raw")), idat(&std::fs::read(&png).unwrap())).unwrap();
+    };
+    let mut metas: Vec<_> = std::fs::read_dir(poc).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |e| e == "meta")).collect();
+    metas.sort();
+    for meta in metas {
+        let text = std::fs::read_to_string(&meta).unwrap();
+        let v: Vec<&str> = text.split_whitespace().collect();
+        let px = v[2].parse::<f64>().unwrap() as u32;
+        let log = meta.with_extension("pty");
+        let args = vec!["--raw".into(), "--px".into(), px.to_string(), "--size".into(), format!("{}x{}", v[0], v[1]), log.display().to_string(), png.display().to_string()];
+        render(args, &meta.file_stem().unwrap().to_string_lossy());
+    }
+    let font = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
+    for (name, log, px, cols, rows) in bench_logs() {
+        let path = out.join(format!("{name}.pty"));
+        std::fs::write(&path, log).unwrap();
+        let args = vec![path.display().to_string(), png.display().to_string(), font.into(), px.to_string(), cols.to_string(), rows.to_string()];
+        render(args, &format!("6-{name}"));
+        std::fs::remove_file(&path).unwrap();
+    }
+    std::fs::remove_file(&png).unwrap();
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--inputs") {
+        let a: Vec<String> = std::env::args().collect();
+        make_inputs(&a[2], &a[3], &a[4]);
+        return;
+    }
     let dir = std::env::args().nth(1).expect("input dir");
     let rounds: usize = std::env::args().nth(2).map_or(61, |s| s.parse().unwrap());
     let mut order = Order(Rng(0x5851_f42d_4c95_7f2d));

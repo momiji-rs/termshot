@@ -62,8 +62,12 @@ compiler.
   `tests/deflate_diff.c` still checks the C against stock stb in `./test.sh`.
 - **Inputs:** the deflate input of each image, which is the inflated IDAT of the current
   termshot's PNG. That is the filtered scanlines, rendered from the same logs by the current
-  CLI with its defaults, cursor included (`deflate_inputs.py`). So `1-reply-px48` is exactly what
-  a plain `reply-sent` run compresses. There are also two seeded synthetic buffers. Quality 8, as termshot uses.
+  CLI with its defaults, cursor included, and inflated by the bench binary itself (`deflate.rs --inputs`;
+  no Python). So `1-reply-px48` is exactly what
+  a plain `reply-sent` run compresses. The three `bench.py` logs are rebuilt in `deflate.rs`,
+  `color-grid` with a port of Python's `random.Random(13)`. The measurements below were taken
+  with an earlier Python generator; the Rust one writes the same eight inputs, sha256 for
+  sha256. There are also two seeded synthetic buffers. Quality 8, as termshot uses.
 
 | input | bytes | source |
 |---|---:|---|

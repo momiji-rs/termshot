@@ -58,10 +58,12 @@ if [ "$mode" = deflate ]; then
     done
     ar rcs "$work/libdeflate_c.a" "$work/cdef.o" "$work/cport.o" "$work/czero.o"
     workloads "$work" "$work/logs"
-    python3 bench/c-vs-rust/deflate_inputs.py ./termshot "$work/logs" "$work/inputs" > /dev/null
     # shellcheck disable=SC2086
     rustc --edition 2021 -C opt-level=2 ${RUSTFLAGS:-} bench/c-vs-rust/deflate.rs -o "$work/deflate" \
         -L native="$PWD/$work" -l static=deflate_c
+    # The deflate inputs: each workload rendered by the current CLI, its
+    # PNG's IDAT inflated. The bench binary does this, so nothing needs Python.
+    "$work/deflate" --inputs ./termshot "$work/logs" "$work/inputs"
     echo "== deflate.c at $deflate_rev vs deflate.rs"
     echo "C: $($cc --version | head -n 1)"
     echo "Rust: $(rustc --version), -C opt-level=2 ${RUSTFLAGS:-}"
