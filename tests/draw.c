@@ -1,4 +1,6 @@
-/* Exercise the complete C renderer under ASan/UBSan, including cache eviction. */
+/* Exercise the complete C renderer under ASan/UBSan, including cache eviction.
+   Every raster's backdrop is painted a row at a time, however small. */
+#define BACKDROP_ROW_BYTES 0
 #include "../src/draw.c"
 #include <assert.h>
 static void images(void) {
@@ -110,10 +112,42 @@ static void clipped_across(void) {
     paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
     for (size_t i = 0; i < sizeof buffer; i++) assert(buffer[i] == 0);
 }
+/* The backdrop painted a row of cells at a time and all at once (as for a
+   small raster, or with more than BACKDROP_ROW_IMAGES images under the
+   text) is the same: cell
+   backgrounds of both kinds, and images below them and under the text that
+   overlap, cross rows of cells, hang off the canvas and blend. */
+static void backdrop_rows(void) {
+    enum { COLS = 5, ROWS = 4, CW = 3, CH = 5, W = COLS * CW, H = ROWS * CH, STRIDE = W * 3 + 1 };
+    unsigned char pixels[3 * 2 * 4], rows[STRIDE * H], whole[STRIDE * H];
+    for (size_t i = 0; i < sizeof pixels; i++) pixels[i] = (unsigned char)(i * 37 + (i % 4 == 3 ? 90 : 0));
+    Cell cells[COLS * ROWS];
+    for (int i = 0; i < COLS * ROWS; i++)
+        cells[i] = (Cell){.ch = ' ', .br = (uint8_t)(i * 11), .bg = 40, .bb = (uint8_t)(255 - i), .attrs = i % 3 ? 0 : ATTR_OPAQUE};
+    ImageView views[3];
+    for (int k = 0; k < 3; k++)
+        views[k] = (ImageView){.pixels = pixels, .width = 3, .height = 2, .x = -2 + 4 * k, .y = 3 + 2 * k, .w = 9, .h = 8 + k,
+                               .clip_top = 0, .clip_bottom = H, .clip_left = INT64_MIN, .clip_right = INT64_MAX,
+                               .src_w = 3, .src_h = 2, .z = k == 1 ? -1 : INT32_MIN};
+    for (int mode = 0; mode < 2; mode++) {
+        unsigned char *buffer = mode ? whole : rows;
+        memset(buffer, 0xee, STRIDE * H);
+        Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = W, .h = H, .stride = STRIDE};
+        Backdrop bd = backdrop_for(&cv, cells, COLS, ROWS, CW, CH, views, 3);
+        assert(!bd.whole);
+        bd.whole = mode;
+        for (int y = 1; y <= H; y += 3) backdrop_through(&cv, &bd, y);
+        backdrop_through(&cv, &bd, H);
+        assert(bd.done == ROWS);
+    }
+    assert(memcmp(rows, whole, sizeof rows) == 0);
+}
+
 int main(int argc, char **argv) {
     images();
     layered_images();
     clipped_across();
+    backdrop_rows();
     if (argc != 3) return 1;
     /* Only the trusted vendored fixture is used by this C harness. Production
        and the Rust draw tests validate and pad fonts with font::load. */

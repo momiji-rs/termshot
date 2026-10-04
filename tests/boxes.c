@@ -247,9 +247,11 @@ static int cell_w, cell_h, grid_w, grid_h;
 
 static void paint(uint32_t cp, int bold) {
     memset(pixels, 0, (size_t)grid_w * grid_h * 3);
-    Canvas cv = {.px = pixels, .filtered = pixels, .w = grid_w, .h = grid_h, .stride = (size_t)grid_w * 3};
+    Stamps stamps = {0};
+    Canvas cv = {.px = pixels, .filtered = pixels, .w = grid_w, .h = grid_h, .stride = (size_t)grid_w * 3,
+                 .stamps = &stamps};
     paint_geometry(&cv, 1, 1, cell_w, cell_h, cp, bold, 255, 255, 255);
-    for (int k = 0; k < 4; k++) free(cv.arc_offsets[k]);
+    free_geometry(&cv);
 }
 
 /* A pixel of the grid; (x, y) is relative to the middle cell. */
@@ -637,6 +639,72 @@ static void check_lines(int bold) {
     }
 }
 
+/* Paint each cell of a cols x rows grid, in random order, with the strokes
+   reused through Stamps and then afresh; 0 if any cell differs, or a stroke
+   was not reused. */
+static int stamps_match(uint32_t cp, int bold, int cols, int rows, size_t *hits) {
+    int w = cols * cell_w, h = rows * cell_h;
+    size_t stride = (size_t)w * 3;
+    uint8_t *canvas = calloc((size_t)h, stride), *saved = malloc((size_t)cell_w * cell_h * 3);
+    int n = cols * rows, *order = malloc(sizeof(int) * (size_t)n), same = 1;
+    if (!canvas || !saved || !order) {
+        free(canvas);
+        free(saved);
+        free(order);
+        return 0;
+    }
+    uint32_t seed = (uint32_t)(cell_w * 7919 + cell_h * 31 + cols);
+    for (int i = 0; i < n; i++) order[i] = i;
+    for (int i = n - 1; i > 0; i--) {
+        seed = seed * 1664525u + 1013904223u;
+        int j = (int)((seed >> 8) % (uint32_t)(i + 1)), t = order[i];
+        order[i] = order[j];
+        order[j] = t;
+    }
+    Stamps stamps = {0};
+    Canvas cached = {.px = canvas, .filtered = canvas, .w = w, .h = h, .stride = stride, .stamps = &stamps};
+    Canvas fresh = {.px = canvas, .filtered = canvas, .w = w, .h = h, .stride = stride};
+    for (int k = 0; k < n; k++) {
+        int col = order[k] % cols, row = order[k] / cols;
+        uint8_t *origin = canvas + (size_t)row * cell_h * stride + (size_t)col * cell_w * 3;
+        size_t span = (size_t)cell_w * 3;
+        paint_geometry(&cached, col, row, cell_w, cell_h, cp, bold, 255, 255, 255);
+        for (int y = 0; y < cell_h; y++) {
+            memcpy(saved + y * span, origin + y * stride, span);
+            memset(origin + y * stride, 0, span);
+        }
+        paint_geometry(&fresh, col, row, cell_w, cell_h, cp, bold, 255, 255, 255);
+        for (int y = 0; y < cell_h; y++) same &= memcmp(saved + y * span, origin + y * stride, span) == 0;
+    }
+    *hits += stamps.hits;
+    same &= stamps.uncached == 0;
+    free_geometry(&cached);
+    free_geometry(&fresh);
+    free(order);
+    free(saved);
+    free(canvas);
+    return same;
+}
+
+/* Rounded corners and diagonals reused from Stamps paint what stamping each
+   of them afresh paints, plain and bold, in every cell of the widest row and
+   the tallest column the CLI allows (500 columns, 200 rows), whose pixel
+   coordinates span every binade a screen has, and of a 20 x 10 grid. */
+static void check_stamps(void) {
+    static const uint32_t strokes[] = {0x256D, 0x256E, 0x256F, 0x2570, 0x2571, 0x2572, 0x2573};
+    size_t hits = 0;
+    for (size_t s = 0; s < sizeof strokes / sizeof strokes[0]; s++) {
+        for (int bold = 0; bold < 2; bold++) {
+            int rows = 10;
+            while ((long long)20 * cell_w * rows * cell_h > MAX_PIXELS) rows--;
+            check(stamps_match(strokes[s], bold, 500, 1, &hits), strokes[s], bold, "a reused stroke differs in a row");
+            check(stamps_match(strokes[s], bold, 1, 200, &hits), strokes[s], bold, "a reused stroke differs in a column");
+            check(stamps_match(strokes[s], bold, 20, rows, &hits), strokes[s], bold, "a reused stroke differs in a grid");
+        }
+    }
+    check(hits > 0, 0x256D, 0, "no stroke was reused");
+}
+
 int main(void) {
     /* Odd and even sizes, from degenerate to px 255. */
     const int sizes[][2] = {{1, 2}, {2, 5}, {3, 7}, {4, 9}, {5, 11}, {6, 13}, {7, 15}, {8, 17}, {9, 19}, {10, 22},
@@ -653,6 +721,7 @@ int main(void) {
         check_lines(0);
         check_lines(1);
         check_blocks();
+        check_stamps();
         free(pixels);
     }
     if (failures) {

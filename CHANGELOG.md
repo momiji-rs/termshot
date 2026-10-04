@@ -203,6 +203,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   takes 7.9 ms instead of 9.9 and a 5800×3840 one 27.6 instead of 40.5; on
   an Apple M2 Max up to 9% less, most at high resolution.
   `docs/performance.md` has the measurements.
+- Rounded corners, diagonals, large screens and images are drawn faster, to
+  the same pixels (#22). A corner or diagonal is painted from one rasterized
+  before it when its points round the same way, which is checked exactly;
+  on rasters over 16 MiB, backgrounds are painted a row of cells ahead of the
+  text over them, while the row is in the cache; and images find their
+  source columns without a division per pixel. The 3,000-corner benchmark
+  takes 10.1 ms instead of 15.3 at 48 px and 32.8 instead of 69.9 at 128 px
+  on an Apple M2 Max, and 8.7 instead of 14.1 and 25.6 instead of 63.2 on a
+  Ryzen 7 8745HS, where 5280×3840 screens are also up to 9% faster;
+  `docs/performance.md` has the measurements.
 - Replaying a log is faster and leaves the same screen (#21). Character
   widths come from a two-level table instead of two binary searches, marks
   that compose with nothing skip the composition search, the pen's colours

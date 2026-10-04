@@ -150,12 +150,52 @@ static int glyph_empty(const stbtt_fontinfo *info, const Face *face, int glyph, 
     return n < 0 ? -1 : n == 0;
 }
 
+/* Rounded corners and diagonals are stamped: a disc at each of a stroke's
+   points. Stamps keeps which pixels of its cell a stroke covered, to paint
+   the next one like it as runs; stamp_points says when two are alike. A
+   render of the largest screen finds well under STAMP_SEQUENCES sequences
+   per shape and axis (tests/boxes.c checks), and every allocation of the
+   cache stays within STAMP_MAX_BYTES in all (tests/stamps_alloc.c checks);
+   past either, strokes are stamped afresh. */
+#define STAMP_SHAPES 6 /* the four corners, then the two diagonals */
+#define STAMP_SEQUENCES 64
+#define STAMP_MASKS 1024
+#define STAMP_MAX_POINTS 4096
+#ifndef STAMP_MAX_BYTES
+#define STAMP_MAX_BYTES ((size_t)4 << 20)
+#endif
+
+typedef struct {
+    uint32_t key; /* 0 for an empty slot */
+    int run_count;
+    uint16_t *runs; /* 3 per run: row, first column, past the last, in the cell */
+} StampMask;
+
+typedef struct {
+    int w, h; /* the cell size, set by the first stroke */
+    int n[STAMP_SHAPES]; /* each shape's point count */
+    int lines[2]; /* columns and rows */
+    /* Per axis (x, y), shape and column or row: the sequence of offsets the
+       stroke there has, as 1 + its index; 0 not known yet, -1 none. */
+    int16_t *ids[2][STAMP_SHAPES];
+    /* Per axis and shape: the distinct sequences, n floats each. */
+    float *sequences[2][STAMP_SHAPES];
+    int sequence_count[2][STAMP_SHAPES], sequence_room[2][STAMP_SHAPES];
+    StampMask *masks; /* STAMP_MASKS */
+    float *points; /* the stroke being stamped: x, y */
+    int capacity;
+    uint8_t *mask; /* a cell's coverage, on a miss */
+    size_t hits, misses, uncached, bytes, peak; /* bytes held now, and at most */
+} Stamps;
+
 /* The image being painted. Passed explicitly so draw_png is reentrant. */
 typedef struct {
     uint8_t *px, *filtered;
     int w, h;
     size_t stride;
     float *arc_offsets[4];
+    /* Strokes to reuse, or NULL to stamp each one afresh. */
+    Stamps *stamps;
     /* While clipped, put and fill_rect stay inside [x0, x1) x [y0, y1):
        geometry never paints into a neighbouring cell. */
     int clipped, clip_x0, clip_y0, clip_x1, clip_y1;
@@ -220,6 +260,289 @@ static void vbar(Canvas *cv, int mid, int y0, int y1, int thick, uint8_t r, uint
     fill_rect(cv, mid - thick / 2, y0, mid - thick / 2 + thick, y1, r, g, b);
 }
 
+static void stamp_hold(Stamps *st, size_t bytes) {
+    st->bytes += bytes;
+    if (st->bytes > st->peak) st->peak = st->bytes;
+}
+
+/* Whether the cache may allocate bytes more. */
+static int stamp_budget(const Stamps *st, size_t bytes) {
+    return bytes <= STAMP_MAX_BYTES && st->bytes <= STAMP_MAX_BYTES - bytes;
+}
+
+/* a - b, and whether that is exact: Knuth's TwoSum error is zero. */
+static int exact_difference(float a, float b, float *out) {
+    float s = a - b;
+    float bv = s - a;
+    float av = s - bv;
+    float err = (a - av) + (-b - bv);
+    *out = s;
+    return err == 0.0f;
+}
+
+/* The cell being stamped, the clip: its column and row in a grid of cells of
+   the first stroke's size. 0 when strokes there are not reused. */
+static int stamp_cell(Canvas *cv, int shape, int n, int *col, int *row) {
+    Stamps *st = cv->stamps;
+    int w = cv->clip_x1 - cv->clip_x0, h = cv->clip_y1 - cv->clip_y0;
+    if (!st || !cv->clipped || n > STAMP_MAX_POINTS || w <= 0 || h <= 0 || w > 65535 || h > 65535) return 0;
+    if (!st->w) {
+        st->w = w;
+        st->h = h;
+        st->lines[0] = cv->w / w;
+        st->lines[1] = cv->h / h;
+    }
+    if (w != st->w || h != st->h || (st->n[shape] && st->n[shape] != n)) return 0;
+    st->n[shape] = n;
+    if (cv->clip_x0 < 0 || cv->clip_y0 < 0 || cv->clip_x0 % w || cv->clip_y0 % h) return 0;
+    *col = cv->clip_x0 / w;
+    *row = cv->clip_y0 / h;
+    return *col < st->lines[0] && *row < st->lines[1];
+}
+
+/* The key of shape's stroke at col and row, at thickness thick: 0 when it
+   isn't known yet, -1 when it is not reused. */
+static int64_t stamp_key(const Stamps *st, int shape, int col, int row, int thick) {
+    if (!st->ids[0][shape] || !st->ids[1][shape]) return 0;
+    int x = st->ids[0][shape][col], y = st->ids[1][shape][row];
+    if (x < 0 || y < 0 || thick >= 256) return -1;
+    if (!x || !y) return 0;
+    return 1 + ((((int64_t)shape * 256 + thick) * (STAMP_SEQUENCES + 1) + x) * (STAMP_SEQUENCES + 1) + y);
+}
+
+static StampMask *stamp_slot(Stamps *st, uint32_t key) {
+    return &st->masks[(key * 2654435761u) >> 22 & (STAMP_MASKS - 1)];
+}
+
+static void paint_runs(Canvas *cv, const StampMask *m, uint8_t r, uint8_t g, uint8_t b) {
+    for (int k = 0; k < m->run_count; k++) {
+        const uint16_t *run = m->runs + 3 * k;
+        uint8_t *p = cv->px + (size_t)(cv->clip_y0 + run[0]) * cv->stride + (size_t)(cv->clip_x0 + run[1]) * BPP;
+        for (int x = run[1]; x < run[2]; x++, p += BPP) {
+            p[0] = r;
+            p[1] = g;
+            p[2] = b;
+        }
+    }
+}
+
+/* Paint shape's stroke in this cell from a stroke like it, if one was kept.
+   1 when painted; 0 when the caller should put its points in
+   cv->stamps->points (with room for n) and call stamp_points; -1 when the
+   caller stamps them itself. */
+static int stamp_find(Canvas *cv, int shape, int n, int thick, uint8_t r, uint8_t g, uint8_t b) {
+    int col, row;
+    if (!stamp_cell(cv, shape, n, &col, &row)) {
+        if (cv->stamps) cv->stamps->uncached++;
+        return -1;
+    }
+    Stamps *st = cv->stamps;
+    int64_t key = stamp_key(st, shape, col, row, thick);
+    if (key < 0) {
+        st->uncached++;
+        return -1;
+    }
+    if (key && st->masks) {
+        StampMask *m = stamp_slot(st, (uint32_t)key);
+        if (m->key == (uint32_t)key) {
+            st->hits++;
+            paint_runs(cv, m, r, g, b);
+            return 1;
+        }
+    }
+    if (n > st->capacity) {
+        float *points = stamp_budget(st, (size_t)(n - st->capacity) * 2 * sizeof(float))
+                            ? (float *)realloc(st->points, (size_t)n * 2 * sizeof(float))
+                            : NULL;
+        if (!points) {
+            st->uncached++;
+            return -1;
+        }
+        stamp_hold(st, (size_t)(n - st->capacity) * 2 * sizeof(float));
+        st->points = points;
+        st->capacity = n;
+    }
+    return 0;
+}
+
+/* The index + 1 of the sequence of offsets of the n points (stride 2) from
+   origin, kept for shape and axis; -1 when an offset is inexact or there is
+   no room. */
+static int stamp_sequence(Stamps *st, int axis, int shape, const float *points, int n, float origin) {
+    float *seen = st->sequences[axis][shape];
+    int count = st->sequence_count[axis][shape], room = st->sequence_room[axis][shape];
+    if (count + 1 > room) {
+        /* Room for one more row than is kept, for the one being compared. */
+        int more = room ? 2 * room : 4;
+        if (more > STAMP_SEQUENCES + 1) more = STAMP_SEQUENCES + 1;
+        if (!stamp_budget(st, (size_t)(more - room) * (size_t)n * sizeof(float))) return -1;
+        seen = (float *)realloc(seen, (size_t)more * (size_t)n * sizeof(float));
+        if (!seen) return -1;
+        st->sequences[axis][shape] = seen;
+        st->sequence_room[axis][shape] = more;
+        stamp_hold(st, (size_t)(more - room) * (size_t)n * sizeof(float));
+    }
+    float *d = seen + (size_t)count * n;
+    for (int i = 0; i < n; i++)
+        if (!exact_difference(points[2 * i], origin, &d[i])) return -1;
+    for (int k = 0; k < count; k++)
+        if (memcmp(seen + (size_t)k * n, d, (size_t)n * sizeof(float)) == 0) return k + 1;
+    if (count == STAMP_SEQUENCES) return -1;
+    st->sequence_count[axis][shape] = count + 1;
+    return count + 1;
+}
+
+/* Stamp the n points in cv->stamps->points with discs of squared radius rad2
+   (radius rad) in the clip, which stamp_find found to be a cell, as put
+   would, and keep what they cover. 1 when painted, 0 when the caller must.
+
+   Which pixels a disc covers depends only on (x + 0.5f) - px and (y + 0.5f)
+   - py for the pixel (x, y) and the point (px, py). Moved by whole pixels,
+   x + 0.5f stays exact, so if each of a stroke's points is exactly as far
+   from its cell's origin as the same point of a stroke kept before, each
+   difference is the same real number, rounds the same, and the stroke covers
+   the same pixels of its cell. That is checked, not assumed: how a point
+   rounds depends on where its cell is. A stroke's x offsets depend only on
+   its column, and its y offsets on its row, so each is found once. */
+static int stamp_points(Canvas *cv, int shape, int n, int thick, float rad, float rad2, uint8_t r, uint8_t g,
+                        uint8_t b) {
+    Stamps *st = cv->stamps;
+    int col = cv->clip_x0 / st->w, row = cv->clip_y0 / st->h, w = st->w, h = st->h;
+    const float *pts = st->points;
+    for (int axis = 0; axis < 2; axis++) {
+        int16_t **ids = &st->ids[axis][shape];
+        if (!*ids) {
+            if (stamp_budget(st, (size_t)st->lines[axis] * sizeof(int16_t)))
+                *ids = (int16_t *)calloc((size_t)st->lines[axis], sizeof(int16_t));
+            if (!*ids) {
+                st->uncached++;
+                return 0;
+            }
+            stamp_hold(st, (size_t)st->lines[axis] * sizeof(int16_t));
+        }
+        int line = axis ? row : col;
+        if (!(*ids)[line]) {
+            float origin = (float)(axis ? cv->clip_y0 : cv->clip_x0);
+            (*ids)[line] = (int16_t)stamp_sequence(st, axis, shape, pts + axis, n, origin);
+        }
+    }
+    int64_t key = stamp_key(st, shape, col, row, thick);
+    if (key <= 0) {
+        st->uncached++;
+        return 0;
+    }
+    if (!st->masks) {
+        if (stamp_budget(st, STAMP_MASKS * sizeof(StampMask)))
+            st->masks = (StampMask *)calloc(STAMP_MASKS, sizeof(StampMask));
+        if (!st->masks) {
+            st->uncached++;
+            return 0;
+        }
+        stamp_hold(st, STAMP_MASKS * sizeof(StampMask));
+    }
+    StampMask *m = stamp_slot(st, (uint32_t)key);
+    if (m->key == (uint32_t)key) {
+        st->hits++;
+        paint_runs(cv, m, r, g, b);
+        return 1;
+    }
+    size_t size = (size_t)w * (size_t)h;
+    if (!st->mask) {
+        if (stamp_budget(st, size)) st->mask = (uint8_t *)malloc(size);
+        if (!st->mask) {
+            st->uncached++;
+            return 0;
+        }
+        stamp_hold(st, size);
+    }
+    /* Stamp into a mask of the cell what the caller would into the canvas. */
+    uint8_t *mask = st->mask;
+    int cx = cv->clip_x0, cy = cv->clip_y0;
+    memset(mask, 0, size);
+    for (int i = 0; i < n; i++) {
+        float px = pts[2 * i], py = pts[2 * i + 1];
+        int x0 = (int)floorf(px - rad - 1.0f), y0 = (int)floorf(py - rad - 1.0f);
+        int x1 = (int)ceilf(px + rad + 1.0f), y1 = (int)ceilf(py + rad + 1.0f);
+        if (x0 < cx) x0 = cx;
+        if (y0 < cy) y0 = cy;
+        if (x1 > cx + w - 1) x1 = cx + w - 1;
+        if (y1 > cy + h - 1) y1 = cy + h - 1;
+        for (int y = y0; y <= y1; y++) {
+            for (int x = x0; x <= x1; x++) {
+                float dx = (x + 0.5f) - px;
+                float dy = (y + 0.5f) - py;
+                if (dx * dx + dy * dy <= rad2) mask[(size_t)(y - cy) * w + (x - cx)] = 1;
+            }
+        }
+    }
+    int count = 0;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *line = mask + (size_t)y * w;
+        for (int x = 0; x < w; x++) count += line[x] && (x == 0 || !line[x - 1]);
+    }
+    size_t bytes = (size_t)(count ? count : 1) * 3 * sizeof(uint16_t);
+    uint16_t *runs = NULL;
+    if (stamp_budget(st, bytes)) runs = (uint16_t *)malloc(bytes);
+    StampMask fresh = {(uint32_t)key, count, runs};
+    if (!runs) {
+        /* Not kept: paint from the mask's runs all the same. */
+        st->uncached++;
+        for (int y = 0; y < h; y++) {
+            const uint8_t *line = mask + (size_t)y * w;
+            uint8_t *p = cv->px + (size_t)(cy + y) * cv->stride + (size_t)cx * BPP;
+            for (int x = 0; x < w; x++, p += BPP) {
+                if (!line[x]) continue;
+                p[0] = r;
+                p[1] = g;
+                p[2] = b;
+            }
+        }
+        return 1;
+    }
+    uint16_t *run = runs;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *line = mask + (size_t)y * w;
+        for (int x = 0; x < w; x++) {
+            if (!line[x] || (x > 0 && line[x - 1])) continue;
+            int end = x;
+            while (end < w && line[end]) end++;
+            run[0] = (uint16_t)y;
+            run[1] = (uint16_t)x;
+            run[2] = (uint16_t)end;
+            run += 3;
+        }
+    }
+    if (m->key) {
+        st->bytes -= (size_t)(m->run_count ? m->run_count : 1) * 3 * sizeof(uint16_t);
+        free(m->runs);
+    }
+    *m = fresh;
+    stamp_hold(st, bytes);
+    st->misses++;
+    paint_runs(cv, m, r, g, b);
+    return 1;
+}
+
+static void free_stamps(Stamps *st) {
+    if (!st) return;
+    for (int k = 0; st->masks && k < STAMP_MASKS; k++) free(st->masks[k].runs);
+    free(st->masks);
+    for (int axis = 0; axis < 2; axis++) {
+        for (int shape = 0; shape < STAMP_SHAPES; shape++) {
+            free(st->ids[axis][shape]);
+            free(st->sequences[axis][shape]);
+        }
+    }
+    free(st->points);
+    free(st->mask);
+}
+
+/* What geometry holds: the arc offsets and the stamps. */
+static void free_geometry(Canvas *cv) {
+    for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    free_stamps(cv->stamps);
+}
+
 /* Quarter ellipse. Angles are standard math angles with y growing downward. */
 static void arc(Canvas *cv, int corner, float cx, float cy, float rx, float ry, float a0, float a1, float thick,
                  uint8_t r, uint8_t g, uint8_t b) {
@@ -235,6 +558,24 @@ static void arc(Canvas *cv, int corner, float cx, float cy, float rx, float ry, 
     float *offsets = cv->arc_offsets[corner];
     float rad = thick * 0.5f;
     float rad2 = (rad + 0.6f) * (rad + 0.6f);
+    if (offsets && !cached) {
+        for (int i = 0; i <= steps; i++) {
+            float a = a0 + (a1 - a0) * ((float)i / (float)steps);
+            offsets[2 * i] = rx * cosf(a);
+            offsets[2 * i + 1] = ry * sinf(a);
+        }
+        cached = 1;
+    }
+    int found = offsets ? stamp_find(cv, corner, steps + 1, (int)thick, r, g, b) : -1;
+    if (found == 1) return;
+    if (found == 0) {
+        float *pts = cv->stamps->points;
+        for (int i = 0; i <= steps; i++) {
+            pts[2 * i] = cx + offsets[2 * i];
+            pts[2 * i + 1] = cy + offsets[2 * i + 1];
+        }
+        if (stamp_points(cv, corner, steps + 1, (int)thick, rad, rad2, r, g, b)) return;
+    }
     for (int i = 0; i <= steps; i++) {
         float ox, oy;
         if (cached) {
@@ -429,6 +770,18 @@ static void paint_segment(Canvas *cv, int x, int y, int w, int h, float ax, floa
     int steps = (int)(len * 2.0f) + 1;
     float rad = thick * 0.5f;
     float rad2 = (rad + 0.6f) * (rad + 0.6f);
+    /* Shapes 4 and 5: from the top right (as ╱) or the top left. */
+    int shape = ax > (float)x ? 4 : 5;
+    int found = stamp_find(cv, shape, steps + 1, (int)thick, r, g, b);
+    if (found == 1) return;
+    if (found == 0) {
+        float *pts = cv->stamps->points;
+        for (int i = 0; i <= steps; i++) {
+            pts[2 * i] = ax + (bx - ax) * ((float)i / (float)steps);
+            pts[2 * i + 1] = ay + (by - ay) * ((float)i / (float)steps);
+        }
+        if (stamp_points(cv, shape, steps + 1, (int)thick, rad, rad2, r, g, b)) return;
+    }
     for (int i = 0; i <= steps; i++) {
         float px = ax + (bx - ax) * ((float)i / (float)steps);
         float py = ay + (by - ay) * ((float)i / (float)steps);
@@ -759,41 +1112,136 @@ static int clear_background(const Cell *cell) { return !(cell->attrs & ATTR_OPAQ
    and use integer nearest-neighbor sampling for reproducible screenshots.
    Paints the images of one layer, in their order. With cells, of cell_w x
    cell_h pixels and cv->w / cell_w to a row, only over clear backgrounds. */
-static void paint_images(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
-                         int cell_w, int cell_h) {
+static void paint_image_rows(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
+                             int cell_w, int cell_h, int64_t top, int64_t bottom) {
     for (size_t i = 0; i < count; i++) {
         const ImageView *im = &images[i];
         if (image_layer(im->z) != layer) continue;
         int64_t x0 = im->x > im->clip_left ? im->x : im->clip_left;
         if (x0 < 0) x0 = 0;
         int64_t y0 = im->y > im->clip_top ? im->y : im->clip_top;
-        if (y0 < 0) y0 = 0;
+        if (y0 < top) y0 = top;
         int64_t x1 = im->x + im->w;
         int64_t y1 = im->y + im->h;
         if (x1 > im->clip_right) x1 = im->clip_right;
         if (x1 > cv->w) x1 = cv->w;
         if (y1 > im->clip_bottom) y1 = im->clip_bottom;
-        if (y1 > cv->h) y1 = cv->h;
+        if (y1 > bottom) y1 = bottom;
+        if (x0 >= x1) continue;
+        /* The source column of x is src_x + (x - im->x) * src_w / w: its
+           quotient and remainder, stepped from x0 a column at a time. */
+        int64_t first = (x0 - im->x) * (int64_t)im->src_w, step = (int64_t)im->src_w / im->w,
+                carry = (int64_t)im->src_w % im->w;
         for (int64_t y = y0; y < y1; y++) {
             size_t sy = im->src_y + (size_t)((y - im->y) * im->src_h / im->h);
             const Cell *row = cells ? cells + (size_t)(y / cell_h) * (size_t)(cv->w / cell_w) : NULL;
-            for (int64_t x = x0; x < x1; x++) {
-                if (row && !clear_background(&row[x / cell_w])) continue;
-                size_t sx = im->src_x + (size_t)((x - im->x) * im->src_w / im->w);
-                const unsigned char *src = im->pixels + (sy * im->width + sx) * 4;
-                unsigned char *dst = cv->px + (size_t)y * cv->stride + (size_t)x * BPP;
-                unsigned a = src[3];
-                for (int c = 0; c < 3; c++)
-                    dst[c] = (unsigned char)((src[c] * a + dst[c] * (255 - a) + 127) / 255);
+            const unsigned char *line = im->pixels + (sy * im->width + im->src_x) * 4;
+            unsigned char *dst = cv->px + (size_t)y * cv->stride + (size_t)x0 * BPP;
+            int64_t sx = first / im->w, rem = first % im->w, col = x0 / cell_w, sub = x0 % cell_w;
+            for (int64_t x = x0; x < x1; x++, dst += BPP) {
+                if (!row || clear_background(&row[col])) {
+                    const unsigned char *src = line + (size_t)sx * 4;
+                    unsigned a = src[3];
+                    /* At 255 and 0 the blend below is the source and the
+                       destination exactly. */
+                    if (a == 255) {
+                        dst[0] = src[0];
+                        dst[1] = src[1];
+                        dst[2] = src[2];
+                    } else if (a) {
+                        for (int c = 0; c < 3; c++)
+                            dst[c] = (unsigned char)((src[c] * a + dst[c] * (255 - a) + 127) / 255);
+                    }
+                }
+                sx += step;
+                rem += carry;
+                if (rem >= im->w) {
+                    sx++;
+                    rem -= im->w;
+                }
+                if (++sub == cell_w) {
+                    sub = 0;
+                    col++;
+                }
             }
         }
     }
 }
 
+static void paint_images(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
+                         int cell_w, int cell_h) {
+    paint_image_rows(cv, images, count, layer, cells, cell_w, cell_h, 0, cv->h);
+}
+
+/* What is painted under the text, a row of cells at a time, so that the text
+   is painted while its rows are still in the cache: the cell backgrounds,
+   then the images below them, which show only through the default ones, and
+   those over every background. A row is painted before anything over it
+   (the row's own cells, or a glyph or mark reaching down into it), so each
+   pixel is painted in the same order as if every row were painted first.
+   The whole backdrop is painted at once instead, as it was before rows:
+   - for a raster under BACKDROP_ROW_BYTES, which stays in the last-level
+     cache anyway. Rows gained nothing at 2200x1440 (9.5 MB) on either host
+     measured, and on macOS they cost 1-2% there, but up to 8% faster on
+     Linux at 61-67 MB (docs/performance.md);
+   - with more than BACKDROP_ROW_IMAGES images under the text (Unicode
+     placeholders make one a run), since each row looks at every image. */
+#ifndef BACKDROP_ROW_BYTES
+#define BACKDROP_ROW_BYTES ((size_t)16 << 20)
+#endif
+#define BACKDROP_ROW_IMAGES 64
+typedef struct {
+    const Cell *cells;
+    int cols, rows, cell_w, cell_h, done; /* rows painted */
+    const ImageView *images;
+    size_t image_count;
+    int whole; /* paint every row at the first call */
+    double ms;
+} Backdrop;
+
+static Backdrop backdrop_for(const Canvas *cv, const Cell *cells, int cols, int rows, int cell_w, int cell_h,
+                             const ImageView *images, size_t image_count) {
+    size_t under = 0;
+    for (size_t i = 0; i < image_count; i++) under += image_layer(images[i].z) != LAYER_OVER_TEXT;
+    int whole = under > BACKDROP_ROW_IMAGES || cv->stride * (size_t)cv->h < BACKDROP_ROW_BYTES;
+    return (Backdrop){cells, cols, rows, cell_w, cell_h, 0, images, image_count, whole, 0};
+}
+
+/* Paint the backdrop of every row of cells above pixel row y. */
+static void backdrop_through(Canvas *cv, Backdrop *bd, int64_t y) {
+    if (bd->done >= bd->rows || y <= (int64_t)bd->done * bd->cell_h) return;
+    double tick = now_ms();
+    int64_t last = bd->whole ? bd->rows : (y + bd->cell_h - 1) / bd->cell_h;
+    if (last > bd->rows) last = bd->rows;
+    for (int r = bd->done; r < last; r++) {
+        int top = r * bd->cell_h;
+        uint8_t *scanline = cv->filtered + (size_t)top * cv->stride;
+        scanline[0] = 0;
+        for (int c = 0; c < bd->cols; c++) {
+            const Cell *cell = &bd->cells[(size_t)r * bd->cols + c];
+            fill_rect(cv, c * bd->cell_w, top, (c + 1) * bd->cell_w, top + 1, cell->br, cell->bg, cell->bb);
+        }
+        for (int dy = 1; dy < bd->cell_h; dy++) {
+            memcpy(cv->filtered + (size_t)(top + dy) * cv->stride, scanline, cv->stride);
+        }
+        if (bd->whole) continue;
+        paint_image_rows(cv, bd->images, bd->image_count, LAYER_BELOW, bd->cells, bd->cell_w, bd->cell_h, top,
+                         top + bd->cell_h);
+        paint_image_rows(cv, bd->images, bd->image_count, LAYER_UNDER_TEXT, NULL, bd->cell_w, bd->cell_h, top,
+                         top + bd->cell_h);
+    }
+    if (bd->whole) {
+        paint_images(cv, bd->images, bd->image_count, LAYER_BELOW, bd->cells, bd->cell_w, bd->cell_h);
+        paint_images(cv, bd->images, bd->image_count, LAYER_UNDER_TEXT, NULL, bd->cell_w, bd->cell_h);
+    }
+    bd->done = (int)last;
+    bd->ms += now_ms() - tick;
+}
+
 /* Free what the glyph pass holds when memory runs out in it; returns 2. */
 static int glyphs_failed(Canvas *cv, Glyph *cache, Outline *scratch) {
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
-    for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    free_geometry(cv);
     free(scratch->v);
     free(cv->filtered);
     cv->px = NULL;
@@ -940,7 +1388,7 @@ static int is_ignorable(uint32_t cp) {
    character instead. y is the baseline. Adds the time spent finding glyphs
    and blending them to glyph_ms and blend_ms. Returns 0, or 2 when memory
    runs out. */
-static int paint_marks(Canvas *cv, Glyphs *g, const CellMarks *marks, const Cell *cell, int base_x,
+static int paint_marks(Canvas *cv, Backdrop *backdrop, Glyphs *g, const CellMarks *marks, const Cell *cell, int base_x,
                        float base_advance, int y, double *glyph_ms, double *blend_ms) {
     int italic = (cell->attrs & ATTR_ITALIC) != 0;
     for (int k = 0; k < MAX_MARKS && marks->marks[k]; k++) {
@@ -951,6 +1399,7 @@ static int paint_marks(Canvas *cv, Glyphs *g, const CellMarks *marks, const Cell
         *glyph_ms += now_ms() - tick;
         if (!mark) return 2;
         if (!mark->bitmap) continue;
+        backdrop_through(cv, backdrop, (int64_t)y + mark->iy0 + mark->h);
         tick = now_ms();
         int dx = 2 * mark->ix0 + mark->w < 0 ? base_x + (int)floorf(base_advance + 0.5f) + mark->ix0
                                              : base_x + (int)floorf((base_advance - (float)mark->w) / 2 + 0.5f);
@@ -1014,8 +1463,9 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     /* One leading zero per scanline is PNG's None filter. Paint directly into
        the compressor input instead of copying a second full image later. */
     size_t stride = (size_t)width * BPP + 1;
+    Stamps stamps = {0};
     Canvas canvas = {.filtered = (uint8_t *)malloc(stride * (size_t)height),
-                     .w = (int)width, .h = (int)height, .stride = stride};
+                     .w = (int)width, .h = (int)height, .stride = stride, .stamps = &stamps};
     Canvas *cv = &canvas;
     if (!cv->filtered) {
         fprintf(stderr, "termshot: out of memory for a %lldx%lld image\n", width, height);
@@ -1024,23 +1474,10 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
 
     cv->px = cv->filtered + 1;
     double allocated = now_ms();
-    for (int r = 0; r < rows; r++) {
-        int y = r * cell_h;
-        uint8_t *scanline = cv->filtered + (size_t)y * cv->stride;
-        scanline[0] = 0;
-        for (int c = 0; c < cols; c++) {
-            const Cell *cell = &cells[r * cols + c];
-            fill_rect(cv, c * cell_w, y, (c + 1) * cell_w, y + 1, cell->br, cell->bg, cell->bb);
-        }
-        for (int dy = 1; dy < cell_h; dy++) {
-            memcpy(cv->filtered + (size_t)(y + dy) * cv->stride, scanline, cv->stride);
-        }
-    }
-
-    /* Images under the text: those below the backgrounds show only through
-       the default ones, then those over every background. */
-    paint_images(cv, images, image_count, LAYER_BELOW, cells, cell_w, cell_h);
-    paint_images(cv, images, image_count, LAYER_UNDER_TEXT, NULL, cell_w, cell_h);
+    /* The backgrounds and the images under the text are painted a row of
+       cells ahead of the text over them (backdrop_through); background_ms
+       is their time, and foreground_ms the rest. */
+    Backdrop backdrop = backdrop_for(cv, cells, cols, rows, cell_w, cell_h, images, image_count);
     double background = now_ms();
     double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
     Glyph cache[GLYPH_CACHE_SIZE] = {0};
@@ -1049,6 +1486,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                 italic_pivot, cache, &scratch, 0, 0, 0, 0, 0, 0};
     size_t next_mark = 0;
     for (int r = 0; r < rows; r++) {
+        backdrop_through(cv, &backdrop, (int64_t)(r + 1) * cell_h);
         for (int c = 0; c < cols; c++) {
             size_t index = (size_t)r * (size_t)cols + (size_t)c;
             const Cell *cell = &cells[index];
@@ -1075,6 +1513,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                     if (!entry) return glyphs_failed(cv, cache, &scratch);
                     glyph_ms += now_ms() - tick;
                     tick = now_ms();
+                    double ahead = backdrop.ms;
                     if (entry->missing && !is_blank(cp)) {
                         if (entry->empty && empty && empty->cells++ == 0) {
                             *empty = (EmptyGlyphs){.cp = cp, .fonts = (uint32_t)entry->empty, .col = c, .row = r, .cells = 1};
@@ -1085,6 +1524,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                         int gw = entry->w, gh = entry->h;
                         int dx = c * cell_w + entry->shift + entry->ix0;
                         int dy = r * cell_h + baseline + entry->iy0;
+                        backdrop_through(cv, &backdrop, (int64_t)dy + gh);
                         blend(cv, dx, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
                         if (cell->attrs & ATTR_BOLD) blend(cv, dx + 1, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
                     }
@@ -1092,16 +1532,17 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
                         base_x += entry->shift;
                         base_advance = entry->advance;
                     }
-                    blend_ms += now_ms() - tick;
+                    blend_ms += now_ms() - tick - (backdrop.ms - ahead);
                 }
             }
             if (cell_marks &&
-                paint_marks(cv, &g, cell_marks, cell, base_x, base_advance, r * cell_h + baseline, &glyph_ms,
+                paint_marks(cv, &backdrop, &g, cell_marks, cell, base_x, base_advance, r * cell_h + baseline, &glyph_ms,
                             &blend_ms) != 0)
                 return glyphs_failed(cv, cache, &scratch);
         }
     }
 
+    backdrop_through(cv, &backdrop, (int64_t)rows * cell_h);
     /* Underlines and strike-through, over the glyphs, as thick as box-drawing
        strokes and kept inside the cell. */
     int line_t = cell_w / 12 < 1 ? 1 : cell_w / 12;
@@ -1128,7 +1569,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     }
 
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
-    for (int k = 0; k < 4; k++) free(cv->arc_offsets[k]);
+    free_geometry(cv);
     free(scratch.v);
     paint_images(cv, images, image_count, LAYER_OVER_TEXT, NULL, cell_w, cell_h);
     double foreground = now_ms();
@@ -1149,13 +1590,13 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     free(cv->filtered);
     cv->px = NULL;
     if (profiling) {
-        fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"glyph_cache_evictions\":%zu,\"glyph_missing\":%zu,\"fallback_lookups\":%zu,\"fallback_rasterizations\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
+        fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"geometry_cache_hits\":%zu,\"geometry_cache_misses\":%zu,\"geometry_cache_uncached\":%zu,\"geometry_cache_bytes\":%zu,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"glyph_cache_evictions\":%zu,\"glyph_missing\":%zu,\"fallback_lookups\":%zu,\"fallback_rasterizations\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
             termshot_deflate_profile.allocate_ms, termshot_deflate_profile.match_emit_ms,
             termshot_deflate_profile.finalize_ms, termshot_deflate_profile.checksum_ms,
             font_setup - started, allocated - font_setup,
-            background - allocated, foreground - background, geometry_ms, glyph_ms, blend_ms,
+            background - allocated + backdrop.ms, foreground - background - backdrop.ms, geometry_ms, glyph_ms, blend_ms,
             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
-            encoded - foreground, written - encoded, now_ms() - written, g.glyphs, g.cache_hits, g.evictions, g.missing, g.fallback_lookups, g.fallback_glyphs, png_len, (size_t)(width * height * BPP));
+            encoded - foreground, written - encoded, now_ms() - written, stamps.hits, stamps.misses, stamps.uncached, stamps.bytes, g.glyphs, g.cache_hits, g.evictions, g.missing, g.fallback_lookups, g.fallback_glyphs, png_len, (size_t)(width * height * BPP));
     }
     if (!ok) {
         fprintf(stderr, "termshot: png write failed: %s\n", out_path);

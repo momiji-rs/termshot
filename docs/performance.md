@@ -1,14 +1,17 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[painting round](#painting-and-geometry-2026-10-03-721d3fe-22) (2026-10-03,
+`721d3fe`, #22) changed only painting in `src/draw.c` and adds the `draw`
+workloads. The
 [ANSI replay parsing round](#ansi-replay-parsing-2026-10-03-10f1ea1-21)
 (2026-10-03, `10f1ea1`, #21) changed only the parser, the screen model,
 the width and composition lookups and cast detection, and remeasured every
 case against main `76f18ee` on the same two machines. The
 [PNG compression round](#png-compression-adler-32-and-deflate-matching-2026-10-03-3bf2ffc-20)
 (2026-10-03, `3bf2ffc`, #20) changed only `src/deflate.c` and remeasured
-every case on the same two machines; for everything outside parsing and PNG
-compression, the [font-path baseline](#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)
+every case on the same two machines; for everything outside painting, parsing
+and PNG compression, the [font-path baseline](#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)
 after it (main `d83c8fd`, Apple M2 Max and AMD Ryzen 7 8745HS) is still the
 reference. The [third optimization round](#historical-third-optimization-round-2026-10-01-c44d83c-apple-m3)
 below them (2026-10-01, `c44d83c`, Apple M3) is history: a different revision,
@@ -19,6 +22,422 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## Painting and geometry (2026-10-03, `721d3fe`, #22)
+
+Issue #22 asked to reprofile drawing (rounded, box and block grids, large
+sparse and dense screens, other font sizes, ordinary text, images under and
+over text), and to try bounded reuse of repeated geometry and cheaper
+background and blend painting, without changing a pixel. Three changes to
+`src/draw.c` are kept; six more experiments were measured and dropped.
+Every PNG of every run matches main's byte for byte.
+
+### Result
+
+| | macOS arm64 (M2 Max, Apple clang 21) | Linux x86-64 (Ryzen 7 8745HS, GCC 16.2) |
+| --- | --- | --- |
+| `rounded-boxes` (3,000 corners, 2200×1440) wall | 15.33 → 10.13 ms (1.50-1.51×) | 14.08 → 8.67 ms (1.60-1.62×) |
+| `rounded-128px` (5800×3840) wall | 69.94 → 32.85 ms (2.13-2.15×) | 63.17 → 25.56 ms (2.44-2.46×) |
+| `rounded-24px` (1100×720) wall | 8.17 → 5.74 ms (1.43×) | 7.57 → 4.89 ms (1.52×) |
+| `rounded-boxes` `geometry_ms` | 6.11 → 1.24 ms | 6.62 → 1.07 ms |
+| `image-over` wall | 21.10 → 20.01 ms (1.05-1.06×) | 21.58 → 20.11 ms (1.08-1.09×) |
+| `image-under` wall | 26.25 → 25.13 ms (1.05-1.06×) | 26.26 → 24.77 ms (1.07×) |
+| `large` (5280×3840) wall | 38.67 → 38.14 ms (1.02×) | 36.90 → 34.26 ms (1.05-1.07×) |
+| `reply-128px` (5800×3840) wall | 28.81 → 28.82 ms (1.00×) | 25.62 → 24.30 ms (1.05-1.06×) |
+| `geometry-all` (5280×3840) wall | 97.23 → 94.40 ms (1.03×) | 98.49 → 91.32 ms (1.08-1.09×) |
+| `large` `blend_ms` | 4.91 → 3.90 ms | 7.26 → 5.14 ms |
+| paired wall speedup, every other case | 0.983-1.012 | 0.955-1.038 |
+
+Speedups are main/branch paired wall ratios (above 1 is faster) of batches A
+and B; stage figures are batch A medians. Rounded corners gain the most,
+because each one used to be stamped afresh: on macOS 3,000 of them cost 6.1
+ms of `geometry_ms` at 48 px and 42.6 ms at 128 px, and now 1.2 and 4.7 ms.
+Images gain 3-6% on macOS and 7-9% on Linux. Rasters over 16 MiB gain up to
+9% on Linux (`large` 1.05-1.07×, `geometry-all` 1.08-1.09×, `reply-128px`
+1.05-1.06×) and up to 3% on macOS, where DEFLATE matching runs slower after
+the row-at-a-time painting (see the rejected experiments). Everything else
+is within noise on both hosts.
+
+### What was measured
+
+- **main**: `5a832cd` (main after #67, #68 and #70, the parser round),
+  built with `scripts/build-baseline.py --revision 5a832cd`.
+- **branch**: `721d3fe`, this PR merged with that main. The documentation
+  commit after it changes no build input. The parser round's five long logs
+  (`dense-sgr` and the rest) are in the suite and in the tables.
+
+`bench.py` as in the rounds below: 5 warmups and 40 shuffled rounds of plain
+and profiled runs per case and binary, 5 peak-RSS runs, seeds 17 (batch A)
+and 29 (batch B), `--verify-identical`. A new `--suite draw` adds the
+painting workloads (all at the default 48 px unless named; every row fits
+its screen, so none wraps):
+
+| case | screen | what it stresses |
+| --- | --- | --- |
+| `box-grid` | 100×30 | light, heavy and double lines: tables |
+| `block-grid` | 100×30 | 30 block elements and shades in 256 colours |
+| `rounded-panes` | 100×30 | four rounded panes of text, 48 corners: a realistic TUI |
+| `rounded-24px`, `rounded-128px` | 100×30 | the `rounded-boxes` grid (3,000 corners) at other sizes |
+| `geometry-all` | 240×80 | every U+2500-U+259F character, bold and plain, cycling |
+| `large-sparse` | 240×80 | three lines of text on a large screen |
+| `large-color` | 240×80 | text on 216 background colours |
+| `image-below`, `image-under`, `image-over` | 100×30 | a 128×128 RGBA image with transparency over 60×20 cells, below the backgrounds (z < -2^30), under the text (z = -1) and over it, with every third row on a background of its own |
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, macOS 26.6.2 | `starship`, kernel 7.2.5-3-omarchy, glibc 2.44, governor `performance` |
+| compilers | rustc 1.98.1, Apple clang 21.0.0 (clang-2100.3.34.2) | rustc 1.98.1, GCC 16.2.1 20260810 |
+| main / branch sha256 | `0880e7c6af32…` / `345dc4507209…` | `956b25423881…` / `8a57e678bec6…` |
+| load average (1 min) during the batches | 4.3-4.8: a shared desktop, other sessions busy | 0.8-1.5 |
+
+The macOS batches have no `*-full` cases: the full Noto CJK collection is not
+on that host, and nothing in this round touches fonts.
+
+Raw results: macOS [batch A](performance-2026-10-03-draw-macos-a.json),
+[batch B](performance-2026-10-03-draw-macos-b.json) and
+[a recheck](performance-2026-10-03-draw-macos-recheck.json); Linux
+[batch A](performance-2026-10-03-draw-linux-a.json),
+[batch B](performance-2026-10-03-draw-linux-b.json) and
+[a recheck](performance-2026-10-03-draw-linux-recheck.json). They hold every
+sample; none was discarded.
+
+### End-to-end results
+
+Wall median / p95 (ms) from batch A, then the paired speedup of each batch
+with its 95% bootstrap interval, and peak RSS medians (MiB, batch A).
+
+macOS arm64:
+
+| case | main wall | branch wall | speedup A | speedup B | main RSS | branch RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `font-builtin` | 8.80 / 9.36 | 8.90 / 9.46 | 1.000 [0.980, 1.013] | 0.992 [0.977, 1.002] | 14.23 | 14.27 |
+| `font-file` | 8.90 / 9.47 | 8.94 / 9.53 | 0.992 [0.968, 1.011] | 0.998 [0.969, 1.013] | 14.02 | 14.02 |
+| `cjk-none` | 5.01 / 5.34 | 5.02 / 5.27 | 1.003 [0.990, 1.012] | 1.004 [0.988, 1.024] | 7.06 | 7.09 |
+| `cjk-subset` | 9.58 / 10.15 | 9.54 / 10.04 | 1.006 [0.982, 1.024] | 1.003 [0.986, 1.024] | 8.62 | 8.61 |
+| `cjk-cff-primary` | 9.31 / 9.87 | 9.29 / 9.87 | 1.000 [0.976, 1.015] | 0.985 [0.971, 1.009] | 7.38 | 7.31 |
+| `mixed-subset` | 7.69 / 7.93 | 7.65 / 8.12 | 0.997 [0.982, 1.011] | 0.996 [0.984, 1.006] | 8.84 | 8.92 |
+| `glyph-overflow` | 16.35 / 17.09 | 16.50 / 16.80 | 0.992 [0.983, 0.999] | 1.007 [0.988, 1.013] | 8.42 | 8.72 |
+| `reply-sent` | 8.87 / 9.67 | 8.80 / 9.47 | 1.006 [0.990, 1.018] | 1.009 [1.000, 1.027] | 14.00 | 14.02 |
+| `draft-ready` | 8.98 / 9.73 | 9.18 / 10.12 | 0.983 [0.962, 1.009] | 0.985 [0.967, 1.019] | 14.00 | 13.98 |
+| `reply-24px` | 5.73 / 6.29 | 5.82 / 6.17 | 0.999 [0.981, 1.016] | 0.996 [0.974, 1.013] | 7.08 | 7.06 |
+| `reply-128px` | 28.81 / 29.92 | 28.82 / 31.04 | 0.996 [0.987, 1.010] | 0.996 [0.985, 1.001] | 69.58 | 69.59 |
+| `real-shell` | 6.24 / 6.67 | 6.28 / 6.58 | 0.990 [0.976, 1.021] | 0.998 [0.975, 1.006] | 10.48 | 10.52 |
+| `real-less` | 5.88 / 6.06 | 5.79 / 6.17 | 1.004 [0.980, 1.029] | 1.000 [0.991, 1.019] | 10.45 | 10.44 |
+| `real-vi` | 7.75 / 8.05 | 7.77 / 8.04 | 0.995 [0.979, 1.016] | 1.012 [0.987, 1.023] | 10.69 | 10.62 |
+| `blank` | 5.94 / 6.32 | 5.97 / 6.27 | 0.999 [0.984, 1.018] | 1.003 [0.972, 1.015] | 12.81 | 12.84 |
+| `color-grid` | 17.52 / 17.91 | 17.51 / 17.98 | 1.001 [0.994, 1.005] | 1.004 [0.995, 1.014] | 8.28 | 8.25 |
+| `ascii-overflow` | 5.77 / 6.10 | 5.73 / 6.08 | 1.008 [0.998, 1.022] | 1.010 [0.992, 1.030] | 8.36 | 8.41 |
+| `rounded-boxes` | 15.33 / 15.86 | 10.13 / 10.66 | 1.512 [1.493, 1.533] | 1.499 [1.479, 1.531] | 13.00 | 13.11 |
+| `dense` | 11.81 / 12.03 | 11.69 / 12.31 | 1.003 [0.992, 1.020] | 1.009 [0.989, 1.015] | 14.28 | 13.97 |
+| `ansi-replay` | 18.46 / 18.98 | 18.47 / 18.99 | 1.002 [0.985, 1.005] | 1.003 [0.994, 1.011] | 18.53 | 18.53 |
+| `large` | 38.67 / 40.20 | 38.14 / 40.16 | 1.017 [1.008, 1.025] | 1.015 [1.007, 1.019] | 65.39 | 65.41 |
+| `unicode` | 7.73 / 8.04 | 7.76 / 8.08 | 0.994 [0.985, 1.007] | 1.011 [0.987, 1.020] | 7.50 | 7.52 |
+| `box-grid` | 7.31 / 7.63 | 7.35 / 7.66 | 1.000 [0.983, 1.013] | 1.011 [0.984, 1.030] | 13.97 | 13.95 |
+| `block-grid` | 10.26 / 10.71 | 10.25 / 10.65 | 1.006 [0.992, 1.023] | 1.001 [0.988, 1.014] | 14.14 | 14.09 |
+| `rounded-panes` | 9.67 / 10.11 | 9.56 / 10.05 | 1.002 [0.989, 1.029] | 1.001 [0.985, 1.020] | 14.27 | 14.12 |
+| `rounded-24px` | 8.17 / 8.42 | 5.74 / 6.01 | 1.425 [1.402, 1.464] | 1.428 [1.421, 1.443] | 6.27 | 6.38 |
+| `rounded-128px` | 69.94 / 74.62 | 32.85 / 35.01 | 2.127 [2.109, 2.146] | 2.150 [2.139, 2.163] | 69.17 | 69.36 |
+| `geometry-all` | 97.23 / 100.11 | 94.40 / 99.06 | 1.029 [1.022, 1.033] | 1.027 [1.021, 1.034] | 65.48 | 65.61 |
+| `large-sparse` | 20.40 / 22.72 | 20.70 / 22.65 | 1.000 [0.983, 1.010] | 0.995 [0.989, 1.016] | 64.19 | 64.17 |
+| `large-color` | 145.30 / 147.67 | 143.91 / 147.06 | 1.004 [1.001, 1.009] | 1.003 [0.999, 1.010] | 77.12 | 77.14 |
+| `image-below` | 22.83 / 23.20 | 22.01 / 22.63 | 1.032 [1.024, 1.042] | 1.033 [1.023, 1.040] | 14.80 | 15.56 |
+| `image-under` | 26.25 / 27.08 | 25.13 / 25.80 | 1.050 [1.032, 1.058] | 1.056 [1.035, 1.065] | 15.78 | 15.08 |
+| `image-over` | 21.10 / 21.76 | 20.01 / 20.74 | 1.059 [1.046, 1.063] | 1.047 [1.043, 1.054] | 15.36 | 15.45 |
+| `dense-sgr` | 31.23 / 31.67 | 30.91 / 31.78 | 1.007 [1.004, 1.011] | 1.001 [0.994, 1.009] | 9.86 | 9.88 |
+| `cursor-moves` | 27.52 / 28.14 | 27.49 / 28.12 | 1.000 [0.997, 1.006] | 1.001 [0.988, 1.010] | 9.14 | 9.23 |
+| `scrolling` | 9.54 / 10.01 | 9.46 / 9.92 | 1.010 [0.984, 1.018] | 0.990 [0.977, 1.007] | 7.98 | 8.08 |
+| `mixed-unicode` | 29.27 / 30.11 | 29.16 / 29.90 | 0.997 [0.994, 1.011] | 1.002 [0.998, 1.008] | 9.00 | 8.86 |
+| `thai-combining` | 24.00 / 24.45 | 24.05 / 24.34 | 1.000 [0.996, 1.005] | 0.997 [0.990, 1.006] | 8.88 | 8.94 |
+
+Linux x86-64:
+
+| case | main wall | branch wall | speedup A | speedup B | main RSS | branch RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `font-builtin` | 7.57 / 8.24 | 7.49 / 8.30 | 1.000 [0.977, 1.024] | 1.022 [0.993, 1.042] | 15.32 | 15.30 |
+| `font-file` | 7.69 / 8.84 | 7.71 / 9.29 | 1.019 [0.967, 1.042] | 0.982 [0.967, 1.002] | 15.10 | 15.01 |
+| `cjk-none` | 4.39 / 4.98 | 4.27 / 4.85 | 1.027 [0.949, 1.054] | 1.006 [0.967, 1.045] | 8.17 | 8.11 |
+| `cjk-subset` | 9.97 / 10.46 | 9.79 / 10.67 | 1.024 [0.998, 1.041] | 1.004 [0.978, 1.026] | 9.38 | 9.46 |
+| `cjk-cff-primary` | 8.56 / 9.88 | 9.03 / 9.83 | 0.955 [0.932, 0.995] | 0.982 [0.954, 1.026] | 8.27 | 8.23 |
+| `mixed-subset` | 7.44 / 8.11 | 7.51 / 8.31 | 1.003 [0.981, 1.026] | 0.982 [0.963, 1.015] | 9.52 | 9.43 |
+| `glyph-overflow` | 15.48 / 17.16 | 15.64 / 17.74 | 0.986 [0.971, 1.020] | 1.006 [0.979, 1.035] | 8.74 | 8.65 |
+| `cjk-full` | 13.74 / 15.07 | 13.55 / 14.35 | 1.012 [0.991, 1.028] | 1.017 [0.992, 1.038] | 29.47 | 29.53 |
+| `mixed-full` | 11.91 / 12.85 | 11.76 / 14.05 | 1.008 [0.975, 1.027] | 1.020 [0.981, 1.043] | 29.56 | 29.46 |
+| `cjk-overflow-full` | 27.41 / 29.22 | 27.15 / 28.87 | 1.002 [0.985, 1.019] | 0.991 [0.971, 1.014] | 30.02 | 29.89 |
+| `reply-sent` | 7.69 / 8.44 | 7.60 / 8.49 | 1.017 [0.996, 1.035] | 1.008 [0.978, 1.029] | 15.10 | 14.97 |
+| `draft-ready` | 7.45 / 7.92 | 7.55 / 8.33 | 0.986 [0.967, 1.010] | 1.035 [0.987, 1.068] | 15.03 | 15.01 |
+| `reply-24px` | 5.09 / 5.70 | 5.17 / 5.78 | 0.967 [0.897, 1.034] | 0.986 [0.936, 1.016] | 8.01 | 8.00 |
+| `reply-128px` | 25.62 / 26.93 | 24.30 / 26.82 | 1.051 [1.036, 1.068] | 1.056 [1.045, 1.069] | 70.36 | 70.71 |
+| `real-shell` | 5.58 / 6.08 | 5.38 / 6.04 | 1.038 [0.981, 1.064] | 0.993 [0.973, 1.028] | 11.45 | 11.48 |
+| `real-less` | 5.02 / 5.71 | 5.02 / 5.36 | 1.018 [0.978, 1.072] | 0.969 [0.931, 1.000] | 11.47 | 11.38 |
+| `real-vi` | 7.27 / 7.79 | 7.06 / 7.75 | 1.009 [0.997, 1.027] | 1.018 [1.008, 1.037] | 11.63 | 11.62 |
+| `blank` | 4.12 / 4.68 | 4.07 / 4.60 | 1.035 [1.001, 1.061] | 1.008 [0.974, 1.029] | 13.82 | 13.72 |
+| `color-grid` | 17.04 / 17.89 | 17.25 / 19.09 | 0.983 [0.966, 1.001] | 1.012 [0.986, 1.040] | 8.54 | 8.50 |
+| `ascii-overflow` | 6.13 / 6.92 | 6.18 / 7.74 | 0.969 [0.938, 1.016] | 1.026 [0.993, 1.072] | 8.29 | 8.34 |
+| `rounded-boxes` | 14.08 / 15.53 | 8.67 / 9.32 | 1.615 [1.593, 1.657] | 1.603 [1.553, 1.646] | 13.90 | 13.94 |
+| `dense` | 10.94 / 11.54 | 10.69 / 11.50 | 1.013 [0.995, 1.055] | 0.992 [0.977, 1.020] | 15.10 | 14.91 |
+| `ansi-replay` | 16.14 / 17.48 | 16.14 / 19.09 | 0.997 [0.978, 1.023] | 0.993 [0.983, 1.009] | 14.98 | 14.96 |
+| `large` | 36.90 / 40.17 | 34.26 / 36.96 | 1.072 [1.051, 1.088] | 1.054 [1.042, 1.072] | 65.48 | 65.48 |
+| `unicode` | 7.33 / 8.27 | 7.27 / 8.21 | 0.996 [0.970, 1.018] | 1.010 [0.984, 1.033] | 8.12 | 7.98 |
+| `box-grid` | 5.90 / 6.70 | 5.94 / 6.96 | 1.011 [0.974, 1.043] | 1.001 [0.971, 1.037] | 14.72 | 14.87 |
+| `block-grid` | 9.65 / 11.15 | 9.63 / 10.38 | 0.992 [0.960, 1.016] | 1.002 [0.972, 1.031] | 15.07 | 15.17 |
+| `rounded-panes` | 8.70 / 9.42 | 8.90 / 9.64 | 0.991 [0.953, 1.023] | 1.009 [0.990, 1.031] | 15.34 | 15.29 |
+| `rounded-24px` | 7.57 / 8.33 | 4.89 / 5.57 | 1.524 [1.498, 1.577] | 1.521 [1.479, 1.583] | 7.28 | 7.32 |
+| `rounded-128px` | 63.17 / 67.99 | 25.56 / 28.59 | 2.456 [2.421, 2.507] | 2.444 [2.396, 2.520] | 70.18 | 70.24 |
+| `geometry-all` | 98.49 / 103.17 | 91.32 / 95.69 | 1.076 [1.063, 1.096] | 1.088 [1.076, 1.098] | 66.07 | 65.91 |
+| `large-sparse` | 15.49 / 16.53 | 15.43 / 16.49 | 0.986 [0.963, 1.013] | 1.015 [1.000, 1.039] | 64.66 | 64.74 |
+| `large-color` | 141.00 / 150.00 | 136.36 / 145.23 | 1.026 [1.016, 1.045] | 1.028 [1.017, 1.049] | 76.21 | 76.76 |
+| `image-below` | 23.18 / 24.68 | 21.37 / 23.37 | 1.075 [1.066, 1.093] | 1.081 [1.066, 1.090] | 15.79 | 15.76 |
+| `image-under` | 26.26 / 28.01 | 24.77 / 26.77 | 1.068 [1.044, 1.087] | 1.070 [1.046, 1.088] | 15.84 | 15.95 |
+| `image-over` | 21.58 / 23.15 | 20.11 / 21.30 | 1.080 [1.068, 1.109] | 1.086 [1.072, 1.111] | 15.77 | 15.69 |
+| `dense-sgr` | 29.27 / 31.63 | 29.62 / 31.77 | 0.982 [0.973, 0.996] | 0.997 [0.987, 1.024] | 8.29 | 8.29 |
+| `cursor-moves` | 26.96 / 28.80 | 26.77 / 29.97 | 1.007 [0.992, 1.023] | 0.998 [0.978, 1.018] | 8.25 | 8.23 |
+| `scrolling` | 9.05 / 10.10 | 9.15 / 10.24 | 0.970 [0.944, 1.001] | 1.027 [0.974, 1.050] | 7.92 | 7.94 |
+| `mixed-unicode` | 27.37 / 29.11 | 27.17 / 29.37 | 0.994 [0.984, 1.016] | 0.997 [0.987, 1.010] | 8.51 | 8.50 |
+| `thai-combining` | 23.24 / 24.10 | 23.19 / 24.50 | 0.999 [0.993, 1.016] | 1.025 [0.993, 1.038] | 8.63 | 8.61 |
+
+Four ratios are below 1 with confidence in one batch and not the other:
+`glyph-overflow` on macOS batch A, 0.992 [0.983, 0.999], and on Linux
+`cjk-cff-primary` batch A, 0.955 [0.932, 0.995], `dense-sgr` batch A, 0.982
+[0.973, 0.996], and `real-less` batch B, 0.969 [0.931, 1.000]. None of them
+takes a new path (rasters under 16 MiB, no corners or images), and 60-round
+rechecks gave 0.991 [0.985, 1.001] (macOS), 0.989 [0.973, 1.011], 1.000
+[0.983, 1.019] and 1.000 [0.969, 1.024] (Linux). Peak RSS medians differ by
+-0.7 to +0.8 MiB on macOS, whose RSS jumps by about 0.7 MiB between runs of
+one binary, and by -0.2 to +0.6 MiB on Linux.
+
+### Where the time goes, main → branch
+
+Batch A stage medians (ms). `background` is the cell backgrounds and the
+images under the text; `foreground` holds `geometry`, `glyph` and `blend`
+and the images over the text.
+
+macOS arm64:
+
+| case | background | geometry | glyph | blend | foreground |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `rounded-boxes` | 0.94 → 0.92 | 6.11 → 1.24 | 0.00 → 0.00 | 0.00 → 0.00 | 6.21 → 1.33 |
+| `rounded-24px` | 0.25 → 0.26 | 2.94 → 0.49 | 0.00 → 0.00 | 0.00 → 0.00 | 3.04 → 0.59 |
+| `rounded-128px` | 5.57 → 5.61 | 42.64 → 4.68 | 0.00 → 0.00 | 0.00 → 0.00 | 42.75 → 4.80 |
+| `rounded-panes` | 0.90 → 0.89 | 0.21 → 0.23 | 0.11 → 0.11 | 0.58 → 0.57 | 1.02 → 1.05 |
+| `geometry-all` | 5.64 → 5.67 | 8.27 → 3.27 | 0.00 → 0.00 | 0.00 → 0.00 | 8.85 → 3.87 |
+| `box-grid` | 0.89 → 0.90 | 0.16 → 0.16 | 0.03 → 0.03 | 0.20 → 0.20 | 0.50 → 0.51 |
+| `block-grid` | 0.90 → 0.90 | 0.61 → 0.61 | 0.00 → 0.00 | 0.00 → 0.00 | 0.71 → 0.70 |
+| `large-sparse` | 5.64 → 5.56 | 0.00 → 0.00 | 0.12 → 0.10 | 0.07 → 0.04 | 0.24 → 0.20 |
+| `large-color` | 5.76 → 5.80 | 0.36 → 0.37 | 0.44 → 0.53 | 7.85 → 6.52 | 9.95 → 8.83 |
+| `large` | 5.76 → 5.79 | 0.21 → 0.21 | 0.35 → 0.38 | 4.91 → 3.90 | 6.22 → 5.30 |
+| `image-below` | 2.98 → 2.39 | 0.05 → 0.05 | 0.20 → 0.22 | 1.15 → 1.16 | 1.60 → 1.64 |
+| `image-under` | 3.57 → 2.51 | 0.05 → 0.05 | 0.20 → 0.21 | 1.17 → 1.13 | 1.63 → 1.60 |
+| `image-over` | 0.95 → 0.94 | 0.05 → 0.05 | 0.20 → 0.21 | 1.19 → 1.15 | 4.26 → 3.21 |
+| `reply-sent` | 0.94 → 0.94 | 0.06 → 0.07 | 0.26 → 0.26 | 0.25 → 0.25 | 0.63 → 0.64 |
+| `reply-128px` | 5.69 → 5.78 | 0.69 → 0.21 | 0.55 → 0.55 | 1.54 → 1.15 | 2.86 → 1.98 |
+| `dense` | 0.91 → 0.95 | 0.03 → 0.03 | 0.17 → 0.17 | 0.68 → 0.68 | 1.00 → 1.01 |
+| `glyph-overflow` | 0.25 → 0.25 | 0.07 → 0.07 | 4.69 → 4.70 | 0.89 → 0.89 | 5.90 → 5.93 |
+
+Linux x86-64:
+
+| case | background | geometry | glyph | blend | foreground |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `rounded-boxes` | 0.80 → 0.81 | 6.62 → 1.07 | 0.00 → 0.00 | 0.00 → 0.00 | 6.72 → 1.18 |
+| `rounded-24px` | 0.81 → 0.81 | 3.26 → 0.52 | 0.00 → 0.00 | 0.00 → 0.00 | 3.37 → 0.63 |
+| `rounded-128px` | 3.80 → 3.80 | 40.95 → 3.72 | 0.00 → 0.00 | 0.00 → 0.00 | 41.05 → 3.84 |
+| `rounded-panes` | 0.81 → 0.78 | 0.20 → 0.21 | 0.11 → 0.11 | 0.72 → 0.72 | 1.16 → 1.17 |
+| `geometry-all` | 3.50 → 3.55 | 10.66 → 3.40 | 0.00 → 0.00 | 0.00 → 0.00 | 11.39 → 3.93 |
+| `box-grid` | 0.77 → 0.80 | 0.14 → 0.14 | 0.03 → 0.03 | 0.25 → 0.26 | 0.53 → 0.56 |
+| `block-grid` | 0.78 → 0.80 | 0.76 → 0.74 | 0.00 → 0.00 | 0.00 → 0.00 | 0.86 → 0.84 |
+| `large-sparse` | 3.59 → 3.64 | 0.00 → 0.00 | 0.11 → 0.10 | 0.07 → 0.04 | 0.24 → 0.20 |
+| `large-color` | 3.56 → 3.61 | 0.39 → 0.39 | 0.46 → 0.47 | 12.63 → 8.81 | 14.75 → 10.96 |
+| `large` | 3.56 → 3.62 | 0.22 → 0.22 | 0.33 → 0.33 | 7.26 → 5.14 | 8.58 → 6.47 |
+| `image-below` | 4.10 → 2.45 | 0.06 → 0.06 | 0.18 → 0.19 | 1.51 → 1.48 | 1.96 → 1.93 |
+| `image-under` | 4.81 → 2.79 | 0.05 → 0.05 | 0.19 → 0.19 | 1.50 → 1.46 | 1.96 → 1.91 |
+| `image-over` | 0.77 → 0.77 | 0.06 → 0.06 | 0.19 → 0.19 | 1.46 → 1.45 | 5.95 → 4.03 |
+| `reply-sent` | 0.80 → 0.78 | 0.05 → 0.06 | 0.24 → 0.24 | 0.29 → 0.28 | 0.67 → 0.64 |
+| `reply-128px` | 3.87 → 3.89 | 0.22 → 0.19 | 0.58 → 0.62 | 2.46 → 1.24 | 3.36 → 2.16 |
+| `dense` | 0.78 → 0.78 | 0.03 → 0.03 | 0.16 → 0.16 | 0.82 → 0.81 | 1.13 → 1.12 |
+| `glyph-overflow` | 0.82 → 0.83 | 0.07 → 0.07 | 4.42 → 4.45 | 1.08 → 1.10 | 5.85 → 5.91 |
+
+What the profile showed on main, before any change (macOS, medians of 5-7
+profiled runs):
+
+- **Rounded corners and diagonals** cost 1.9 µs and 3.0 µs a cell at 48 px
+  (240×80 screens of `╭` or `╱` alone: 36.6 and 57.6 ms of `geometry_ms`).
+  Each stroke is a disc stamped at each of 71 points (a corner at 48 px) to
+  several hundred (255 px), every pixel of every disc's box tested through
+  `put`. The other geometry costs 30-560 ns a cell.
+- **Cache misses, not arithmetic, set the rest of the geometry cost.** On a
+  5280×3840 screen a cell of `│` (48 rows, a pixel wide) cost 297 ns, but a
+  cell of `─` (one row, 22 pixels) 33 ns, and `█` 479 ns: each pixel row is a
+  new cache line that the background pass wrote long before, so painting is
+  bound by the rows it touches. Glyph blending behaves the same way on the
+  large screens.
+- **Background painting is page faults.** In a new process on macOS,
+  `memset` of a fresh 61 MB buffer takes 5.8 ms and of the same buffer again
+  1.0-3.2 ms: the first touch of each 16 KiB page is most of `background_ms`
+  (5.4-5.9 ms) on the large screens, and no reordering of the painting
+  removes it.
+- **Image painting** divided `(x - im->x) * src_w / w` in 64 bits, and `x /
+  cell_w` for the mask of opaque backgrounds, for every pixel: 2.7 ms for the
+  1.27 million pixels of the image cases.
+- **Glyphs**: `glyph-overflow` rasterizes 2,050 times for 1,116 distinct
+  glyphs (1,225 evictions in the direct-mapped 1,024-slot cache), 4.7 ms. That
+  is glyph caching, not painting; see the remaining limits.
+
+### Retained changes
+
+1. **Reuse rounded corners and diagonals that cover the same pixels**
+   (`Stamps`, `stamp_find` and `stamp_points` in `draw.c`). Whether a disc
+   covers pixel (x, y) depends only on `(x + 0.5f) - px` and `(y + 0.5f) -
+   py`. Moved by whole pixels, `x + 0.5f` stays exact, so a stroke whose
+   points are each exactly as far from its cell's origin as those of a stroke
+   painted before has the same differences, as real numbers, which round the
+   same: it covers the same pixels of its cell. Float rounding of the points
+   does depend on where the cell is (a point's ulp grows with its
+   coordinate), so this is checked, not assumed: each offset is computed with
+   Knuth's TwoSum and kept only if the subtraction was exact; a column's x
+   offsets and a row's y offsets are interned once per shape (at most 64
+   sequences per shape and axis); a stroke is painted from the runs kept for
+   its shape, thickness and pair of sequences (1,024 slots); and anything
+   past the limits, past 4 MiB of allocations in all, or whose allocation
+   fails is stamped as before. Letting columns share one sequence without
+   the check changes pixels: `tests/boxes.c` then fails 7 of its 37,804
+   checks (corners at 37×80, diagonals at 116×255, bold), so the check is
+   what keeps the cache exact.
+2. **Paint the backgrounds a row of cells ahead of the text, on rasters over
+   16 MiB** (`Backdrop`, `backdrop_through`). There the backgrounds and the
+   images below and under the text are painted a row of cells at a time,
+   just before the row's own cells and before any glyph or mark that reaches
+   down into it (the bracket pieces U+239B-U+23AD reach a pixel below their
+   cell), so the row is still in the cache when the text goes over it, and
+   each pixel is painted in the same order as before. A smaller raster, or
+   one with more than 64 images under the text (each row would look at every
+   one; Unicode placeholders make an image of each run), is painted at once,
+   as before. `background_ms` is the sum of those rows, and `foreground_ms`
+   excludes them.
+3. **Step image source columns instead of dividing for each pixel.** The
+   source column and the cell under the pixel are stepped as a quotient and
+   remainder from one division per row; a source pixel of alpha 255 is
+   copied and one of alpha 0 skipped, which is what the blend gives for them
+   exactly.
+
+### Geometry cache: hit rates and memory
+
+From the branch's profile (`geometry_cache_hits`, `_misses`, `_uncached`,
+`_bytes`; batch A; macOS and Linux report the same counts). A miss stamps
+the stroke into a mask of its cell and keeps the runs; bytes are what the
+cache holds at the end of the render, including its 16 KiB slot table. No
+stroke went uncached in any case.
+
+| case | strokes | hits | misses | hit rate | bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `font-builtin` | 4 | 0 | 4 | 0.0% | 28,736 |
+| `font-file` | 4 | 0 | 4 | 0.0% | 28,736 |
+| `mixed-subset` | 8 | 0 | 8 | 0.0% | 23,208 |
+| `reply-sent` | 4 | 0 | 4 | 0.0% | 28,736 |
+| `draft-ready` | 4 | 0 | 4 | 0.0% | 28,736 |
+| `reply-24px` | 4 | 0 | 4 | 0.0% | 22,896 |
+| `reply-128px` | 4 | 0 | 4 | 0.0% | 51,888 |
+| `rounded-boxes` | 3,000 | 2,754 | 246 | 91.8% | 81,112 |
+| `ansi-replay` | 4 | 0 | 4 | 0.0% | 28,736 |
+| `rounded-panes` | 48 | 12 | 36 | 25.0% | 33,536 |
+| `rounded-24px` | 3,000 | 2,754 | 246 | 91.8% | 49,896 |
+| `rounded-128px` | 3,000 | 2,838 | 162 | 94.6% | 139,340 |
+| `geometry-all` | 960 | 797 | 163 | 83.0% | 95,816 |
+
+Worst cases, the seven strokes cycling with bold alternating in every cell
+(3 profiled runs each, macOS, `geometry_ms` main `7892c11` → `e4be44b`, an
+earlier state of this branch whose cache is this one without the allocation
+budget):
+
+| screen | px | strokes | misses | kept bytes | geometry ms |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 500×200 | 9 | 114,284 | 1,186 | 74,846 | 50.63 → 4.80 |
+| 500×200 | 24 | 114,284 | 1,984 | 171,562 | 166.40 → 11.31 |
+| 240×80 | 64 | 21,942 | 948 | 313,072 | 134.02 → 12.51 |
+| 100×30 | 255 | 3,428 | 667 | 993,028 | 376.56 → 74.15 |
+
+No stroke went uncached in them, and every PNG matched main's. A screen with
+only a few corners (`reply-sent`, `rounded-panes`) misses on most of them;
+its geometry time is unchanged, and it holds 29-34 KB more for the render.
+
+### Rejected experiments
+
+| experiment | result | why rejected |
+| --- | --- | --- |
+| `fill_rect` fills its first row a pixel at a time, then `memcpy`s it to the others | `geometry_ms` 0.63 → 0.71 (`block-grid`), 6.40 → 6.92 (`geometry-all`), macOS, 7 runs | slower: most rectangles are a few pixels wide |
+| unsigned arithmetic in `blend`'s divide by 255 (the same quotient) | `blend_ms` 3.86 → 4.15 (`large`), 6.67 → 6.48 (`large-color`), 0.63 → 0.65 (`dense`), macOS, 7 runs | no gain: clang already divides by a multiply |
+| each glyph row's first and last covered columns stored after its bitmap, so `blend` skips the empty ends | macOS ([raw](performance-2026-10-03-draw-spans-macos.json)): `blend_ms` 5-24% lower, `glyph_ms` 0-8% higher, paired wall 0.984-1.017 with every interval spanning 1 (10 cases, 20 rounds). Linux at load 16-19 ([raw](performance-2026-10-03-draw-spans-linux.json)): `blend_ms` 0-12% lower, `glyph_ms` 1-5% higher, paired wall 0.974-1.059, only `unicode` above 1 with confidence | no end-to-end gain on either host, 4 more bytes a glyph row |
+| the first version of the cache: a direct-mapped table keyed by a stroke's whole sequence of offsets, compared point by point on every stroke | `rounded-boxes`, macOS, 3-5 runs: 64 slots, 644 misses of 3,000 and `geometry_ms` 2.92; 4,096 slots, 300 misses, 2.13 ms and 167 KB | replaced: interning each axis once per column or row (retained: 246 misses, 1.2 ms, 81 KB) finds as many strokes alike and compares no points on a hit |
+| the backdrop a row at a time on every raster, against all at once, the same binary otherwise (`c49a437`) | all-at-once/rows, 30 rounds. macOS ([raw](performance-2026-10-03-draw-rows-macos.json)): `draft-ready` 0.979 [0.974, 0.984], `cjk-none` 0.985 [0.972, 0.995], no raster of 9.5 MB or less above 1.010; `large` 1.010, `geometry-all` 1.008, `reply-128px` 0.989 [0.978, 1.001]. Linux ([raw](performance-2026-10-03-draw-rows-linux.json)): `large` 1.078, `rounded-128px` 1.075, `geometry-all` 1.069, `reply-128px` 1.048, `large-color` 1.030, nothing slower with confidence | kept only over 16 MiB (change 2). On macOS, after it, DEFLATE matching runs up to 1.5 ms slower on the same bytes (`reply-128px` 10.32 → 11.25 ms in the final batch A), which offsets most of the painting gain there |
+| pre-faulting the raster in address order (a byte every 4 KiB) before painting rows, to undo that DEFLATE slowdown (on `c49a437`) | main (`76f18ee`)/variant, 20 rounds. macOS ([raw](performance-2026-10-03-draw-prefault-macos.json)): matching back to main's (`reply-128px` 11.22 → 10.10 ms); `reply-128px` 1.014 against 0.990 without it, `large` 1.001 against 1.007, `reply-sent` 1.000 against 0.998. Linux ([raw](performance-2026-10-03-draw-prefault-linux.json)): `reply-128px` 0.981 against 1.036, `large` 1.012 against 1.052, `reply-sent` 0.964 against 0.978 | slower on Linux, and mixed on macOS: the faults and the fill become two passes over memory |
+
+Why matching slows on macOS is not established: its input is byte-identical,
+and pre-faulting the pages in order restores it, so it follows the order in
+which the raster's pages are first touched, not the data.
+
+The issue's earlier arc approximation and uniform blending were not tried
+again: the cache keeps the arcs' exact stamping, and the blend experiments
+above found nothing to gain in the formula.
+
+### Validation
+
+On macOS and on Linux: `./test.sh`, and `SANITIZE=1 UBSAN_OPTIONS=halt_on_error=1
+./tests/run.sh` (GCC's sanitizers on Linux); on macOS also `SANITIZE=1
+./test.sh`. All pass, with every native golden unchanged. New checks:
+
+- `tests/boxes.c` paints every corner and diagonal, plain and bold, at all
+  21 cell sizes, through the cache and afresh, in every cell of a 500-column
+  row, a 200-row column and a 20×10 grid, in random order, and requires the
+  same pixels and no stroke left uncached.
+- `tests/stamps_alloc.c` (`tests/run.sh`) fails each of the 136 allocations
+  of a grid of strokes in turn, then shrinks the cache's budget from 4 MiB to
+  nothing in 52 steps: the pixels match a render without the cache, the cache
+  never holds more than its budget, and nothing is left allocated.
+- `tests/draw.c` paints a backdrop of crossing, overlapping and blending
+  images a row at a time and all at once and requires the same bytes; it
+  paints every raster a row at a time, so the sanitizer runs cover that path.
+- The `row-overlap` goldens (100×30 at 24 px, painted at once, and at 96 px,
+  a 38 MB raster painted a row at a time) have glyphs that reach into the
+  next row, stacked marks, italic, bold, shades and corners over coloured and
+  default backgrounds, with images below and under the text; their PNGs are
+  byte-identical to main's at px 9, 24, 46, 47.5, 96 and 128.
+- 180 random renders of 1-4 scaled, cropped and offset images on all three
+  layers, at px 9, 24 and 47.5, and 45 with 110-150 images, write main's PNG
+  bytes.
+
+CI runs the suite on macOS arm64 (Apple clang), Linux x86-64 and Linux
+aarch64 (GCC).
+
+### Remaining limits
+
+- Page faults on the canvas's first touch are most of `background_ms` on the
+  large screens (5.6-5.8 ms on macOS, 3.5-3.9 on Linux). Fewer faults need
+  larger pages, which macOS arm64 does not offer to `malloc`; nothing here
+  changes the allocation.
+- Glyph rasterization when the glyph cache overflows (`glyph-overflow`, 4.7
+  ms; `cjk-overflow-full`) is a cache-policy question: about 930 of its 2,050
+  rasterizations are conflict misses in the direct-mapped cache. It is not
+  painting and is left for a separate change.
+- PNG compression is now the largest stage of nearly every case
+  (`deflate_match_emit` 75 ms of `geometry-all`'s 90 on macOS).
+- The Mac is a shared desktop (load 4.3-4.8 during the batches), so its p95
+  values are noisy; the paired ratios are the figures to trust there.
+
+### Reproduce
+
+```sh
+python3 scripts/build-baseline.py /tmp/termshot-main --revision 5a832cd
+./build.sh && cp termshot /tmp/termshot-branch
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
+    --describe main=5a832cd --describe branch=721d3fe \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 --verify-identical \
+    --cjk-font /usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc \
+    --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
+done
+python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+```
+
+`--suite draw` runs only the painting workloads.
 
 ## ANSI replay parsing (2026-10-03, `10f1ea1`, #21)
 
@@ -860,8 +1279,11 @@ children**, and siblings at one level do not overlap.
     again for each CFF font (`Font::with_face`).
   - The whole `draw.c` call, which prints its own record:
     - `font_setup_ms`: stb initialization and cell metrics; `allocate_ms`: the raster.
-    - `background_ms`: painting backgrounds (first touch of the raster).
-    - `foreground_ms`: glyphs, decorations, freeing caches and images.
+    - `background_ms`: painting backgrounds (first touch of the raster) and
+      the images under the text. Since #22 these are painted a row of cells
+      at a time, interleaved with the text, and this is the sum of the rows.
+    - `foreground_ms`: glyphs, decorations, freeing caches and images over the
+      text; since #22, the painting time less `background_ms`.
       - `geometry_ms`: box drawing and block elements, and dispatch for every
         non-blank cell; `glyph_ms`: cache lookup, outline and rasterization;
         `blend_ms`: blending glyphs and missing-glyph boxes.
@@ -873,7 +1295,10 @@ children**, and siblings at one level do not overlap.
   `glyph_cache_evictions` (a cache miss that replaced another glyph),
   `glyph_missing` (a cache miss that found the glyph in neither font),
   `fallback_lookups` (a miss that asked the fallback), `fallback_rasterizations`;
-  also `png_bytes`, `pixel_bytes` and, from Rust, `input_bytes`.
+  since #22, `geometry_cache_hits`, `geometry_cache_misses`,
+  `geometry_cache_uncached` (a rounded corner or diagonal stamped without the
+  cache) and `geometry_cache_bytes`; also `png_bytes`, `pixel_bytes` and,
+  from Rust, `input_bytes`.
 
 What changed in this round: the built-in font's `font_check_ms` used to hold
 copying, checking and padding; a fallback font was timed only inside

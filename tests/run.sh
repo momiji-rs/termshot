@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 ./build.sh
 scratch=$(mktemp -d)
-trap 'rm -f "$scratch/codec" "$scratch/codec-custom" "$scratch/deflate-alloc" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
+trap 'rm -f "$scratch/codec" "$scratch/codec-custom" "$scratch/deflate-alloc" "$scratch/stamps-alloc" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
 sanitize=''
 if [ "${SANITIZE:-0}" = 1 ]; then
     sanitize='-fsanitize=address,undefined -fno-omit-frame-pointer'
@@ -16,6 +16,8 @@ cc tests/codec.c src/deflate.c -DTEST_CUSTOM_DEFLATE -I third_party/stb -O2 -Wno
 "$scratch/codec-custom"
 cc tests/deflate_alloc.c -O2 $sanitize -o "$scratch/deflate-alloc"
 "$scratch/deflate-alloc"
+cc tests/stamps_alloc.c src/deflate.c -I third_party/stb -O2 -ffp-contract=off -Wno-deprecated-declarations $sanitize -lm -o "$scratch/stamps-alloc"
+"$scratch/stamps-alloc"
 cc tests/draw.c src/deflate.c -I third_party/stb -O2 -ffp-contract=off -Wno-deprecated-declarations $sanitize -lm -o "$scratch/draw"
 "$scratch/draw" third_party/jetbrains-mono/JetBrainsMono-Regular.ttf "$scratch/draw.png"
 rustc --edition 2021 --test src/main.rs -o "$scratch/unit" \
