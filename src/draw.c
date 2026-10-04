@@ -2,7 +2,8 @@
    Raster is stb_truetype (public domain). PNG is stb_image_write (public domain,
    deflate included). No Core Text, FreeType, window, or distro package.
    Box drawing and blocks are geometry, so the joints meet at an integer cell
-   size; that painter is Rust (src/geometry.rs), and so is the compressor. */
+   size; that painter is Rust (src/geometry.rs), and so are the image layers
+   and the backdrop under the text (src/composite.rs) and the compressor. */
 
 #include <limits.h>
 #include <math.h>
@@ -381,16 +382,14 @@ typedef struct {
     int32_t z;
 } ImageView;
 
-/* As ImageView in src/graphics.rs, which asserts the same size. */
+/* As ImageView in src/composite.rs, which asserts the same size. */
 _Static_assert(sizeof(ImageView) == 104, "ImageView ABI must match the Rust side");
 
 /* kitty's three image layers, by z-index: under the cell backgrounds that are
    not the default (z below INT32_MIN / 2), over every background but under
-   the text (other negative z), and over the text. */
+   the text (other negative z), and over the text. As LAYER_* in
+   src/composite.rs, which decides an image's layer. */
 enum { LAYER_BELOW, LAYER_UNDER_TEXT, LAYER_OVER_TEXT };
-static int image_layer(int32_t z) {
-    return z < INT32_MIN / 2 ? LAYER_BELOW : z < 0 ? LAYER_UNDER_TEXT : LAYER_OVER_TEXT;
-}
 
 /* The cells drawn as a box because a font maps the character to an empty
    glyph, as color bitmap fonts do: how many, and the first one, its
@@ -404,137 +403,65 @@ typedef struct {
     size_t cells;
 } EmptyGlyphs;
 
-/* Whether the cell's background is the default one, which shows an image of
-   LAYER_BELOW through it. */
-static int clear_background(const Cell *cell) { return !(cell->attrs & ATTR_OPAQUE); }
+/* The images and the backdrop under the text, composited in Rust
+   (src/composite.rs), which samples each image nearest-neighbour in
+   integers, so screenshots are reproducible.
 
-/* Rust validates dimensions and owns each RGBA buffer. Clip before looping,
-   and use integer nearest-neighbor sampling for reproducible screenshots.
-   Paints the images of one layer, in their order. With cells, of cell_w x
-   cell_h pixels and cv->w / cell_w to a row, only over clear backgrounds. */
-static void paint_image_rows(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
-                             int cell_w, int cell_h, int64_t top, int64_t bottom) {
-    for (size_t i = 0; i < count; i++) {
-        const ImageView *im = &images[i];
-        if (image_layer(im->z) != layer) continue;
-        int64_t x0 = im->x > im->clip_left ? im->x : im->clip_left;
-        if (x0 < 0) x0 = 0;
-        int64_t y0 = im->y > im->clip_top ? im->y : im->clip_top;
-        if (y0 < top) y0 = top;
-        int64_t x1 = im->x + im->w;
-        int64_t y1 = im->y + im->h;
-        if (x1 > im->clip_right) x1 = im->clip_right;
-        if (x1 > cv->w) x1 = cv->w;
-        if (y1 > im->clip_bottom) y1 = im->clip_bottom;
-        if (y1 > bottom) y1 = bottom;
-        if (x0 >= x1) continue;
-        /* The source column of x is src_x + (x - im->x) * src_w / w: its
-           quotient and remainder, stepped from x0 a column at a time. */
-        int64_t first = (x0 - im->x) * (int64_t)im->src_w, step = (int64_t)im->src_w / im->w,
-                carry = (int64_t)im->src_w % im->w;
-        for (int64_t y = y0; y < y1; y++) {
-            size_t sy = im->src_y + (size_t)((y - im->y) * im->src_h / im->h);
-            const Cell *row = cells ? cells + (size_t)(y / cell_h) * (size_t)(cv->w / cell_w) : NULL;
-            const unsigned char *line = im->pixels + (sy * im->width + im->src_x) * 4;
-            unsigned char *dst = cv->px + (size_t)y * cv->stride + (size_t)x0 * BPP;
-            int64_t sx = first / im->w, rem = first % im->w, col = x0 / cell_w, sub = x0 % cell_w;
-            for (int64_t x = x0; x < x1; x++, dst += BPP) {
-                if (!row || clear_background(&row[col])) {
-                    const unsigned char *src = line + (size_t)sx * 4;
-                    unsigned a = src[3];
-                    /* At 255 and 0 the blend below is the source and the
-                       destination exactly. */
-                    if (a == 255) {
-                        dst[0] = src[0];
-                        dst[1] = src[1];
-                        dst[2] = src[2];
-                    } else if (a) {
-                        for (int c = 0; c < 3; c++)
-                            dst[c] = (unsigned char)((src[c] * a + dst[c] * (255 - a) + 127) / 255);
-                    }
-                }
-                sx += step;
-                rem += carry;
-                if (rem >= im->w) {
-                    sx++;
-                    rem -= im->w;
-                }
-                if (++sub == cell_w) {
-                    sub = 0;
-                    col++;
-                }
-            }
-        }
-    }
-}
-
-static void paint_images(Canvas *cv, const ImageView *images, size_t count, int layer, const Cell *cells,
-                         int cell_w, int cell_h) {
-    paint_image_rows(cv, images, count, layer, cells, cell_w, cell_h, 0, cv->h);
-}
-
-/* What is painted under the text, a row of cells at a time, so that the text
-   is painted while its rows are still in the cache: the cell backgrounds,
-   then the images below them, which show only through the default ones, and
-   those over every background. A row is painted before anything over it
-   (the row's own cells, or a glyph or mark reaching down into it), so each
-   pixel is painted in the same order as if every row were painted first.
-   The whole backdrop is painted at once instead, as it was before rows:
+   The backdrop is what is painted under the text, a row of cells at a time,
+   so that the text is painted while its rows are still in the cache: the
+   cell backgrounds, then the images below them, which show only through the
+   default ones (no ATTR_OPAQUE), and those over every background. A row is
+   painted before anything over it (the row's own cells, or a glyph or mark
+   reaching down into it), so each pixel is painted in the same order as if
+   every row were painted first. The whole backdrop is painted at once
+   instead, as it was before rows:
    - for a raster under BACKDROP_ROW_BYTES, which stays in the last-level
      cache anyway. Rows gained nothing at 2200x1440 (9.5 MB) on either host
      measured, and on macOS they cost 1-2% there, but up to 8% faster on
      Linux at 61-67 MB (docs/performance.md);
-   - with more than BACKDROP_ROW_IMAGES images under the text (Unicode
-     placeholders make one a run), since each row looks at every image. */
+   - with more than 64 images under the text (Unicode placeholders make one a
+     run), since each row looks at every image.
+
+   termshot_backdrop_init: fill in bd for the cells (cols x rows of cell_w x
+   cell_h pixels, the whole canvas) and the images, which it keeps.
+
+   termshot_backdrop_through: paint the backdrop of every row of cells above
+   pixel row y not painted yet. 1 when it painted, 0 when nothing was due, -1
+   if the painter failed (a bug).
+
+   termshot_paint_images: paint the images of one layer, in their order, over
+   the whole canvas. 0, or -1 if the painter failed (a bug).
+
+   A failure is also remembered for termshot_paint_failed. Nothing here
+   allocates, so nothing here runs out of memory. */
 #ifndef BACKDROP_ROW_BYTES
 #define BACKDROP_ROW_BYTES ((size_t)16 << 20)
 #endif
-#define BACKDROP_ROW_IMAGES 64
 typedef struct {
     const Cell *cells;
-    int cols, rows, cell_w, cell_h, done; /* rows painted */
     const ImageView *images;
     size_t image_count;
-    int whole; /* paint every row at the first call */
-    double ms;
+    int32_t cols, rows, cell_w, cell_h;
+    int32_t done; /* rows painted */
+    int32_t whole; /* paint every row at the first call */
+    double ms; /* draw.c's: the time spent in it, for TERMSHOT_PROFILE */
 } Backdrop;
 
-static Backdrop backdrop_for(const Canvas *cv, const Cell *cells, int cols, int rows, int cell_w, int cell_h,
-                             const ImageView *images, size_t image_count) {
-    size_t under = 0;
-    for (size_t i = 0; i < image_count; i++) under += image_layer(images[i].z) != LAYER_OVER_TEXT;
-    int whole = under > BACKDROP_ROW_IMAGES || cv->stride * (size_t)cv->h < BACKDROP_ROW_BYTES;
-    return (Backdrop){cells, cols, rows, cell_w, cell_h, 0, images, image_count, whole, 0};
-}
+_Static_assert(sizeof(Backdrop) == 56, "Backdrop ABI must match the Rust side");
 
-/* Paint the backdrop of every row of cells above pixel row y. */
+void termshot_backdrop_init(Backdrop *bd, const Canvas *cv, const Cell *cells, int cols, int rows, int cell_w,
+                            int cell_h, const ImageView *images, size_t image_count, size_t row_bytes);
+int termshot_backdrop_through(const Canvas *cv, Backdrop *bd, int64_t y);
+int termshot_paint_images(const Canvas *cv, const ImageView *images, size_t count, int layer);
+
+/* Paint the backdrop of every row of cells above pixel row y. The test is
+   termshot_backdrop_through's own, made here so that a glyph with nothing
+   to paint under it costs neither a call nor, when profiling, the clock. A
+   failure is reported by termshot_paint_failed. */
 static void backdrop_through(Canvas *cv, Backdrop *bd, int64_t y) {
     if (bd->done >= bd->rows || y <= (int64_t)bd->done * bd->cell_h) return;
     double tick = now_ms();
-    int64_t last = bd->whole ? bd->rows : (y + bd->cell_h - 1) / bd->cell_h;
-    if (last > bd->rows) last = bd->rows;
-    for (int r = bd->done; r < last; r++) {
-        int top = r * bd->cell_h;
-        uint8_t *scanline = cv->filtered + (size_t)top * cv->stride;
-        scanline[0] = 0;
-        for (int c = 0; c < bd->cols; c++) {
-            const Cell *cell = &bd->cells[(size_t)r * bd->cols + c];
-            termshot_fill_rect(cv, c * bd->cell_w, top, (c + 1) * bd->cell_w, top + 1, cell->br, cell->bg, cell->bb);
-        }
-        for (int dy = 1; dy < bd->cell_h; dy++) {
-            memcpy(cv->filtered + (size_t)(top + dy) * cv->stride, scanline, cv->stride);
-        }
-        if (bd->whole) continue;
-        paint_image_rows(cv, bd->images, bd->image_count, LAYER_BELOW, bd->cells, bd->cell_w, bd->cell_h, top,
-                         top + bd->cell_h);
-        paint_image_rows(cv, bd->images, bd->image_count, LAYER_UNDER_TEXT, NULL, bd->cell_w, bd->cell_h, top,
-                         top + bd->cell_h);
-    }
-    if (bd->whole) {
-        paint_images(cv, bd->images, bd->image_count, LAYER_BELOW, bd->cells, bd->cell_w, bd->cell_h);
-        paint_images(cv, bd->images, bd->image_count, LAYER_UNDER_TEXT, NULL, bd->cell_w, bd->cell_h);
-    }
-    bd->done = (int)last;
+    termshot_backdrop_through(cv, bd, y);
     bd->ms += now_ms() - tick;
 }
 
@@ -779,7 +706,8 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     /* The backgrounds and the images under the text are painted a row of
        cells ahead of the text over them (backdrop_through); background_ms
        is their time, and foreground_ms the rest. */
-    Backdrop backdrop = backdrop_for(cv, cells, cols, rows, cell_w, cell_h, images, image_count);
+    Backdrop backdrop;
+    termshot_backdrop_init(&backdrop, cv, cells, cols, rows, cell_w, cell_h, images, image_count, BACKDROP_ROW_BYTES);
     double background = now_ms();
     double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
     Glyph cache[GLYPH_CACHE_SIZE] = {0};
@@ -875,16 +803,16 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
         }
     }
 
-    /* termshot_fill_rect has no result of its own: a fill that failed says
-       so here, before an incomplete image is written. */
-    if (termshot_paint_failed()) return paint_failed(cv, cache, &scratch, "painting a rectangle failed");
+    termshot_paint_images(cv, images, image_count, LAYER_OVER_TEXT);
+    /* termshot_fill_rect and the backdrop have no result here: a fill or an
+       image that failed says so now, before an incomplete image is written. */
+    if (termshot_paint_failed()) return paint_failed(cv, cache, &scratch, "painting failed");
     for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
     GeometryStats stamps;
     termshot_geometry_stats(cv->geometry, &stamps);
     termshot_geometry_free(cv->geometry);
     cv->geometry = NULL;
     free(scratch.v);
-    paint_images(cv, images, image_count, LAYER_OVER_TEXT, NULL, cell_w, cell_h);
     double foreground = now_ms();
     int png_len = 0;
     STBIW_PNG_PROFILE(0);

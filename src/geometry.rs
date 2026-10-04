@@ -44,8 +44,8 @@ const BPP: usize = 3;
 #[repr(C)]
 pub struct Canvas {
     pub px: *mut u8,
-    /// draw.c's; not read here.
-    #[allow(dead_code)]
+    /// Not read here; the backdrop (src/composite.rs) copies whole
+    /// scanlines through it.
     pub filtered: *mut u8,
     pub w: i32,
     pub h: i32,
@@ -192,7 +192,7 @@ thread_local! {
 
 /// f's result, or None if it panicked, which is remembered for
 /// termshot_paint_failed. A panic must not unwind into C.
-fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+pub(crate) fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
     let result = catch_unwind(AssertUnwindSafe(f)).ok();
     if result.is_none() {
         PANICKED.with(|p| p.set(true));

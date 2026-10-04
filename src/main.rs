@@ -13,6 +13,7 @@ use cell::{Cell, BOLD, DOUBLE_UNDERLINE, ITALIC, OPAQUE, STRIKE, TAIL, UNDERLINE
 mod cast;
 mod cell;
 mod cff;
+mod composite;
 mod deflate;
 mod font;
 mod geometry;
