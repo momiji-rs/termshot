@@ -81,6 +81,8 @@ fn ascii_scroll_batches_match_individual_prints() {
                             s.pen.attrs = BOLD | UNDERLINE | STRIKE;
                             s.pen.dim = true;
                             s.pen.reverse = true;
+                            // As SGR would: printing takes the pen's cell.
+                            s.pen_cell = s.pen.cell();
                             // Keep an image across both scroll margins so the
                             // optimized text path must preserve its outside parts.
                             s.graphics.command(format!("a=T,f=24,s=1,v=1,c={rows},r={rows},C=1;/wAA").as_bytes(),
@@ -95,6 +97,13 @@ fn ascii_scroll_batches_match_individual_prints() {
                                    (reference.row, reference.col, reference.pending, reference.last, reference.last_at));
                         assert_eq!(fast.graphics.placements, reference.graphics.placements,
                                    "cols={cols} rows={rows} wrap={wrap} alternate={alternate} len={len}");
+                        // The run is printed in the pen's style, not the default one.
+                        let want = fast.pen.cell();
+                        let styled = |s: &Screen| s.cells.iter().any(|c| {
+                            c.ch != ' ' as u32 && (fg(c), bg(c), c.attrs & !(WIDE | TAIL)) == (fg(&want), bg(&want), want.attrs)
+                        });
+                        assert_eq!(styled(&fast), len > 0, "cols={cols} rows={rows} wrap={wrap} len={len}");
+                        assert_eq!(styled(&reference), len > 0);
                         fast.combine(0x0301);
                         reference.combine(0x0301);
                         assert_eq!(fast.screen_marks(), reference.screen_marks());
