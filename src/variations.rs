@@ -175,6 +175,12 @@ fn map(map: &[(f32, f32)], value: f32) -> f32 {
     before.1 + ((after.1 - before.1) * (value - before.0)) / (after.0 - before.0)
 }
 
+/// HarfBuzz's roundf, which is floorf(v + 0.5f): halves round up, so -2.5
+/// to -2, not -3.
+pub fn round(v: f32) -> f32 {
+    (v + 0.5).floor()
+}
+
 /// The normalized coordinates, in F2Dot14 units, of each axis of `axes` at
 /// `settings`: an axis not set is at its default. `maps` is avar's segment
 /// maps, or none. An unknown tag is an error that lists the axes.
@@ -197,9 +203,9 @@ pub fn coords(axes: &[Axis], maps: &[SegmentMap], settings: &[Setting]) -> Resul
         .zip(design)
         .enumerate()
         .map(|(i, (axis, v))| {
-            let mut c = (axis.normalize(v) * 65536.0).round() as i32;
+            let mut c = round(axis.normalize(v) * 65536.0) as i32;
             if let Some(m) = maps.get(i) {
-                c = (map(m, c as f32 / 65536.0) * 65536.0).round() as i32;
+                c = round(map(m, c as f32 / 65536.0) * 65536.0) as i32;
             }
             (c + 2) >> 2
         })
