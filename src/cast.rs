@@ -376,10 +376,13 @@ fn json_error(n: usize, line: &str, error: JsonError) -> String {
 /// a duplicate key, cut short) is still taken for one, and decode says
 /// what is wrong with it instead of it being drawn as text.
 pub fn detect(data: &[u8]) -> bool {
-    let first = data.split(|&b| b == b'\n').next().unwrap_or_default();
-    if first.first() != Some(&b'{') {
+    // The first byte before the line's end: a raw log can go megabytes
+    // without a LF (a full-screen program's redraws), and finding it cost
+    // more than a millisecond on the 4.7 MB ANSI replay (#21).
+    if data.first() != Some(&b'{') {
         return false;
     }
+    let first = data.split(|&b| b == b'\n').next().unwrap_or_default();
     // Iterative, so no nesting can overflow the stack.
     let (mut depth, mut i, mut key_next) = (0usize, 0, false);
     while i < first.len() {

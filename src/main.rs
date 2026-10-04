@@ -331,6 +331,9 @@ struct Screen {
     bottom: usize,
     saved: [Saved; 2],
     pen: Pen,
+    /// pen.cell(), kept up to date wherever pen changes (SGR, DECRC,
+    /// RIS), so printing does not mix colours per character.
+    pen_cell: Cell,
     /// Tab stops, one per column; every 8th column at start.
     tabs: Vec<bool>,
     /// G0 and G1. SO shifts to G1, SI back to G0.
@@ -383,6 +386,7 @@ impl Screen {
             bottom: rows - 1,
             saved: [Saved::HOME; 2],
             pen: Pen::DEFAULT,
+            pen_cell: Pen::DEFAULT.cell(),
             tabs: (0..cols).map(|c| c % 8 == 0).collect(),
             charsets: [Charset::Ascii; 2],
             shifted: false,
@@ -411,6 +415,7 @@ impl Screen {
         let s = self.saved[usize::from(self.on_alternate)];
         (self.row, self.col, self.pending, self.origin) = (s.row, s.col, s.pending, s.origin);
         self.pen = s.pen;
+        self.pen_cell = s.pen.cell();
         (self.charsets, self.shifted) = (s.charsets, s.shifted);
     }
 
@@ -818,7 +823,7 @@ impl Screen {
         let line = self.line(self.row);
         let at = line.start + self.col;
         self.split_wide(&line, at);
-        let mut cell = Cell { ch, ..self.pen.cell() };
+        let mut cell = Cell { ch, ..self.pen_cell };
         if width == 2 {
             self.split_wide(&line, at + 1);
             cell.attrs |= WIDE;
@@ -867,7 +872,16 @@ impl Screen {
 
     /// Before cell i of a row is overwritten: if it is half of a wide
     /// character, blank the other half.
+    #[inline]
     fn split_wide(&mut self, line: &std::ops::Range<usize>, i: usize) {
+        // Most cells are neither half: test that inline, split out of line.
+        if self.cells[i].attrs & (WIDE | TAIL) != 0 {
+            self.split_wide_cell(line, i);
+        }
+    }
+
+    #[inline(never)]
+    fn split_wide_cell(&mut self, line: &std::ops::Range<usize>, i: usize) {
         let attrs = self.cells[i].attrs;
         if attrs & TAIL != 0 && i > line.start {
             self.unwide(i - 1);
@@ -913,7 +927,7 @@ impl Screen {
         if let Some(byte) = text.last() {
             self.last = Some(u32::from(*byte));
         }
-        let mut cell = self.pen.cell();
+        let mut cell = self.pen_cell;
         while !text.is_empty() {
             if self.pending {
                 if self.autowrap && self.row == self.bottom {
@@ -983,7 +997,7 @@ impl Screen {
             let mut blank = Cell::blank();
             (blank.fr, blank.fg, blank.fb) = self.pen.fg;
             (blank.br, blank.bg, blank.bb) = self.pen.bg;
-            self.cells[from..to].fill(blank);
+            fill_cells(&mut self.cells[from..to], blank);
             self.clear_marks(from, to);
             if matches!(self.last_at, Some(i) if (from..to).contains(&i)) {
                 self.last_at = None;
@@ -1081,7 +1095,10 @@ impl Screen {
             // xterm saves the same state for CSI s as for DECSC.
             b's' => self.save_cursor(),
             b'u' => self.restore_cursor(),
-            b'm' => self.sgr(p),
+            b'm' => {
+                self.sgr(p);
+                self.pen_cell = self.pen.cell();
+            }
             b'J' => {
                 let (cursor, line) = (self.cursor_index(), self.line(self.row));
                 match p.get(0, 0) {
@@ -1259,6 +1276,22 @@ impl Screen {
     }
 }
 
+/// Set every cell to cell. A 12-byte Cell defeats the vectorized fill, so
+/// a row is filled by copying what is already filled, doubling each time.
+fn fill_cells(cells: &mut [Cell], cell: Cell) {
+    if cells.len() <= 8 {
+        cells.fill(cell);
+        return;
+    }
+    cells[0] = cell;
+    let mut done = 1;
+    while done < cells.len() {
+        let n = done.min(cells.len() - done);
+        cells.copy_within(..n, done);
+        done += n;
+    }
+}
+
 /// A 24-bit colour's kitty id: 0xRRGGBB.
 fn rgb_id((r, g, b): (u8, u8, u8)) -> u32 {
     u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
@@ -1317,6 +1350,35 @@ impl Params {
             self.len += 1;
         }
     }
+}
+
+/// Where the run of printable ASCII (0x20..=0x7e) from i ends. Most runs
+/// are short, so the first 16 bytes go one at a time; then eight at a time
+/// while they all are printable (#21), and the rest one at a time again.
+fn printable_end(data: &[u8], mut i: usize) -> usize {
+    const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+    const HIGH: u64 = u64::from_ne_bytes([0x80; 8]);
+    let short = data.len().min(i + 16);
+    while i < short {
+        if !(0x20..0x7f).contains(&data[i]) {
+            return i;
+        }
+        i += 1;
+    }
+    while let Some(chunk) = data.get(i..i + 8) {
+        let w = u64::from_ne_bytes(chunk.try_into().unwrap());
+        // A byte below 0x20, one with its high bit set, or 0x7f; the
+        // first and third are the bit trick for "has a byte below n".
+        let del = w ^ (ONES * 0x7f);
+        if (w.wrapping_sub(ONES * 0x20) & !w | w | del.wrapping_sub(ONES) & !del) & HIGH != 0 {
+            break;
+        }
+        i += 8;
+    }
+    while i < data.len() && (0x20..0x7f).contains(&data[i]) {
+        i += 1;
+    }
+    i
 }
 
 /// Skip a string sequence (OSC, DCS, APC, PM, SOS) starting at i, returning
@@ -1397,9 +1459,7 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
         let b = data[i];
         if (0x20..0x7f).contains(&b) {
             let start = i;
-            while i < data.len() && (0x20..0x7f).contains(&data[i]) {
-                i += 1;
-            }
+            i = printable_end(data, i + 1);
             screen.print_ascii(&data[start..i]);
             continue;
         }
@@ -1707,6 +1767,21 @@ fn csi(screen: &mut Screen, params: &mut Params, data: &[u8], mut i: usize) -> u
     let start = i;
     while i < data.len() {
         let c = data[i];
+        // Digits, ':' and ';' first, with one test: they are most of every
+        // sequence (#21). After an intermediate they are malformed, below.
+        let offset = c.wrapping_sub(b'0');
+        if offset <= b';' - b'0' && intermediate.is_none() {
+            if offset < 10 {
+                let value = u64::from(current.value.unwrap_or(0)) * 10 + u64::from(offset);
+                current.value = Some(value.min(u64::from(u32::MAX)) as u32);
+            } else {
+                params.push(current);
+                current = Param { value: None, sub: c == b':' };
+            }
+            any = true;
+            i += 1;
+            continue;
+        }
         match c {
             // Parameter bytes come before intermediates, never after.
             0x30..=0x3f if intermediate.is_some() => malformed = true,
