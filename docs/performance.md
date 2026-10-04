@@ -25,7 +25,7 @@ Issue #22 asked to reprofile drawing (rounded, box and block grids, large
 sparse and dense screens, other font sizes, ordinary text, images under and
 over text), and to try bounded reuse of repeated geometry and cheaper
 background and blend painting, without changing a pixel. Three changes to
-`src/draw.c` are kept; three more experiments were measured and dropped.
+`src/draw.c` are kept; four more experiments were measured and dropped.
 Every PNG of every run is byte-identical to main's.
 
 ### Result
@@ -33,10 +33,10 @@ Every PNG of every run is byte-identical to main's.
 | | macOS arm64 (M2 Max, Apple clang 21) | Linux x86-64 (Ryzen 7 8745HS, GCC 16.2) |
 | --- | --- | --- |
 | `rounded-boxes` (3,000 corners, 2200×1440) wall | 15.29 → 9.92 ms (1.53-1.55×) | 23.23 → 13.26 ms (1.75-1.76×) |
-| `rounded-128px` (5800×3840) wall | 70.33 → 32.57 ms (2.16-2.16×) | 106.77 → 42.35 ms (2.48-2.51×) |
-| `rounded-24px` (1100×720) wall | 8.16 → 5.69 ms (1.42-1.42×) | 12.87 → 7.82 ms (1.65-1.69×) |
+| `rounded-128px` (5800×3840) wall | 70.33 → 32.57 ms (2.16×) | 106.77 → 42.35 ms (2.48-2.51×) |
+| `rounded-24px` (1100×720) wall | 8.16 → 5.69 ms (1.42×) | 12.87 → 7.82 ms (1.65-1.69×) |
 | `rounded-boxes` `geometry_ms` | 6.12 → 0.98 ms | 11.85 → 1.72 ms |
-| `image-over` wall | 21.35 → 20.30 ms (1.05-1.06×) | 43.85 → 37.66 ms (1.17-1.17×) |
+| `image-over` wall | 21.35 → 20.30 ms (1.05-1.06×) | 43.85 → 37.66 ms (1.17×) |
 | `image-under` wall | 26.57 → 25.35 ms (1.04-1.05×) | 55.01 → 48.53 ms (1.10-1.14×) |
 | `geometry-all` (5280×3840) `geometry_ms` | 8.10 → 3.31 ms | 19.42 → 6.84 ms |
 | `large` (5280×3840) `blend_ms` | 5.13 → 3.91 ms | 18.19 → 7.81 ms |
@@ -56,9 +56,10 @@ in the [PNG round](#png-compression-adler-32-and-deflate-matching-2026-10-03-3bf
 The paired, interleaved ratios still compare the two binaries under the same
 load, and they show painting gaining more there than on the Mac: `large`
 1.14×, `block-grid` 1.18×, `dense` 1.09-1.11×, images 1.10-1.17×. The
-backdrop's row-at-a-time painting saves cache misses, and under contention
-for the shared cache a miss costs more (`blend_ms` of `large` 18.19 → 7.81
-ms there, 5.13 → 3.91 on the Mac). What an idle Linux host gains is not
+backdrop's row-at-a-time painting saves cache misses, which is consistent
+with a miss costing more while other processes share the cache (`blend_ms`
+of `large` 18.19 → 7.81 ms there, 5.13 → 3.91 on the Mac); that cause is
+not measured. What an idle Linux host gains is not
 measured here. The lowest Linux ratio, `cjk-none` batch B 0.949 [0.890,
 0.992], is a case the change does not touch (its batch A is 1.075); under
 that load its intervals are 5-10% wide.
