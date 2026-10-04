@@ -341,6 +341,35 @@ fn incorrect_payload_lengths_and_dimensions() {
 }
 
 #[test]
+fn raw_payloads_may_run_up_to_10_bytes_long_as_in_kitty() {
+    // kitty's buffer holds w*h*bpp + 10 bytes: it refuses a payload that
+    // overflows it, or one short of w*h*bpp, and ignores the rest.
+    let data: Vec<u8> = (1..=19).collect();
+    for (format, size) in [(24, 6), (32, 8)] {
+        let want = match format {
+            24 => data[..6].chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+            _ => data[..8].to_vec(),
+        };
+        for (len, ok) in [(size - 1, false), (size, true), (size + 1, true), (size + 10, true), (size + 11, false)] {
+            let got = transmitted(&format!("a=t,i=1,f={format},s=2,v=1;{}", b64(&data[..len])));
+            assert_eq!(got, ok.then(|| want.clone()), "f={format} with {len} bytes");
+        }
+        let limit = payload_limit(&Command::parse(format!("f={format},s=2,v=1").as_bytes()).unwrap());
+        assert_eq!(limit, size + RAW_SLACK);
+    }
+    // Over chunks, the limit is on the whole upload, wherever the excess is.
+    let want = Some(vec![1, 2, 3, 255, 4, 5, 6, 255]);
+    for cuts in [&[6, 10][..], &[3, 13], &[15, 1], &[1, 1, 14]] {
+        assert_eq!(chunked(&data[..16], cuts, true), want, "{cuts:?}");
+    }
+    for cuts in [&[6, 11][..], &[16, 1], &[1, 16], &[17]] {
+        assert_eq!(chunked(&data[..17], cuts, true), None, "{cuts:?}");
+    }
+    // PNG data has no such limit: kitty grows its buffer for it.
+    assert_eq!(payload_limit(&Command::parse(b"f=100,S=80").unwrap()), MAX_BYTES);
+}
+
+#[test]
 fn deletion_by_id_and_placement_and_retransmission() {
     let mut log = red(",i=1,p=2,C=1");
     log.extend(red(",i=2,C=1"));

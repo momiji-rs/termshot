@@ -250,6 +250,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A kitty RGB or RGBA payload up to 10 bytes longer than its pixels loads,
+  as in kitty, which ignores the excess (#55). termshot required the exact
+  length, and accepted up to 16 MiB of payload before refusing a longer one.
 - Running out of memory while compressing the PNG exits 2, as other
   allocation failures do, with an "out of memory" message. It exited 1 and
   said the PNG could not be written.

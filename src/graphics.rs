@@ -10,6 +10,9 @@ const MAX_BYTES: usize = 16 * 1024 * 1024;
 /// How much larger than its decoded size a compressed RGB or RGBA payload may
 /// be, as kitty allows: room for the zlib framing of data that won't shrink.
 const COMPRESSION_SLACK: usize = 1024;
+/// How many bytes past its decoded size an uncompressed RGB or RGBA payload
+/// may run, as kitty allows; they are ignored.
+const RAW_SLACK: usize = 10;
 const MAX_IMAGES: usize = 4096;
 const MAX_PLACEMENTS: usize = 1024;
 const MAX_EXTENT: i64 = 1 << 24;
@@ -484,13 +487,11 @@ fn raw_size(cmd: &Command) -> Option<usize> {
 }
 
 /// The most payload bytes a transmission may carry, over all its chunks.
-/// kitty sizes a compressed RGB or RGBA upload's buffer at its decoded size
-/// plus 1 KiB and refuses more; anything else gets the decoded limit.
+/// kitty sizes an RGB or RGBA upload's buffer at its decoded size plus 10
+/// bytes, or 1 KiB if compressed, and refuses more; PNG gets the decoded limit.
 fn payload_limit(cmd: &Command) -> usize {
-    match raw_size(cmd) {
-        Some(size) if cmd.compressed => size.min(MAX_BYTES) + COMPRESSION_SLACK,
-        _ => MAX_BYTES,
-    }
+    let slack = if cmd.compressed { COMPRESSION_SLACK } else { RAW_SLACK };
+    raw_size(cmd).map_or(MAX_BYTES, |size| size.min(MAX_BYTES) + slack)
 }
 
 /// Decodes one chunk's payload. Like kitty, which decodes each chunk on its
@@ -587,12 +588,17 @@ fn decode(cmd: &Command, mut data: Vec<u8>) -> Option<(u32, u32, Vec<u8>)> {
     if w == 0 || h == 0 || w > 8192 || h > 8192 || size > MAX_BYTES {
         return None;
     }
+    // As in kitty, raw pixels may be followed by a few bytes, which are
+    // ignored; payload_limit bounds them.
     let rgba = match cmd.format {
-        24 if data.len() == size / 4 * 3 => data
+        24 if data.len() >= size / 4 * 3 => data[..size / 4 * 3]
             .chunks_exact(3)
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
-        32 if data.len() == size => data,
+        32 if data.len() >= size => {
+            data.truncate(size);
+            data
+        }
         100 => {
             let mut rgba = vec![0; size];
             if unsafe {
