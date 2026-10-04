@@ -17,16 +17,25 @@
 #                                             src/geometry.rs (#12 step 2a):
 #                                             the same pixels at every cell
 #                                             size, then the time of each
+#   bench/c-vs-rust/run.sh images [rounds]    2026-10-04: draw.c's image
+#                                             layers and backdrop as of
+#                                             $images_rev against the shipped
+#                                             src/composite.rs (#12 step 2b):
+#                                             random scenes, then every image
+#                                             and cursor fixture through the
+#                                             CLI built at $images_rev and
+#                                             now, then the time of each
 #
-# src/deflate.c is gone from the tree since #12 step 1, and draw.c's geometry
-# since step 2a; the comparisons still take them from the old revisions. All
+# src/deflate.c is gone from the tree since #12 step 1, draw.c's geometry
+# since step 2a and its image layers since step 2b; the comparisons still
+# take them from the old revisions. All
 # check that the outputs are byte-identical before timing both sides in
 # one process. Default 61 rounds. CC picks the C compiler of the deflate
 # comparison (default cc); RUSTFLAGS adds rustc flags to its Rust side.
 set -eu
 cd "$(dirname "$0")/../.."
 mode=poc
-if [ "${1:-}" = deflate ] || [ "${1:-}" = geometry ]; then
+if [ "${1:-}" = deflate ] || [ "${1:-}" = geometry ] || [ "${1:-}" = images ]; then
     mode=$1
     shift
 fi
@@ -36,6 +45,7 @@ rounds=${1:-61}
 rev=bd726a6b53957c389722f018dbabb6b093ac90bb
 deflate_rev=a8a95e0bd7b8ba998688554e09680b34a40a8d4e
 geometry_rev=24d71feb5e80a0df5c079a64b1e31b8b2bc7f46b
+images_rev=431ed233a1d24cd8e7e4b471343e5dac70fc3462
 
 # Workloads, parsed by the current termshot parser. build.sh leaves the
 # current C in libtermshot_c.a; link it the way test.sh does.
@@ -62,6 +72,51 @@ if [ "$mode" = geometry ]; then
     echo "Rust: $(rustc --version), -C opt-level=2"
     echo "host: $(uname -sm), load: $(uptime | sed 's/.*load average[s]*: //')"
     "$work/geometry" third_party/jetbrains-mono/JetBrainsMono-Regular.ttf "$rounds"
+    echo "load after: $(uptime | sed 's/.*load average[s]*: //')"
+    exit 0
+fi
+
+if [ "$mode" = images ]; then
+    cc=${CC:-cc}
+    work=target/c-vs-rust-images
+    rm -rf "$work"
+    mkdir -p "$work/snapshot" "$work/out"
+    # What the old CLI builds from, and the old draw.c for the harness.
+    git archive "$images_rev" build.sh src third_party | tar -x -C "$work/snapshot"
+    rust_libs=$(tests/rust_lib.sh "$work/rust.a")
+    # shellcheck disable=SC2086
+    $cc bench/c-vs-rust/images.c "$work/rust.a" -o "$work/images" -O2 -ffp-contract=off -w \
+        -I "$work/snapshot/src" -I "$work/snapshot/third_party/stb" -lm $rust_libs
+    echo "== draw.c's image layers at $images_rev vs src/composite.rs"
+    echo "C: $($cc --version | head -n 1)"
+    echo "Rust: $(rustc --version), -C opt-level=2"
+    echo "host: $(uname -sm), load: $(uptime | sed 's/.*load average[s]*: //')"
+    "$work/images" third_party/jetbrains-mono/JetBrainsMono-Regular.ttf "$rounds"
+    if [ -z "${TIME_ONLY:-}" ]; then
+        # The fixtures through both CLIs, whose PNGs must be the same bytes:
+        # the C and the compressor are the same but for the image layers.
+        (cd "$work/snapshot" && ./build.sh)
+        ./build.sh
+        n=0
+        for log in tests/fixtures/kitty-*.pty tests/fixtures/sixel-*.pty tests/fixtures/cursor-*.pty; do
+            # Small and large cells, a fractional size, both cursor marks,
+            # and rasters past 16 MiB, whose backdrop goes by rows.
+            for args in '--px 1' '--px 9' '--px 24 --cursor-shape bar' '--px 47.5 --cursor-shape underline' \
+                '--px 48 --size 200x60' '--px 128 --size 120x40 --cursor-shape bar'; do
+                # shellcheck disable=SC2086
+                "$work/snapshot/termshot" $args "$log" "$work/out/c.png"
+                # shellcheck disable=SC2086
+                ./termshot $args "$log" "$work/out/rust.png"
+                if ! cmp -s "$work/out/c.png" "$work/out/rust.png"; then
+                    echo "FAIL $log $args: the PNGs differ" >&2
+                    exit 1
+                fi
+                n=$((n + 1))
+            done
+        done
+        rm -f "$work/out/c.png" "$work/out/rust.png"
+        echo "ok, $n fixture renders byte-identical to the CLI at $images_rev"
+    fi
     echo "load after: $(uptime | sed 's/.*load average[s]*: //')"
     exit 0
 fi
