@@ -35,17 +35,29 @@
 #                                             $glyphs_rev and now, with each
 #                                             font kind at several sizes,
 #                                             then the glyph stages' time
+#   bench/c-vs-rust/run.sh full [rounds]      2026-10-04: the render driver
+#                                             as of $driver_rev, draw.c's
+#                                             draw_png_images, against the
+#                                             shipped src/render.rs (#12
+#                                             step 2d): the glyphs matrix,
+#                                             plus --verbose, oversized
+#                                             images and unwritable outputs,
+#                                             through the CLI built at
+#                                             $driver_rev and now, then the
+#                                             glyph stages' time
 #
 # src/deflate.c is gone from the tree since #12 step 1, draw.c's geometry
-# since step 2a, its image layers since step 2b and its glyphs since step
-# 2c; the comparisons still take them from the old revisions. All
-# check that the outputs are byte-identical before timing both sides in
-# one process. Default 61 rounds. CC picks the C compiler of the deflate
-# comparison (default cc); RUSTFLAGS adds rustc flags to its Rust side.
+# since step 2a, its image layers since step 2b, its glyphs since step 2c
+# and draw.c itself since step 2d (src/stb_glue.c is what is left); the
+# comparisons still take them from the old revisions. All check that the
+# outputs are byte-identical before timing both sides in one process.
+# Default 61 rounds. CC picks the C compiler of the deflate comparison
+# (default cc); RUSTFLAGS adds rustc flags to its Rust side.
 set -eu
 cd "$(dirname "$0")/../.."
 mode=poc
-if [ "${1:-}" = deflate ] || [ "${1:-}" = geometry ] || [ "${1:-}" = images ] || [ "${1:-}" = glyphs ]; then
+if [ "${1:-}" = deflate ] || [ "${1:-}" = geometry ] || [ "${1:-}" = images ] || [ "${1:-}" = glyphs ] ||
+    [ "${1:-}" = full ]; then
     mode=$1
     shift
 fi
@@ -57,6 +69,7 @@ deflate_rev=a8a95e0bd7b8ba998688554e09680b34a40a8d4e
 geometry_rev=24d71feb5e80a0df5c079a64b1e31b8b2bc7f46b
 images_rev=431ed233a1d24cd8e7e4b471343e5dac70fc3462
 glyphs_rev=c0b7b02f41da34f687b86b911f743841422db1d7
+driver_rev=48192f68a8f3df3673fec7865efc540394c90e69
 
 # Workloads, parsed by the current termshot parser. build.sh leaves the
 # current C in libtermshot_c.a; link it the way test.sh does.
@@ -87,15 +100,24 @@ if [ "$mode" = geometry ]; then
     exit 0
 fi
 
-if [ "$mode" = glyphs ]; then
+if [ "$mode" = glyphs ] || [ "$mode" = full ]; then
     cc=${CC:-cc}
-    work=target/c-vs-rust-glyphs
+    work=target/c-vs-rust-$mode
     rm -rf "$work"
     mkdir -p "$work/snapshot" "$work/out"
-    # The CLI as of $glyphs_rev, whose draw.c painted the glyphs, and now.
-    # Both use the same parser, geometry, images and compressor, so their
-    # PNGs differ only if the glyph painting does.
-    git archive "$glyphs_rev" build.sh src third_party | tar -x -C "$work/snapshot"
+    # glyphs: the CLI as of $glyphs_rev, whose draw.c painted the glyphs,
+    # and now. Both use the same parser, geometry, images and compressor, so
+    # their PNGs differ only if the glyph painting does. full: the CLI as of
+    # $driver_rev, whose draw.c drove the render (the font setup, the
+    # canvas, the passes, the errors and the PNG write), and now.
+    if [ "$mode" = glyphs ]; then
+        old_rev=$glyphs_rev
+        what="draw.c's glyph painting at $glyphs_rev vs src/glyphs.rs"
+    else
+        old_rev=$driver_rev
+        what="draw.c's render driver at $driver_rev vs src/render.rs"
+    fi
+    git archive "$old_rev" build.sh src third_party | tar -x -C "$work/snapshot"
     (cd "$work/snapshot" && ./build.sh)
     ./build.sh
     old="$work/snapshot/termshot"
@@ -108,14 +130,14 @@ if [ "$mode" = glyphs ]; then
     # tests/glyphs.c writes the built-in font with no outline for 'A' (an
     # empty glyph, as color bitmap fonts have), running its checks against
     # the Rust on the way.
-    rust_libs=$(tests/rust_lib.sh "$work/rust.a")
+    rust_libs=$(tests/rust_lib.sh "$work/rust.a" --cfg termshot_render)
     $cc -c tests/png_read.c -o "$work/png_read.o" -O2 -I third_party/stb
     # shellcheck disable=SC2086
-    $cc tests/glyphs.c "$work/png_read.o" "$work/rust.a" -o "$work/glyph-checks" -O2 -Wno-deprecated-declarations \
-        -I src -I third_party/stb -lm $rust_libs
+    $cc tests/glyphs.c "$work/png_read.o" "$work/rust.a" -o "$work/glyph-checks" -O2 -ffp-contract=off \
+        -Wno-deprecated-declarations -I src -I third_party/stb -lm $rust_libs
     hollow="$work/hollow-A.ttf"
     "$work/glyph-checks" "$jb" "$work/out/glyphs.png" "$hollow" "$work/out/fb-reference.png"
-    echo "== draw.c's glyph painting at $glyphs_rev vs src/glyphs.rs, through the CLI"
+    echo "== $what, through the CLI"
     echo "C: $($cc --version | head -n 1)"
     echo "Rust: $(rustc --version), -C opt-level=2"
     echo "host: $(uname -sm), load: $(uptime | sed 's/.*load average[s]*: //')"
@@ -173,9 +195,36 @@ if [ "$mode" = glyphs ]; then
                     compare "$log" $fonts --px $px
                 done
             done
+            [ "$mode" = full ] || continue
+            # The driver's own output: the cell and image size, and the
+            # images it refuses (over 2^27 pixels: exit 2, no PNG).
+            for fonts in "" "--font $cff --fallback-font $jb" "--font $vf#wght=900"; do
+                # shellcheck disable=SC2086
+                compare "$log" $fonts -v --px 47.5
+                # shellcheck disable=SC2086
+                compare "$log" $fonts --px 255 --size 500x73
+            done
         done
+        if [ "$mode" = full ]; then
+            # An output it can't open or write: exit 1, said the same way.
+            for out in "$work/out/no-such-dir/x.png" /dev/full; do
+                [ "$out" = /dev/full ] && [ ! -e /dev/full ] && continue
+                set +e
+                "$old" examples/reply-sent.pty "$out" 2>"$work/out/c.err"
+                c=$?
+                ./termshot examples/reply-sent.pty "$out" 2>"$work/out/rust.err"
+                r=$?
+                set -e
+                if [ "$c" -ne "$r" ] || ! cmp -s "$work/out/c.err" "$work/out/rust.err"; then
+                    echo "FAIL writing $out: exit $c vs $r, or stderr differs" >&2
+                    diff "$work/out/c.err" "$work/out/rust.err" >&2 || true
+                    exit 1
+                fi
+                n=$((n + 1))
+            done
+        fi
         rm -f "$work/out/c.png" "$work/out/rust.png"
-        echo "ok, $n renders byte-identical to the CLI at $glyphs_rev, with the same exit code and stderr"
+        echo "ok, $n renders byte-identical to the CLI at $old_rev, with the same exit code and stderr"
     fi
     # The glyph stages' time in each CLI (TERMSHOT_PROFILE): bench.py's text
     # cases, glyph_ms finding and rasterizing, blend_ms blending, and
