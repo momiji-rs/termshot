@@ -585,6 +585,11 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
         return Err("maxp says the font has no glyphs".into());
     }
     u16_at(head, 52)?;
+    // draw.c scales a face by its height, ascender to descender.
+    let (ascender, descender) = (u16_at(hhea, 4)? as i16, u16_at(hhea, 6)? as i16);
+    if ascender <= descender {
+        return Err(format!("hhea's ascender {ascender} is not above its descender {descender}"));
+    }
     let long_metrics = u16_at(hhea, 34)? as usize;
     if long_metrics == 0 {
         return Err("hhea has no horizontal metrics".into());
@@ -1007,6 +1012,19 @@ pub mod tests {
         assert!(choose(ttc.clone(), Some("0"), "c.ttc").is_ok());
         let error = choose(ttc, Some("Broken"), "c.ttc").err().unwrap();
         assert!(error.contains("c.ttc: not a usable font: unknown loca format"), "{error}");
+    }
+
+    /// A face is scaled by its height, so one of no height is refused as
+    /// either font, rather than drawn at an infinite scale as the fallback.
+    #[test]
+    fn a_face_of_no_height_is_refused() {
+        let font = fs::read(FONT).unwrap();
+        let flat = |descender: i16| edit_table(&font, b"hhea", |hhea| hhea[6..8].copy_from_slice(&descender.to_be_bytes()));
+        let ascender = i16::from_be_bytes(table(&font, 0, b"hhea").unwrap().unwrap().data[4..6].try_into().unwrap());
+        let error = choose(flat(ascender), None, "f.ttf").err().unwrap();
+        assert_eq!(error, format!("f.ttf: not a usable font: hhea's ascender {ascender} is not above its descender {ascender}"));
+        assert!(choose(flat(ascender + 1), None, "f.ttf").is_err());
+        assert!(choose(flat(ascender - 1), None, "f.ttf").is_ok());
     }
 
     #[test]

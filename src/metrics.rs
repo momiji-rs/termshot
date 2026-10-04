@@ -252,9 +252,11 @@ pub fn vertical(hhea: &[u8], mvar: &[u8], coords: &[i32]) -> Result<[i32; 3], St
         _ => 0.0,
     };
     let hhea_at = |at| u16_at(hhea, at).map(|v| v as i16 as f32);
-    Ok([
-        round((hhea_at(4)? + delta(b"hasc")).abs()) as i32,
-        round(-(hhea_at(6)? + delta(b"hdsc")).abs()) as i32,
-        round(hhea_at(8)? + delta(b"hlgp")) as i32,
-    ])
+    let ascender = round((hhea_at(4)? + delta(b"hasc")).abs()) as i32;
+    let descender = round(-(hhea_at(6)? + delta(b"hdsc")).abs()) as i32;
+    // As font::check refuses it in hhea: draw.c scales a face by its height.
+    if ascender <= descender {
+        return Err(format!("at this instance the ascender {ascender} is not above the descender {descender}"));
+    }
+    Ok([ascender, descender, round(hhea_at(8)? + delta(b"hlgp")) as i32])
 }

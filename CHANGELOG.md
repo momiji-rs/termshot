@@ -272,6 +272,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A font whose `hhea` ascender is not above its descender is refused at
+  load with that reason (exit 1). As `--fallback-font` it was scaled by a
+  height of 0 or less, and as `--font` it was refused only when drawing,
+  as "font metrics unusable". An instance whose `MVAR` takes the height to
+  0 is refused the same way.
 - A kitty RGB or RGBA payload up to 10 bytes longer than its pixels loads,
   as in kitty, which ignores the excess (#55). termshot required the exact
   length, and accepted up to 16 MiB of payload before refusing a longer one.

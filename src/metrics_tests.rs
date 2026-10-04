@@ -233,6 +233,10 @@ fn damaged_metrics_tables_are_refused_at_an_instance() {
         (mvar(8, &records(&[b"hasc", b"hasc"]), &one()), "its value records are not in tag order"),
         (patched(mvar(8, &records(&[b"hasc"]), &one()), 8, 9), "its value records run past the table"),
         (mvar(8, &records(&[b"hasc"]), &store(1, &[vec![[0, ONE, ONE]]], &[])), "the region list's axis count is 1 and fvar's 2"),
+        (
+            mvar(8, &[(b"hasc", 0), (b"hdsc", 1)], &store(2, &regions(), &[data(&[0], 1, &[&[-800], &[200]])])),
+            "at this instance the ascender 0 is not above the descender 0",
+        ),
     ];
     let cases = hvars.into_iter().map(|(t, e)| (*b"HVAR", t, e)).chain(mvars.into_iter().map(|(t, e)| (*b"MVAR", t, e)));
     fs::create_dir_all("target/test").unwrap();
