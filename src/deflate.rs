@@ -402,11 +402,11 @@ fn word(s: &[u8]) -> u64 {
     u64::from_le_bytes(s[..8].try_into().unwrap())
 }
 
-/// Length of the common prefix of data[a..] and data[b..], at most limit
-/// (b + limit <= data.len()): 16 bytes a step, then 8, then bytes.
+/// Length of the common prefix of x and y, which are as long: 16 bytes a
+/// step, then 8, then bytes.
 #[inline(always)]
-fn countm(data: &[u8], a: usize, b: usize, limit: usize) -> usize {
-    let (x, y) = (&data[a..a + limit], &data[b..b + limit]);
+fn countm(x: &[u8], y: &[u8]) -> usize {
+    let limit = x.len().min(y.len());
     let mut i = 0;
     for (cx, cy) in x.chunks_exact(16).zip(y.chunks_exact(16)) {
         let d0 = word(cx) ^ word(cy);
@@ -471,22 +471,31 @@ fn compress(data: &[u8], quality: usize) -> Option<Out> {
         let base = h * cap;
         let n = cnt[h] as usize;
         let limit = (len - i).min(MAX_MATCH);
+        let cur = &data[i..i + limit];
+        let mut cands = tab[base..base + n].iter().rev().map(|&c| c as usize).take_while(|&c| c + WINDOW > i);
         let (mut best, mut bestpos) = (3usize, None::<usize>);
-        for &cand in tab[base..base + n].iter().rev() {
-            let cand = cand as usize;
-            if cand + WINDOW <= i {
-                break;
-            }
-            // A newer candidate already won ties. Only a longer match helps.
-            if bestpos.is_some() && data[cand + best] != data[i + best] {
-                continue;
-            }
-            let d = countm(data, cand, i, limit);
-            if if bestpos.is_none() { d >= best } else { d > best } {
+        // The newest candidate of at least 3 bytes is the first match.
+        for cand in &mut cands {
+            let d = countm(&data[cand..cand + limit], cur);
+            if d >= 3 {
                 best = d;
                 bestpos = Some(cand);
-                if best == limit {
-                    break;
+                break;
+            }
+        }
+        if best < limit {
+            for cand in cands {
+                // A newer candidate already won ties. Only a longer match helps.
+                if data[cand + best] != cur[best] {
+                    continue;
+                }
+                let d = countm(&data[cand..cand + limit], cur);
+                if d > best {
+                    best = d;
+                    bestpos = Some(cand);
+                    if best == limit {
+                        break;
+                    }
                 }
             }
         }
@@ -515,7 +524,7 @@ fn compress(data: &[u8], quality: usize) -> Option<Out> {
                     if data[cand + best] != data[i + 1 + best] {
                         continue;
                     }
-                    if countm(data, cand, i + 1, limit1) > best {
+                    if countm(&data[cand..cand + limit1], &data[i + 1..i + 1 + limit1]) > best {
                         bestpos = None;
                         break;
                     }
