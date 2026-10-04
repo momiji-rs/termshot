@@ -91,9 +91,23 @@ to 5.6; its geometry stage there went 1.89 → 1.77 ms, faster.
 `text-mixed-unicode` 1.4-1.6%; both are parser-bound (`parse` 17.88 → 18.26
 ms in batch A), and `text-mixed-unicode` writes no PNG, so it never reaches
 geometry. The parser's source is unchanged; what changed is the crate it is
-compiled in, which gained a module and so may be split into codegen units
-differently. That is a hypothesis, not a measurement. macOS shows neither
-(1.000 / 0.997 and 1.000 / 1.000).
+compiled in, which gained a module, and so how rustc splits it into codegen
+units. `perf stat -r 30 -e instructions:u,cycles:u` on starship, the same
+logs (`thai-combining` with a PNG, `mixed-unicode` with `--text` only):
+
+| log | main | branch | main, 1 codegen unit | branch, 1 codegen unit |
+| --- | ---: | ---: | ---: | ---: |
+| `thai-combining` instructions | 366,433,457 | 371,024,775 (+1.25%) | 386,479,352 | 386,280,724 (-0.05%) |
+| `thai-combining` cycles | 149.3 M | 154.0 M (+3.1%) | 151.9 M | 145.0 M (-4.5%) |
+| `mixed-unicode --text` instructions | 350,532,256 | 355,397,803 (+1.39%) | 410,217,965 | 410,217,532 (-0.0001%) |
+| `mixed-unicode --text` cycles | 156.6 M | 164.4 M (+5.0%) | 174.5 M | 168.0 M (-3.7%) |
+
+Built as one codegen unit, the two binaries run the same instructions
+(cycles ±0.3% over 30 runs, at a load of 18). The shipped difference is
+therefore rustc's partitioning of the crate, which the new module moved,
+not anything the parser or geometry does; it is accepted, since
+`-C codegen-units=1` itself costs 5-17% more instructions on these logs. macOS
+shows neither case slower (1.000 / 0.997 and 1.000 / 1.000).
 
 ### Geometry alone
 
