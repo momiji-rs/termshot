@@ -140,32 +140,32 @@ mod faults {
     use std::cell::Cell;
 
     #[derive(Clone, Copy, Default)]
-    pub struct Faults {
+    pub(super) struct Faults {
         /// Allocations so far, and the one to fail (0 for none).
-        pub calls: u32,
-        pub fail_at: u32,
+        pub(super) calls: u32,
+        pub(super) fail_at: u32,
         /// Buffers allocated and not yet freed.
-        pub live: i32,
+        pub(super) live: i32,
     }
 
     thread_local! {
-        pub static FAULTS: Cell<Faults> = Cell::new(Faults::default());
+        pub(super) static FAULTS: Cell<Faults> = Cell::new(Faults::default());
         #[cfg(test)]
-        pub static FAILED: Cell<Option<Site>> = Cell::new(None);
+        pub(super) static FAILED: Cell<Option<Site>> = Cell::new(None);
     }
 
     /// Starts a call: count from zero, and fail where asked.
     #[cfg(not(test))]
-    pub fn start() {
+    pub(super) fn start() {
         let fail_at = std::env::var("TERMSHOT_DEFLATE_FAIL_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
         FAULTS.with(|f| f.set(Faults { calls: 0, fail_at, live: 0 }));
     }
 
     #[cfg(test)]
-    pub fn start() {}
+    pub(super) fn start() {}
 
     /// Whether this allocation fails.
-    pub fn fail(_site: Site) -> bool {
+    pub(super) fn fail(_site: Site) -> bool {
         FAULTS.with(|f| {
             let mut s = f.get();
             s.calls += 1;
@@ -179,7 +179,7 @@ mod faults {
         })
     }
 
-    pub fn live(delta: i32) {
+    pub(super) fn live(delta: i32) {
         FAULTS.with(|f| {
             let mut s = f.get();
             s.live += delta;
