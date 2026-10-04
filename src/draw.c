@@ -242,7 +242,9 @@ static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double fon
     int ascent, descent, line_gap;
     face_v_metrics(font, face, &ascent, &descent, &line_gap);
     int adv = face_advance(font, face, stbtt_FindGlyphIndex(font, 'M'));
-    if (adv <= 0 || ascent <= descent) {
+    /* metrics.rs keeps the extents in hhea's 16 bits; an advance HVAR
+       takes past hmtx's would overflow the cell's arithmetic. */
+    if (adv <= 0 || adv > 65535 || ascent <= descent) {
         fprintf(stderr, "termshot: font metrics unusable\n");
         return 0;
     }

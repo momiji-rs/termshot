@@ -12,6 +12,7 @@ const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
 
 extern "C" {
     fn draw_face_metrics(face: *const font::Face, count: c_int, advances: *mut c_int, v: *mut c_int) -> c_int;
+    fn draw_face_cell_size(face: *const font::Face, px: f64, w: *mut c_int, h: *mut c_int) -> c_int;
 }
 
 /// The advances of glyphs 0..count of `font` and its ascent, descent and
@@ -207,11 +208,11 @@ fn crafted_mvar() -> Vec<u8> {
     mvar(10, &[(b"hasc", 0), (b"hdsc", 1), (b"hlgp", 2), (b"xhgt", 3)], &vertical)
 }
 
-/// The font with U+4E00 mapped to `glyph`, in place of A to glyph 1.
-fn one_maps_to(font: &[u8], glyph: u16) -> Vec<u8> {
+/// The font with `cp` mapped to `glyph`, in place of A to glyph 1.
+fn one_maps_to(font: &[u8], cp: u16, glyph: u16) -> Vec<u8> {
     edit_table(font, b"cmap", |cmap| {
         // The format 4 subtable's first segment: its end, start and delta.
-        for (at, v) in [(26, 0x4e00), (32, 0x4e00), (36, glyph.wrapping_sub(0x4e00))] {
+        for (at, v) in [(26, cp), (32, cp), (36, glyph.wrapping_sub(cp))] {
             cmap[at..at + 2].copy_from_slice(&u16::to_be_bytes(v));
         }
     })
@@ -227,7 +228,7 @@ fn a_fallback_is_placed_by_its_advance_at_the_instance() {
     let cells = crate::parse("\u{4e00}".as_bytes(), 4, 1);
     let hvar = crafted_hvar();
     for (glyph, advance) in [(1usize, 727u16), (3, 1600)] {
-        let varied = one_maps_to(&two_axes(&[(b"HVAR", &hvar)]), glyph as u16);
+        let varied = one_maps_to(&two_axes(&[(b"HVAR", &hvar)]), 0x4e00, glyph as u16);
         let fixed = edit_table(&varied, b"hmtx", |hmtx| hmtx[4 * glyph..][..2].copy_from_slice(&advance.to_be_bytes()));
         let draw = |data: &[u8], axes: Option<&str>, name: &str| {
             let path = format!("target/test/metrics-fallback-{glyph}-{name}.otf");
@@ -275,6 +276,18 @@ fn damaged_metrics_tables_are_refused_at_an_instance() {
             mvar(8, &[(b"hasc", 0), (b"hdsc", 1)], &store(2, &regions(), &[data(&[0], 1, &[&[-800], &[200]])])),
             "at this instance the ascender 0 is not above the descender 0",
         ),
+        (
+            mvar(8, &[(b"hasc", 0)], &store(2, &regions(), &[data(&[0], 0x8001, &[&[2_000_000_000]])])),
+            "at this instance the ascender 2000000768 is past the 16 bits hhea holds",
+        ),
+        (
+            mvar(8, &[(b"hdsc", 0)], &store(2, &regions(), &[data(&[0], 0x8001, &[&[-40000]])])),
+            "at this instance the descender -40200 is past the 16 bits hhea holds",
+        ),
+        (
+            mvar(8, &[(b"hlgp", 0)], &store(2, &regions(), &[data(&[0], 0x8001, &[&[32768]])])),
+            "at this instance the line gap 32768 is past the 16 bits hhea holds",
+        ),
     ];
     let cases = hvars.into_iter().map(|(t, e)| (*b"HVAR", t, e)).chain(mvars.into_iter().map(|(t, e)| (*b"MVAR", t, e)));
     fs::create_dir_all("target/test").unwrap();
@@ -287,6 +300,25 @@ fn damaged_metrics_tables_are_refused_at_an_instance() {
         assert_eq!(got, format!("{path}: not a usable font: {tag} table: {error}"));
         assert!(load(None).is_ok(), "{path} at its default instance");
         assert!(load(Some("ax0=0")).is_ok(), "{path} with the default chosen");
+    }
+}
+
+/// The cell is sized by the advance of M, which HVAR can take past the 16
+/// bits hmtx holds, and so past what draw.c's arithmetic on it allows: the
+/// crafted font's glyph 13, mapped to M, advances 70002 units more at
+/// ax0=1,ax1=1, so its metrics are unusable there.
+#[test]
+fn an_advance_past_hmtx_s_16_bits_is_refused_for_the_cell() {
+    fs::create_dir_all("target/test").unwrap();
+    let path = "target/test/metrics-wide-m.otf";
+    fs::write(path, one_maps_to(&crafted(), b'M' as u16, 13)).unwrap();
+    let load = |axes: &str| font::load(&font::Spec { path: path.into(), face: None, axes: Some(axes.into()) }).unwrap();
+    for (axes, usable) in [("ax0=1,ax1=1", false), ("ax0=1", true)] {
+        let font = load(axes);
+        assert_eq!(drawn(&font, 14).0[13] > 65535, !usable, "{axes}");
+        let (mut w, mut h) = (0, 0);
+        let sized = font.with_metrics(|face| unsafe { draw_face_cell_size(face, 24.0, &mut w, &mut h) });
+        assert_eq!(sized, Ok(usable as c_int), "{axes}");
     }
 }
 

@@ -227,7 +227,7 @@ impl<'a> Advances<'a> {
 /// hhea's ascender, descender and line gap at the instance at `coords`,
 /// varied by MVAR's hasc, hdsc and hlgp. As HarfBuzz does, the ascender
 /// is made positive and the descender negative, then each is rounded to
-/// whole units.
+/// whole units. Refused if one is past what hhea holds, or of no height.
 pub fn vertical(hhea: &[u8], mvar: &[u8], coords: &[i32]) -> Result<[i32; 3], String> {
     let major = u16_at(mvar, 0)?;
     if major != 1 {
@@ -254,9 +254,17 @@ pub fn vertical(hhea: &[u8], mvar: &[u8], coords: &[i32]) -> Result<[i32; 3], St
     let hhea_at = |at| u16_at(hhea, at).map(|v| v as i16 as f32);
     let ascender = round((hhea_at(4)? + delta(b"hasc")).abs()) as i32;
     let descender = round(-(hhea_at(6)? + delta(b"hdsc")).abs()) as i32;
+    let line_gap = round(hhea_at(8)? + delta(b"hlgp")) as i32;
+    // hhea holds each in 16 bits, and draw.c's arithmetic on them is in
+    // range for those alone: 32-bit deltas could overflow it.
+    for (name, v) in [("ascender", ascender), ("descender", descender), ("line gap", line_gap)] {
+        if i16::try_from(v).is_err() {
+            return Err(format!("at this instance the {name} {v} is past the 16 bits hhea holds"));
+        }
+    }
     // As font::check refuses it in hhea: draw.c scales a face by its height.
     if ascender <= descender {
         return Err(format!("at this instance the ascender {ascender} is not above the descender {descender}"));
     }
-    Ok([ascender, descender, round(hhea_at(8)? + delta(b"hlgp")) as i32])
+    Ok([ascender, descender, line_gap])
 }

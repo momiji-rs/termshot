@@ -293,7 +293,9 @@ HarfBuzz is the reference throughout, so each step is done as `hb_font_set_varia
   HarfBuzz (fonts rely on it: an identity advance map past the store's items); everything else
   HarfBuzz would ignore a table for, from a format to unsorted MVAR records, refuses the font
   at an instance with a reason. draw.c (for the cell's width) and src/glyphs.rs (to place each
-  glyph) get the advances through a callback in the Face.
+  glyph) get the advances through a callback in the Face. HarfBuzz would take any 32-bit
+  result; termshot refuses extents past the 16 bits hhea holds, and a main font whose `M`
+  advances past hmtx's, as draw.c's int arithmetic on the cell holds those of a static font.
   Checked against HarfBuzz 14.4.0 (`tools/cff2-metrics.py`, through libharfbuzz) on starship:
   every advance and the extents of the subset at four instances and of a crafted font at
   seven (`metrics_tests.rs`; deltas of each width, a null ItemVariationData, an advance map
