@@ -11,6 +11,8 @@ mod cast;
 mod cff;
 mod font;
 mod graphics;
+#[rustfmt::skip]
+mod rowcolumn_diacritics;
 mod sixel;
 mod unicode;
 #[rustfmt::skip]
@@ -116,10 +118,21 @@ struct Pen {
     dim: bool,
     reverse: bool,
     conceal: bool,
+    /// The foreground and underline (SGR 58) colours as kitty numbers them
+    /// for a Unicode placeholder (`Ids`). Neither changes what is drawn;
+    /// the underline is drawn in the foreground colour.
+    ids: Ids,
 }
 
+/// A kitty Unicode placeholder cell's image and placement ids: kitty's
+/// `color_to_id` of its foreground and underline colours, 0 for the
+/// default, n for palette colour n and 0xRRGGBB for a 24-bit colour. The
+/// palette colour, not the RGB it stands for, is what names the image.
+type Ids = [u32; 2];
+
 impl Pen {
-    const DEFAULT: Pen = Pen { fg: DEFAULT_FG, bg: DEFAULT_BG, attrs: 0, dim: false, reverse: false, conceal: false };
+    const DEFAULT: Pen =
+        Pen { fg: DEFAULT_FG, bg: DEFAULT_BG, attrs: 0, dim: false, reverse: false, conceal: false, ids: [0, 0] };
 
     /// A blank cell in this pen's colours, ready for a character.
     fn cell(&self) -> Cell {
@@ -295,10 +308,15 @@ struct Screen {
     /// that overwrites, erases or moves cells keeps it in step. Empty until
     /// the screen's first mark, as most logs have none.
     marks: Vec<Marks>,
+    /// The Ids of each U+10EEEE cell, kept in step with cells as marks are:
+    /// in storage order, empty until the screen's first placeholder with a
+    /// colour, and 0 for every other cell.
+    ids: Vec<Ids>,
     /// The other screen: the alternate one while on the main one, and back.
     other: Vec<Cell>,
     other_map: Vec<usize>,
     other_marks: Vec<Marks>,
+    other_ids: Vec<Ids>,
     on_alternate: bool,
     cols: usize,
     rows: usize,
@@ -351,9 +369,11 @@ impl Screen {
             cells: vec![Cell::blank(); cols * rows],
             map: (0..rows).collect(),
             marks: Vec::new(),
+            ids: Vec::new(),
             other: vec![Cell::blank(); cols * rows],
             other_map: (0..rows).collect(),
             other_marks: Vec::new(),
+            other_ids: Vec::new(),
             on_alternate: false,
             cols,
             rows,
@@ -471,13 +491,40 @@ impl Screen {
             .collect()
     }
 
-    /// Forget the marks of storage cells [from, to), which are being
-    /// overwritten or erased.
+    /// Forget the marks (and placeholder Ids) of storage cells [from, to),
+    /// which are being overwritten or erased.
     #[inline]
     fn clear_marks(&mut self, from: usize, to: usize) {
         if !self.marks.is_empty() {
             self.marks[from..to].fill(NO_MARKS);
         }
+        if !self.ids.is_empty() {
+            self.ids[from..to].fill([0, 0]);
+        }
+    }
+
+    /// The placeholder cells on the screen, in screen order.
+    fn placeholders(&self) -> Vec<graphics::PlaceholderCell> {
+        let mut found = Vec::new();
+        for r in 0..self.rows {
+            let line = self.line(r);
+            for (c, cell) in self.cells[line.clone()].iter().enumerate() {
+                if cell.ch != graphics::PLACEHOLDER {
+                    continue;
+                }
+                let at = line.start + c;
+                let [image, placement] = self.ids.get(at).copied().unwrap_or([0, 0]);
+                let marks = self.marks.get(at).copied().unwrap_or(NO_MARKS);
+                found.push(graphics::PlaceholderCell {
+                    row: r,
+                    col: c,
+                    image,
+                    placement,
+                    marks: [marks[0], marks[1], marks[2]],
+                });
+            }
+        }
+        found
     }
 
     /// Before ICH or DCH moves storage cells [at, end) n to the right or
@@ -492,6 +539,13 @@ impl Screen {
                 self.marks.copy_within(at..end - n, at + n);
             } else {
                 self.marks.copy_within(at + n..end, at);
+            }
+        }
+        if !self.ids.is_empty() {
+            if right {
+                self.ids.copy_within(at..end - n, at + n);
+            } else {
+                self.ids.copy_within(at + n..end, at);
             }
         }
     }
@@ -614,7 +668,7 @@ impl Screen {
                     self.save_cursor();
                     self.use_alternate(true, false);
                     self.erase_rows(0, self.rows);
-                    self.graphics = graphics::Graphics::default();
+                    self.graphics.clear();
                 }
             }
             1049 => {
@@ -707,7 +761,7 @@ impl Screen {
             return;
         }
         if clear_first {
-            self.graphics = graphics::Graphics::default();
+            self.graphics.clear();
             self.erase_rows(0, self.rows);
         }
         self.graphics.abort();
@@ -716,6 +770,7 @@ impl Screen {
         std::mem::swap(&mut self.cells, &mut self.other);
         std::mem::swap(&mut self.map, &mut self.other_map);
         std::mem::swap(&mut self.marks, &mut self.other_marks);
+        std::mem::swap(&mut self.ids, &mut self.other_ids);
         self.on_alternate = on;
         self.last_at = None;
         self.pending = false;
@@ -776,6 +831,12 @@ impl Screen {
         }
         self.cells[at] = cell;
         self.clear_marks(at, at + width);
+        if ch == graphics::PLACEHOLDER && self.pen.ids != [0, 0] {
+            if self.ids.is_empty() {
+                self.ids = vec![[0, 0]; self.cells.len()];
+            }
+            self.ids[at] = self.pen.ids;
+        }
         self.last_at = Some(at);
         self.clear_sixel(self.row, self.col, 1, width);
         if self.col + width <= self.last_col() {
@@ -1120,19 +1181,20 @@ impl Screen {
                 // Other parameters with subparameters are skipped.
                 let subs = &p.list[k + 1..end];
                 match (v, subs[0].value) {
-                    (38 | 48, Some(2)) => {
+                    (38 | 48 | 58, Some(2)) => {
                         let color = match subs.len() {
                             4 => rgb(&subs[1..4]),
                             n if n >= 5 => rgb(&subs[2..5]),
                             _ => None,
                         };
                         if let Some(color) = color {
-                            self.set_color(v, color);
+                            self.set_color(v, color, rgb_id(color));
                         }
                     }
-                    (38 | 48, Some(5)) => {
-                        if let Some(color) = subs.get(1).and_then(|n| palette(n.value.unwrap_or(0))) {
-                            self.set_color(v, color);
+                    (38 | 48 | 58, Some(5)) => {
+                        let n = subs.get(1).map_or(0, |n| n.value.unwrap_or(0));
+                        if let Some(color) = palette(n) {
+                            self.set_color(v, color, n);
                         }
                     }
                     (4, style) => {
@@ -1168,23 +1230,25 @@ impl Screen {
                 27 => pen.reverse = false,
                 28 => pen.conceal = false,
                 29 => pen.attrs &= !STRIKE,
-                30..=37 => pen.fg = palette(v - 30).unwrap(),
+                30..=37 => (pen.fg, pen.ids[0]) = (palette(v - 30).unwrap(), v - 30),
                 40..=47 => pen.bg = palette(v - 40).unwrap(),
-                90..=97 => pen.fg = palette(v - 90 + 8).unwrap(),
+                90..=97 => (pen.fg, pen.ids[0]) = (palette(v - 90 + 8).unwrap(), v - 90 + 8),
                 100..=107 => pen.bg = palette(v - 100 + 8).unwrap(),
-                39 => pen.fg = DEFAULT_FG,
+                39 => (pen.fg, pen.ids[0]) = (DEFAULT_FG, 0),
                 49 => pen.bg = DEFAULT_BG,
+                59 => pen.ids[1] = 0,
                 // Blink (5, 6, 25) and the rest are not drawn.
-                38 | 48 => match p.get(k + 1, 0) {
+                38 | 48 | 58 => match p.get(k + 1, 0) {
                     2 if k + 4 < p.len => {
                         if let Some(color) = rgb(&p.list[k + 2..k + 5]) {
-                            self.set_color(v, color);
+                            self.set_color(v, color, rgb_id(color));
                         }
                         k += 4;
                     }
                     5 if k + 2 < p.len => {
-                        if let Some(color) = palette(p.get(k + 2, 0)) {
-                            self.set_color(v, color);
+                        let n = p.get(k + 2, 0);
+                        if let Some(color) = palette(n) {
+                            self.set_color(v, color, n);
                         }
                         k += 2;
                     }
@@ -1201,11 +1265,13 @@ impl Screen {
         self.pen = Pen::DEFAULT;
     }
 
-    fn set_color(&mut self, which: u32, color: (u8, u8, u8)) {
-        if which == 38 {
-            self.pen.fg = color;
-        } else {
-            self.pen.bg = color;
+    /// SGR 38, 48 or 58 (`which`): the colour, and its kitty id (`Ids`).
+    /// The underline colour only names a placeholder's placement.
+    fn set_color(&mut self, which: u32, color: (u8, u8, u8), id: u32) {
+        match which {
+            38 => (self.pen.fg, self.pen.ids[0]) = (color, id),
+            48 => self.pen.bg = color,
+            _ => self.pen.ids[1] = id,
         }
     }
 }
@@ -1224,6 +1290,11 @@ fn fill_cells(cells: &mut [Cell], cell: Cell) {
         cells.copy_within(..n, done);
         done += n;
     }
+}
+
+/// A 24-bit colour's kitty id: 0xRRGGBB.
+fn rgb_id((r, g, b): (u8, u8, u8)) -> u32 {
+    u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
 }
 
 /// DEC Special Graphics: 0x5f..=0x7e become line drawing and symbols.
@@ -1455,8 +1526,19 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
                 }
                 // RIS: full reset.
                 b'c' => {
+                    // kitty's reset clears both screens' images but keeps
+                    // their virtual placements (grman_clear).
+                    let mut kept = [std::mem::take(&mut screen.graphics), std::mem::take(&mut screen.other_graphics)];
+                    if screen.on_alternate {
+                        kept.swap(0, 1);
+                    }
+                    for graphics in &mut kept {
+                        graphics.abort();
+                        graphics.clear();
+                    }
                     screen = Screen::new(cols, rows, lf);
                     screen.cell_size = cell_size;
+                    [screen.graphics, screen.other_graphics] = kept;
                 },
                 // CAN and SUB cancel the escape.
                 0x18 | 0x1a => {}
@@ -1485,10 +1567,24 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
     // With a wrap pending the cursor stays on the last column, where
     // terminals draw it.
     let cursor = screen.cursor_shown.then_some((screen.row, screen.col));
-    let images = std::mem::take(&mut screen.graphics.placements);
+    // Placeholder cells show nothing without a virtual placement to name.
+    let placeholders = if screen.graphics.has_virtual() { screen.placeholders() } else { Vec::new() };
+    let images = std::mem::take(&mut screen.graphics).finish(&placeholders, cell_size, rows);
     let cursor_shape = screen.cursor_shape;
     let marks = screen.screen_marks();
     Grid { cells: screen.into_cells(), marks, cursor, cursor_shape, images }
+}
+
+/// kitty draws a Unicode placeholder (U+10EEEE) as a blank cell, its
+/// diacritics too: the image it shows comes from graphics::Graphics::finish.
+/// Make each one a space, with its colours and attributes, and drop its
+/// marks, for draw.c. --text and --json keep them.
+fn blank_placeholders(cells: &mut [Cell], mut marks: Vec<CellMarks>) -> Vec<CellMarks> {
+    marks.retain(|m| cells[m.cell as usize].ch != graphics::PLACEHOLDER);
+    for cell in cells.iter_mut().filter(|cell| cell.ch == graphics::PLACEHOLDER) {
+        cell.ch = ' ' as u32;
+    }
+    marks
 }
 
 /// Mark every background that is not the default colour OPAQUE, for draw.c.
@@ -2342,6 +2438,7 @@ fn main() -> ExitCode {
     let mut face_ms = 0.0;
     let code = match (&options.out, &fonts) {
         (Some(out), Some((font, fallback))) => {
+            let marks = blank_placeholders(&mut cells, marks);
             match (cursor, cursor_shape) {
                 (None, _) => {}
                 (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, cols, row, col),

@@ -8,7 +8,7 @@ static void images(void) {
     // Negative origins, vertical clipping and partial alpha exercise the actual
     // painter with guarded scanlines. Source quadrants expand to 2x2 pixels.
     ImageView image = {.pixels = pixels, .width = 2, .height = 2,
-        .x = -1, .y = -1, .w = 4, .h = 4, .clip_top = 0, .clip_bottom = 2,
+        .x = -1, .y = -1, .w = 4, .h = 4, .clip_top = 0, .clip_bottom = 2, .clip_left = INT64_MIN, .clip_right = INT64_MAX,
         .src_w = 2, .src_h = 2};
     paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
     assert(buffer[1] == 255); // red at (0,0)
@@ -31,7 +31,7 @@ static void layered_images(void) {
     Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = 4, .h = 4, .stride = 13};
     /* The bottom right source pixel, yellow, stretched over the canvas. */
     ImageView image = {.pixels = pixels, .width = 2, .height = 2, .x = 0, .y = 0, .w = 4, .h = 4,
-                       .clip_top = 0, .clip_bottom = 4, .src_x = 1, .src_y = 1, .src_w = 1, .src_h = 1};
+                       .clip_top = 0, .clip_bottom = 4, .clip_left = INT64_MIN, .clip_right = INT64_MAX, .src_x = 1, .src_y = 1, .src_w = 1, .src_h = 1};
     for (int32_t z = -3; z <= 3; z++) assert(image_layer(z) == (z < 0 ? LAYER_UNDER_TEXT : LAYER_OVER_TEXT));
     assert(image_layer(INT32_MIN / 2) == LAYER_UNDER_TEXT);
     assert(image_layer(INT32_MIN / 2 - 1) == LAYER_BELOW && image_layer(INT32_MIN) == LAYER_BELOW);
@@ -60,16 +60,60 @@ static void layered_images(void) {
     assert(clear_background(&cells[1]));
     /* A crop of the top row, sampled across: red then green. */
     image = (ImageView){.pixels = pixels, .width = 2, .height = 2, .x = 0, .y = 0, .w = 4, .h = 1,
-                        .clip_top = 0, .clip_bottom = 4, .src_x = 0, .src_y = 0, .src_w = 2, .src_h = 1};
+                        .clip_top = 0, .clip_bottom = 4, .clip_left = INT64_MIN, .clip_right = INT64_MAX, .src_x = 0, .src_y = 0, .src_w = 2, .src_h = 1};
     memset(buffer, 0, sizeof buffer);
     paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 2, 4);
     assert(buffer[1] == 255 && buffer[4] == 255 && buffer[8] == 255 && buffer[11] == 255);
     assert(buffer[2] == 0 && buffer[7] == 0 && buffer[10] == 0);
     for (int i = 13; i < 52; i++) assert(buffer[i] == 0);
 }
+
+/* A Unicode placeholder run shows the columns of its cells only: the image
+   is sampled as a whole and cut at clip_left and clip_right, so runs side by
+   side join without a seam. */
+static void clipped_across(void) {
+    unsigned char pixels[4 * 4] = {255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255};
+    unsigned char buffer[4 * 13], whole[4 * 13];
+    Canvas cv = {.filtered = buffer, .px = buffer + 1, .w = 4, .h = 4, .stride = 13};
+    ImageView image = {.pixels = pixels, .width = 2, .height = 2, .x = -1, .y = 0, .w = 5, .h = 4,
+                       .clip_top = 0, .clip_bottom = 4, .clip_left = INT64_MIN, .clip_right = INT64_MAX,
+                       .src_w = 2, .src_h = 2};
+    memset(whole, 0, sizeof whole);
+    cv.px = whole + 1;
+    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
+    memset(buffer, 0, sizeof buffer);
+    cv.px = buffer + 1;
+    for (int64_t left = 0; left < 4; left += 2) {
+        image.clip_left = left;
+        image.clip_right = left + 2;
+        paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
+    }
+    assert(memcmp(buffer, whole, sizeof buffer) == 0);
+    /* One run alone leaves the other columns untouched. */
+    memset(buffer, 0, sizeof buffer);
+    image.clip_left = 1;
+    image.clip_right = 3;
+    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
+    for (int y = 0; y < 4; y++) {
+        for (int x = 0; x < 4; x++) {
+            const unsigned char *p = buffer + y * 13 + 1 + x * 3, *q = whole + y * 13 + 1 + x * 3;
+            for (int c = 0; c < 3; c++) assert(p[c] == (x >= 1 && x < 3 ? q[c] : 0));
+        }
+    }
+    /* An empty or reversed clip draws nothing. */
+    memset(buffer, 0, sizeof buffer);
+    image.clip_left = 3;
+    image.clip_right = 3;
+    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
+    image.clip_left = 4;
+    image.clip_right = 1;
+    paint_images(&cv, &image, 1, LAYER_OVER_TEXT, NULL, 1, 1);
+    for (size_t i = 0; i < sizeof buffer; i++) assert(buffer[i] == 0);
+}
 int main(int argc, char **argv) {
     images();
     layered_images();
+    clipped_across();
     if (argc != 3) return 1;
     /* Only the trusted vendored fixture is used by this C harness. Production
        and the Rust draw tests validate and pad fonts with font::load. */

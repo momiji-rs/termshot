@@ -722,11 +722,14 @@ int draw_cell_size(const unsigned char *ttf, int ttf_start, double px, int *w, i
 typedef struct {
     const unsigned char *pixels;
     uint32_t width, height;
-    int64_t x, y, w, h, clip_top, clip_bottom;
+    int64_t x, y, w, h, clip_top, clip_bottom, clip_left, clip_right;
     /* The source rectangle sampled: the crop, inside width x height. */
     uint32_t src_x, src_y, src_w, src_h;
     int32_t z;
 } ImageView;
+
+/* As ImageView in src/graphics.rs, which asserts the same size. */
+_Static_assert(sizeof(ImageView) == 104, "ImageView ABI must match the Rust side");
 
 /* kitty's three image layers, by z-index: under the cell backgrounds that are
    not the default (z below INT32_MIN / 2), over every background but under
@@ -761,11 +764,13 @@ static void paint_images(Canvas *cv, const ImageView *images, size_t count, int 
     for (size_t i = 0; i < count; i++) {
         const ImageView *im = &images[i];
         if (image_layer(im->z) != layer) continue;
-        int64_t x0 = im->x > 0 ? im->x : 0;
+        int64_t x0 = im->x > im->clip_left ? im->x : im->clip_left;
+        if (x0 < 0) x0 = 0;
         int64_t y0 = im->y > im->clip_top ? im->y : im->clip_top;
         if (y0 < 0) y0 = 0;
         int64_t x1 = im->x + im->w;
         int64_t y1 = im->y + im->h;
+        if (x1 > im->clip_right) x1 = im->clip_right;
         if (x1 > cv->w) x1 = cv->w;
         if (y1 > im->clip_bottom) y1 = im->clip_bottom;
         if (y1 > cv->h) y1 = cv->h;

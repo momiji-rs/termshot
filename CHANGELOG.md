@@ -71,6 +71,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of more than 8 links refuses the put, as kitty does. Commands with these
   keys were ignored before.
 
+- Kitty Unicode placeholders (#44): `U=1` makes a virtual placement, which
+  draws nothing and moves no cursor, and each U+10EEEE cell shows the part
+  of its image under it. The foreground colour names the image (a palette
+  colour by its index, a 24-bit one as 0xRRGGBB, the third diacritic as the
+  high byte), the underline colour (SGR 58, otherwise not drawn) names the
+  placement, and the first two diacritics give the row and column, inherited
+  from the cell to the left as kitty does. The image is fitted into the
+  placement's `c` x `r` cells and letterboxed. Placeholders are text, so the
+  image scrolls, is erased and is overwritten with them; a virtual placement
+  survives full-screen erase and reset, and only `d=i`, `n` and `r` delete
+  it. A relative placement may have a virtual parent. The placeholder cells
+  are drawn blank; `--text` and `--json` keep their code points.
+  Commands with `U=1` were ignored before.
+
 - `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
   does, for logs not captured through a PTY (#28). A bare LF that ends the
   input ends the last line instead of scrolling, so
@@ -220,6 +234,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - An output that names the log or a font overwrote it, and two outputs
   that name one file overwrote each other. Both are refused with exit 2,
   however the paths are spelled (`a`, `./a`, a symlink).
+- A kitty graphics payload in base64 without its `=` padding was refused, so
+  `kitten icat` without `--place`, which sends small PNGs that way, drew
+  nothing. As in kitty, each chunk is decoded on its own and may end in a
+  partial group, padded or not; a padded chunk no longer has to be the last.
+  Invalid characters, a length of 4n+1, wrong padding and data after it are
+  still refused.
 
 ## [0.1.0] - 2026-10-01
 

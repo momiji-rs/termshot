@@ -31,7 +31,7 @@ Rebuild it after editing Rust without running the whole suite:
 
 Renders from the test run stay in `target/test/` for inspection. When a change is meant to move pixels, look at them first, then update the goldens.
 
-Other tools: `tests/vt/oracle.sh` compares `tests/vt/expected.txt` against tmux (not in CI); `tests/vt/record.sh` records real sessions; `tools/unicode-tables.sh` regenerates `src/unicode_tables.rs` from the UCD (don't edit that file by hand); `scripts/bench.py` benchmarks; `TERMSHOT_PROFILE=1` prints stage timings as JSON on stderr; `scripts/release.sh <platform>` builds a release archive.
+Other tools: `tests/vt/oracle.sh` compares `tests/vt/expected.txt` against tmux (not in CI); `tests/vt/record.sh` records real sessions; `tools/unicode-tables.sh` regenerates `src/unicode_tables.rs` from the UCD (don't edit that file by hand); `tools/rowcolumn-diacritics.sh` regenerates `src/rowcolumn_diacritics.rs`, kitty's Unicode placeholder diacritics, likewise; `scripts/bench.py` benchmarks; `TERMSHOT_PROFILE=1` prints stage timings as JSON on stderr; `scripts/release.sh <platform>` builds a release archive.
 
 ## Architecture
 
@@ -43,7 +43,7 @@ The pipeline is Rust in, C out:
 3. **`src/unicode.rs`** and **`src/unicode_tables.rs`** give character widths (wide = 2 cells) and canonical composition for combining marks.
 4. **`src/draw.c`** is the rasterizer, behind `draw_png_images` (and the cell-only `draw_png` test wrapper). `draw_cell_size` shares its exact font metrics with the parser so native-pixel images move the cursor correctly. It uses stb_truetype for glyphs and paints box drawing and block elements (U+2500–U+259F) as geometry. It writes the PNG through a locally modified `stb_image_write.h`, with `src/deflate.c` as the compressor (stb's deflate made faster, with byte-identical output) and `src/png_crc.h` for the CRC.
 
-`Cell` is `#[repr(C)]` and shared across the FFI boundary: `draw.c` asserts `sizeof(Cell) == 12`, and the `ATTR_*` bits are defined in both languages. Change both sides together. All eight `attrs` bits are taken. Combining marks with no precomposed form live outside `Cell`, in `Screen::marks` (keyed by storage index, kept in step by every edit) and then `Grid::marks`, a sorted `CellMarks` list (cell index plus `MAX_MARKS` = 4 code points) that `draw.c` also reads; `marks_of` looks a cell up.
+`Cell` is `#[repr(C)]` and shared across the FFI boundary: `draw.c` asserts `sizeof(Cell) == 12` (and both sides assert `ImageView`'s 104 bytes), and the `ATTR_*` bits are defined in both languages. Change both sides together. All eight `attrs` bits are taken. Combining marks with no precomposed form live outside `Cell`, in `Screen::marks` (keyed by storage index, kept in step by every edit) and then `Grid::marks`, a sorted `CellMarks` list (cell index plus `MAX_MARKS` = 4 code points) that `draw.c` also reads; `marks_of` looks a cell up.
 
 Unit tests live in `src/tests.rs` and `src/draw_tests.rs` (both `#[cfg(test)]` modules of main.rs). They check the parser against the screens in `tests/vt/expected.txt` and `tests/vt/real/`. Pixel goldens (`tests/golden.rs`) hash *decoded RGBA pixels*, not PNG bytes, so encoder changes that keep the pixels don't break them. The same runs write `--text` and `--json`, compared byte for byte with `tests/grids/<log>.txt` and `.json`; `--update-goldens` rewrites all of them, and `tests/grids/check.py` checks that the JSON agrees with the text. The text rows are also what the `tests/vt/` checks compare, so the tmux references cover `--text`.
 
