@@ -133,7 +133,13 @@ impl Raster {
         let layout = Layout::array::<u8>(len.max(1)).ok()?;
         // SAFETY: the layout's size is nonzero.
         let data = unsafe { alloc_zeroed(layout) };
-        (!data.is_null()).then_some(Raster { data, layout })
+        // Never a Raster of null: its drop would deallocate it, which is
+        // undefined, and LLVM then took the pointer for non-null and painted
+        // through it (a segfault under ulimit -v, tests/run.sh).
+        if data.is_null() {
+            return None;
+        }
+        Some(Raster { data, layout })
     }
 }
 
@@ -411,4 +417,20 @@ pub(crate) mod faults {
 #[cfg(not(any(test, termshot_alloc_faults)))]
 mod faults {
     pub(super) fn start() {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Raster;
+
+    /// A raster the system can't give is None, never one that holds null
+    /// (whose drop would be undefined). tests/run.sh checks the CLI under
+    /// ulimit -v on Linux.
+    #[test]
+    fn a_raster_memory_cant_hold_is_none() {
+        assert!(Raster::new(1 << 60).is_none());
+        let raster = Raster::new(4096).unwrap();
+        // SAFETY: 4096 bytes, zeroed.
+        assert!(unsafe { std::slice::from_raw_parts(raster.data, 4096) }.iter().all(|&b| b == 0));
+    }
 }
