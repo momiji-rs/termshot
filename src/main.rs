@@ -18,6 +18,7 @@ mod deflate;
 mod font;
 mod geometry;
 mod graphics;
+mod metrics;
 #[rustfmt::skip]
 mod rowcolumn_diacritics;
 mod sixel;
@@ -31,6 +32,8 @@ mod cast_tests;
 mod cff_tests;
 #[cfg(test)]
 mod draw_tests;
+#[cfg(test)]
+mod metrics_tests;
 #[cfg(test)]
 mod prescan_tests;
 #[cfg(test)]
@@ -186,7 +189,7 @@ const EMPTY_IN_FONT: u32 = 1;
 const EMPTY_IN_FALLBACK: u32 = 2;
 
 extern "C" {
-    fn draw_cell_size(font: *const u8, font_start: i32, px: f64, w: *mut i32, h: *mut i32) -> i32;
+    fn draw_face_cell_size(font: *const font::Face, px: f64, w: *mut i32, h: *mut i32) -> i32;
     // font is a face of a font that passed font::check; fallback is another,
     // for the characters the first lacks, or null. empty, if not null, is
     // filled in as EmptyGlyphs says.
@@ -2449,8 +2452,11 @@ fn main() -> ExitCode {
     let parse_started = Instant::now();
     let (mut cell_w, mut cell_h) = (1, 1);
     if let Some((font, _)) = &fonts {
-        if unsafe { draw_cell_size(font.data.as_ptr(), font.start as i32, options.px, &mut cell_w, &mut cell_h) } == 0 {
-            return cleanup(1, "font metrics unusable".into());
+        let sized = font.with_metrics(|face| unsafe { draw_face_cell_size(face, options.px, &mut cell_w, &mut cell_h) });
+        match sized {
+            Ok(1) => {}
+            Ok(_) => return cleanup(1, "font metrics unusable".into()),
+            Err(message) => return cleanup(1, message),
         }
     }
     let Grid { mut cells, marks, cursor, cursor_shape, images } =

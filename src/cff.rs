@@ -454,7 +454,7 @@ fn read_store(cff: &[u8], at: usize, coords: &[i32], fvar_axes: usize) -> Result
 /// at `coords`: the product of each axis's, 0 as soon as one is, in f32 as
 /// HarfBuzz works it out. read_store has checked that `coords` has an
 /// entry per axis.
-fn region_scalar(region: &[u8], coords: &[i32]) -> f32 {
+pub(crate) fn region_scalar(region: &[u8], coords: &[i32]) -> f32 {
     let mut v = 1.0f32;
     for (i, axis) in region.chunks_exact(6).enumerate() {
         let at = |k: usize| i16::from_be_bytes([axis[k], axis[k + 1]]) as i32;

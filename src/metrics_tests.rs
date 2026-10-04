@@ -1,0 +1,272 @@
+//! Tests for src/metrics.rs: HVAR's advances and MVAR's vertical metrics,
+//! as draw.c gets them, against HarfBuzz's.
+
+use crate::cff_tests::craft;
+use crate::font;
+use std::ffi::c_int;
+use std::fs;
+
+const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
+
+extern "C" {
+    fn draw_face_metrics(face: *const font::Face, count: c_int, advances: *mut c_int, v: *mut c_int) -> c_int;
+}
+
+/// The advances of glyphs 0..count of `font` and its ascent, descent and
+/// line gap, as draw_png_images uses them.
+fn drawn(font: &font::Font, count: usize) -> (Vec<i32>, [i32; 3]) {
+    let (mut advances, mut v) = (vec![0; count], [0; 3]);
+    let ok = font.with_face(|face| unsafe { draw_face_metrics(face, count as c_int, advances.as_mut_ptr(), v.as_mut_ptr()) });
+    assert_eq!(ok, Ok(1));
+    (advances, v)
+}
+
+/// Check the font at `path` against `reference`, which
+/// tools/cff2-metrics.py wrote, at the instance it names. Returns the
+/// glyphs checked and how many of them the instance moved.
+fn matches_harfbuzz(path: &str, reference: &str) -> (usize, usize) {
+    let axes = reference.lines().find_map(|line| line.strip_prefix("# variations: ")).map(String::from);
+    let extents = reference.lines().find_map(|line| line.strip_prefix("# extents: ")).expect("an extents line");
+    let extents: Vec<i32> = extents.split(' ').map(|v| v.parse().unwrap()).collect();
+    let expected: Vec<(usize, i32)> = reference
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| match line.split_once(' ') {
+            Some((glyph, advance)) => (glyph.parse().unwrap(), advance.parse().unwrap()),
+            None => panic!("{line}"),
+        })
+        .collect();
+    let load = |axes| font::load(&font::Spec { path: path.into(), face: None, axes }).unwrap();
+    let (advances, v) = drawn(&load(axes), expected.len());
+    let (default, _) = drawn(&load(None), expected.len());
+    assert_eq!(v[..], extents[..], "ascent, descent and line gap");
+    for &(glyph, advance) in &expected {
+        assert_eq!(advances[glyph], advance, "the advance of glyph {glyph}");
+    }
+    (expected.len(), advances.iter().zip(&default).filter(|(a, b)| a != b).count())
+}
+
+/// Every glyph of the subset has HarfBuzz's advance, at the default
+/// instance in cff2-metrics.txt and at the one each other
+/// cff2-metrics-*.txt names.
+#[test]
+fn every_advance_of_a_cff2_font_matches_harfbuzz() {
+    let mut fixtures: Vec<_> = fs::read_dir("tests/fixtures")
+        .unwrap()
+        .map(|entry| entry.unwrap().path().to_str().unwrap().to_string())
+        .filter(|path| path.starts_with("tests/fixtures/cff2-metrics"))
+        .collect();
+    fixtures.sort();
+    assert!(fixtures.len() > 3, "{fixtures:?}");
+    for fixture in fixtures {
+        let (checked, moved) = matches_harfbuzz(CJK_VF, &fs::read_to_string(&fixture).unwrap());
+        let default = fixture == "tests/fixtures/cff2-metrics.txt";
+        assert!(checked > 150 && (default || moved > 50), "{fixture}: {checked} checked, {moved} moved");
+    }
+}
+
+/// Any variable CFF2 font against HarfBuzz, at any instance: record its
+/// metrics, then check them, with no change here.
+///
+///     tools/cff2-metrics.py --variations=wght=700 FONT OUT
+///     TERMSHOT_CFF2_FONT=FONT TERMSHOT_CFF2_METRICS=OUT ./target/test/unit --ignored any_cff2_font_s_metrics
+///
+/// Without the variables it checks nothing.
+#[test]
+#[ignore]
+fn any_cff2_font_s_metrics_match_harfbuzz() {
+    let (Ok(font), Ok(metrics)) = (std::env::var("TERMSHOT_CFF2_FONT"), std::env::var("TERMSHOT_CFF2_METRICS")) else {
+        return;
+    };
+    let (checked, moved) = matches_harfbuzz(&font, &fs::read_to_string(&metrics).unwrap());
+    println!("{font}: {checked} advances match {metrics}; the instance moved {moved}");
+}
+
+const ONE: i16 = 0x4000;
+
+fn be16(v: &[u16]) -> Vec<u8> {
+    v.iter().flat_map(|v| v.to_be_bytes()).collect()
+}
+
+/// An ItemVariationData: the regions it names, its word count (with 0x8000
+/// for 32-bit words), and a row of deltas per item.
+struct Data {
+    regions: Vec<u16>,
+    words: u16,
+    rows: Vec<Vec<i32>>,
+}
+
+/// An ItemVariationStore over `axes` axes, of `regions` and `data`, where
+/// None is a null offset.
+fn store(axes: u16, regions: &[Vec<[i16; 3]>], data: &[Option<Data>]) -> Vec<u8> {
+    let list_at = 8 + 4 * data.len();
+    let mut list = be16(&[axes, regions.len() as u16]);
+    for triple in regions.iter().flatten() {
+        list.extend(be16(&triple.map(|v| v as u16)));
+    }
+    let (mut offsets, mut sets) = (Vec::new(), Vec::new());
+    for data in data {
+        let Some(data) = data else {
+            offsets.extend(0u32.to_be_bytes());
+            continue;
+        };
+        offsets.extend(((list_at + list.len() + sets.len()) as u32).to_be_bytes());
+        sets.extend(be16(&[data.rows.len() as u16, data.words, data.regions.len() as u16]));
+        sets.extend(be16(&data.regions));
+        let (long, words) = (data.words & 0x8000 != 0, (data.words & 0x7fff) as usize);
+        for row in &data.rows {
+            for (i, &v) in row.iter().enumerate() {
+                match (long, i < words) {
+                    (true, true) => sets.extend(v.to_be_bytes()),
+                    (false, false) => sets.push(v as i8 as u8),
+                    _ => sets.extend((v as i16).to_be_bytes()),
+                }
+            }
+        }
+    }
+    [be16(&[1]), (list_at as u32).to_be_bytes().to_vec(), be16(&[data.len() as u16]), offsets, list, sets].concat()
+}
+
+/// A DeltaSetIndexMap of `format`, `width` bytes an entry with `inner`
+/// bits of inner index, of (outer, inner) entries.
+fn index_map(format: u8, width: u8, inner: u8, entries: &[(u32, u32)]) -> Vec<u8> {
+    let mut out = vec![format, (width - 1) << 4 | (inner - 1)];
+    match format {
+        0 => out.extend(be16(&[entries.len() as u16])),
+        _ => out.extend((entries.len() as u32).to_be_bytes()),
+    }
+    for &(outer, i) in entries {
+        out.extend(&(outer << inner | i).to_be_bytes()[4 - width as usize..]);
+    }
+    out
+}
+
+/// An HVAR of `store` and, unless it is empty, the advance map `map`.
+fn hvar(store: &[u8], map: &[u8]) -> Vec<u8> {
+    let map_at = if map.is_empty() { 0 } else { 20 + store.len() as u32 };
+    [be16(&[1, 0]), 20u32.to_be_bytes().to_vec(), map_at.to_be_bytes().to_vec(), vec![0; 8], store.to_vec(), map.to_vec()]
+        .concat()
+}
+
+/// An MVAR of `records` (tag, delta index), each `size` bytes, and `store`.
+fn mvar(size: u16, records: &[(&[u8; 4], u32)], store: &[u8]) -> Vec<u8> {
+    let count = records.len() as u16;
+    let mut out = be16(&[1, 0, 0, size, count, 12 + size * count]);
+    for (tag, index) in records {
+        out.extend([&tag[..], &index.to_be_bytes(), &vec![0; size as usize - 8]].concat());
+    }
+    [out, store.to_vec()].concat()
+}
+
+/// Regions over two axes, ax0 and ax1: ax0 up, ax0 down, both up, and a
+/// tent on ax1 peaking at 0.5.
+fn regions() -> Vec<Vec<[i16; 3]>> {
+    let (up, down, none) = ([0, ONE, ONE], [-ONE, -ONE, 0], [0, 0, 0]);
+    vec![vec![up, none], vec![down, none], vec![up, up], vec![none, [0, ONE / 2, ONE]]]
+}
+
+fn data(regions: &[u16], words: u16, rows: &[&[i32]]) -> Option<Data> {
+    Some(Data { regions: regions.to_vec(), words, rows: rows.iter().map(|row| row.to_vec()).collect() })
+}
+
+/// A font of 14 glyphs over two axes whose HVAR has deltas of each width
+/// (8, 16 and 32 bits) and an advance map of format 1 that names a null
+/// ItemVariationData, an item and an ItemVariationData past the store's,
+/// and is two entries short; and whose MVAR moves hasc, hdsc and hlgp, the
+/// descender far enough to cross 0.
+fn crafted() -> Vec<u8> {
+    let (hvar, mvar) = (crafted_hvar(), crafted_mvar());
+    two_axes(&[(b"HVAR", &hvar), (b"MVAR", &mvar)])
+}
+
+/// A font of 14 squares over ax0 and ax1, with the `extra` tables.
+fn two_axes(extra: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+    let fvar = craft::fvar(&[(b"ax0 ", -1.0, 0.0, 1.0), (b"ax1 ", -1.0, 0.0, 1.0)]);
+    craft::cff2_squares_with(14, &[&[(b"fvar", &fvar[..])], extra].concat())
+}
+
+fn crafted_hvar() -> Vec<u8> {
+    let advances = store(
+        2,
+        &regions(),
+        &[
+            data(&[0, 1, 2], 0, &[&[10, -20, 30], &[127, -128, 1], &[-100, 100, -100]]),
+            data(&[0, 3], 1, &[&[1000, 5], &[-30000, -7], &[1, 1]]),
+            data(&[2, 3, 0], 0x8001, &[&[70000, -300, 2], &[-1_000_000, 32767, -32768]]),
+            None,
+        ],
+    );
+    let entries = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (3, 0), (7, 0), (0, 9), (2, 0)];
+    hvar(&advances, &index_map(1, 3, 4, &entries))
+}
+
+fn crafted_mvar() -> Vec<u8> {
+    let vertical = store(2, &regions(), &[data(&[0, 3], 1, &[&[100, 20], &[300, -50], &[55, 7], &[999, 9]])]);
+    mvar(10, &[(b"hasc", 0), (b"hdsc", 1), (b"hlgp", 2), (b"xhgt", 3)], &vertical)
+}
+
+/// A damaged HVAR or MVAR is refused with a reason at an instance, at load,
+/// and ignored at the default instance, where neither is read.
+#[test]
+fn damaged_metrics_tables_are_refused_at_an_instance() {
+    let one = || store(2, &regions(), &[data(&[0], 0, &[&[1]])]);
+    let patched = |mut table: Vec<u8>, at: usize, v: u8| {
+        table[at] = v;
+        table
+    };
+    // A store of one ItemVariationData has its region list at 12.
+    let hvars = [
+        (patched(hvar(&one(), &[]), 1, 2), "version 2"),
+        (hvar(&store(1, &[vec![[0, ONE, ONE]]], &[data(&[0], 0, &[&[1]])]), &[]), "the region list's axis count is 1 and fvar's 2"),
+        (hvar(&patched(one(), 14, 0x80), &[]), "the region count 32772 sets the reserved top bit"),
+        (hvar(&one()[..30], &[]), "the region list runs past the store"),
+        (hvar(&store(2, &regions(), &[data(&[0], 2, &[&[1]])]), &[]), "ItemVariationData 0 has 2 word deltas of 1"),
+        (hvar(&store(2, &regions(), &[data(&[9], 0, &[&[1]])]), &[]), "ItemVariationData 0 names region 9 of 4"),
+        (hvar(&one(), &index_map(2, 1, 1, &[(0, 0)])), "a DeltaSetIndexMap of format 2"),
+        (hvar(&one(), &index_map(0, 2, 1, &[(0, 0)])[..5]), "a DeltaSetIndexMap runs past the table"),
+    ];
+    let records = |tags: &[&'static [u8; 4]]| -> Vec<(&'static [u8; 4], u32)> { tags.iter().map(|&tag| (tag, 0)).collect() };
+    let mvars = [
+        (patched(mvar(8, &records(&[b"hasc"]), &one()), 1, 2), "version 2"),
+        (patched(mvar(8, &records(&[b"hasc"]), &one()), 7, 6), "value records of 6 bytes, under 8"),
+        (mvar(8, &records(&[b"hdsc", b"hasc"]), &one()), "its value records are not in tag order"),
+        (mvar(8, &records(&[b"hasc", b"hasc"]), &one()), "its value records are not in tag order"),
+        (patched(mvar(8, &records(&[b"hasc"]), &one()), 8, 9), "its value records run past the table"),
+        (mvar(8, &records(&[b"hasc"]), &store(1, &[vec![[0, ONE, ONE]]], &[])), "the region list's axis count is 1 and fvar's 2"),
+    ];
+    let cases = hvars.into_iter().map(|(t, e)| (*b"HVAR", t, e)).chain(mvars.into_iter().map(|(t, e)| (*b"MVAR", t, e)));
+    fs::create_dir_all("target/test").unwrap();
+    for (i, (tag, table, error)) in cases.enumerate() {
+        let path = format!("target/test/metrics-damaged-{i}.otf");
+        fs::write(&path, two_axes(&[(&tag, &table)])).unwrap();
+        let load = |axes: Option<&str>| font::load(&font::Spec { path: path.clone(), face: None, axes: axes.map(String::from) });
+        let tag = std::str::from_utf8(&tag).unwrap();
+        let got = load(Some("ax0=1")).err().unwrap_or_else(|| panic!("{path} ({tag}: {error}) loaded"));
+        assert_eq!(got, format!("{path}: not a usable font: {tag} table: {error}"));
+        assert!(load(None).is_ok(), "{path} at its default instance");
+    }
+}
+
+/// The crafted font has HarfBuzz's metrics at each instance that
+/// metrics-crafted-*.txt names. The font is written to
+/// target/test/metrics-crafted.otf; after changing it, record them again:
+///
+///     tools/cff2-metrics.py --variations=ax0=1,ax1=1 target/test/metrics-crafted.otf \
+///         tests/fixtures/metrics-crafted-ax0=1,ax1=1.txt
+#[test]
+fn crafted_metrics_match_harfbuzz() {
+    fs::create_dir_all("target/test").unwrap();
+    fs::write("target/test/metrics-crafted.otf", crafted()).unwrap();
+    let mut fixtures: Vec<_> = fs::read_dir("tests/fixtures")
+        .unwrap()
+        .map(|entry| entry.unwrap().path().to_str().unwrap().to_string())
+        .filter(|path| path.starts_with("tests/fixtures/metrics-crafted"))
+        .collect();
+    fixtures.sort();
+    assert!(fixtures.len() > 3, "{fixtures:?}");
+    for fixture in fixtures {
+        let (checked, moved) = matches_harfbuzz("target/test/metrics-crafted.otf", &fs::read_to_string(&fixture).unwrap());
+        let default = fixture == "tests/fixtures/metrics-crafted.txt";
+        assert!(checked == 14 && (default || moved > 5), "{fixture}: {checked} checked, {moved} moved");
+    }
+}

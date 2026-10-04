@@ -105,12 +105,19 @@ typedef struct {
    fills out[0..capacity) as stbtt_GetGlyphShape would and box as
    stbtt_GetGlyphBox would, and returns the vertex count, which may be over
    capacity (call again with room for that many); 0 is no outline, or one that
-   can't be drawn. NULL for a TrueType face. */
+   can't be drawn. NULL for a TrueType face.
+
+   At an instance of a variable face, advance gives the advance of glyph, in
+   font units, from its hmtx advance (HVAR); NULL keeps hmtx's. When varied is
+   set, ascent, descent and line_gap replace hhea's (MVAR). */
 typedef struct {
     const unsigned char *ttf;
     int start;
     int (*outline)(const void *cff, int glyph, stbtt_vertex *out, int capacity, int box[4]);
     const void *cff;
+    int (*advance)(const void *advances, int glyph, int hmtx);
+    const void *advances;
+    int varied, ascent, descent, line_gap;
 } Face;
 
 _Static_assert(sizeof(stbtt_vertex) == 14, "stbtt_vertex ABI must match cff::Vertex");
@@ -306,6 +313,31 @@ static int init_font(stbtt_fontinfo *font, const unsigned char *ttf, int start) 
            !stbtt__find_table((unsigned char *)ttf, start, "CFF ") && init_cff2(font, (unsigned char *)ttf, start);
 }
 
+/* The advance of glyph, at the face's instance. */
+static int face_advance(const stbtt_fontinfo *font, const Face *face, int glyph) {
+    int adv, lsb;
+    stbtt_GetGlyphHMetrics(font, glyph, &adv, &lsb);
+    return face->advance ? face->advance(face->advances, glyph, adv) : adv;
+}
+
+/* hhea's ascent, descent and line gap, at the face's instance. */
+static void face_v_metrics(const stbtt_fontinfo *font, const Face *face, int *ascent, int *descent, int *line_gap) {
+    if (face->varied) {
+        *ascent = face->ascent;
+        *descent = face->descent;
+        *line_gap = face->line_gap;
+    } else {
+        stbtt_GetFontVMetrics(font, ascent, descent, line_gap);
+    }
+}
+
+/* stbtt_ScaleForPixelHeight, at the face's instance. */
+static float face_scale(const stbtt_fontinfo *font, const Face *face, float px) {
+    int ascent, descent, line_gap;
+    face_v_metrics(font, face, &ascent, &descent, &line_gap);
+    return px / (ascent - descent);
+}
+
 /* A CFF face without outlines of its own would have stb run its charstrings. */
 static int init_face(stbtt_fontinfo *font, const Face *face) {
     return init_font(font, face->ttf, face->start) && (font->glyf || face->outline);
@@ -340,16 +372,15 @@ typedef struct {
     float scale, italic_pivot;
 } CellMetrics;
 
-static int cell_metrics(const stbtt_fontinfo *font, double font_px, CellMetrics *m) {
+static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double font_px, CellMetrics *m) {
     int ascent, descent, line_gap;
-    stbtt_GetFontVMetrics(font, &ascent, &descent, &line_gap);
-    int adv = 0, lsb = 0;
-    stbtt_GetCodepointHMetrics(font, 'M', &adv, &lsb);
+    face_v_metrics(font, face, &ascent, &descent, &line_gap);
+    int adv = face_advance(font, face, stbtt_FindGlyphIndex(font, 'M'));
     if (adv <= 0 || ascent <= descent) {
         fprintf(stderr, "termshot: font metrics unusable\n");
         return 0;
     }
-    float scale = stbtt_ScaleForPixelHeight(font, (float)font_px);
+    float scale = face_scale(font, face, (float)font_px);
     int cell_w = (int)(adv * scale + 0.5f);
     if (cell_w < 1) cell_w = 1;
     scale = (float)cell_w / (float)adv;
@@ -363,14 +394,32 @@ static int cell_metrics(const stbtt_fontinfo *font, double font_px, CellMetrics 
     return 1;
 }
 
-/* Uses the exact same metrics as the renderer, including custom fonts. */
-int draw_cell_size(const unsigned char *ttf, int ttf_start, double px, int *w, int *h) {
+/* Uses the exact same metrics as the renderer, including custom fonts and
+   their instances. Reads no glyph, so face needs no outlines. */
+int draw_face_cell_size(const Face *face, double px, int *w, int *h) {
     stbtt_fontinfo font;
     CellMetrics m;
-    if (!init_font(&font, ttf, ttf_start) || !cell_metrics(&font, px, &m)) return 0;
+    if (!init_font(&font, face->ttf, face->start) || !cell_metrics(&font, face, px, &m)) return 0;
     *w = m.cell_w;
     *h = m.cell_h;
     return 1;
+}
+
+/* The metrics draw_png_images uses, for the tests to check against
+   HarfBuzz's: the advance of glyphs 0..count-1 in font units, and the
+   ascent, descent and line gap. */
+int draw_face_metrics(const Face *face, int count, int *advances, int v[3]) {
+    stbtt_fontinfo font;
+    if (!init_font(&font, face->ttf, face->start)) return 0;
+    for (int glyph = 0; glyph < count; glyph++) advances[glyph] = face_advance(&font, face, glyph);
+    face_v_metrics(&font, face, &v[0], &v[1], &v[2]);
+    return 1;
+}
+
+/* draw_face_cell_size of a face at its default instance. */
+int draw_cell_size(const unsigned char *ttf, int ttf_start, double px, int *w, int *h) {
+    Face face = {ttf, ttf_start, NULL, NULL, NULL, NULL, 0, 0, 0, 0};
+    return draw_face_cell_size(&face, px, w, h);
 }
 
 typedef struct {
@@ -537,9 +586,7 @@ static Glyph *find_glyph(Glyphs *g, uint32_t cp, int wide, int italic, int mark,
            them. Wide and fallback glyphs are centered, and a
            fallback glyph too wide for its cells is shrunk. A
            mark is neither (paint_marks places it). */
-        int glyph_adv, glyph_lsb;
-        stbtt_GetGlyphHMetrics(face, glyph, &glyph_adv, &glyph_lsb);
-        float advance = glyph_adv * s;
+        float advance = face_advance(face, source, glyph) * s;
         if (!mark && face == g->fallback && advance > span) {
             s *= span / advance;
             advance = (float)span;
@@ -664,7 +711,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     }
 
     CellMetrics metrics;
-    if (!cell_metrics(&font, font_px, &metrics)) return 1;
+    if (!cell_metrics(&font, font_face, font_px, &metrics)) return 1;
     int adv = metrics.adv, cell_w = metrics.cell_w, cell_h = metrics.cell_h;
     int body = metrics.body, baseline = metrics.baseline;
     float scale = metrics.scale;
@@ -673,7 +720,7 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     float italic_pivot = metrics.italic_pivot;
     /* The fallback is sized to the same ascent-to-descent height and shares
        the baseline. */
-    float fallback_scale = fallback_face ? stbtt_ScaleForPixelHeight(&fallback, (float)body) : 0;
+    float fallback_scale = fallback_face ? face_scale(&fallback, fallback_face, (float)body) : 0;
     long long width = (long long)cols * cell_w;
     long long height = (long long)rows * cell_h;
     if (verbose) {
@@ -855,7 +902,8 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
 int draw_png(const Cell *cells, int cols, int rows, const unsigned char *ttf, int ttf_start,
              const unsigned char *fallback_ttf, int fallback_start, double font_px, const char *out_path,
              int verbose) {
-    Face font = {ttf, ttf_start, NULL, NULL}, fallback = {fallback_ttf, fallback_start, NULL, NULL};
+    Face font = {ttf, ttf_start, NULL, NULL, NULL, NULL, 0, 0, 0, 0};
+    Face fallback = {fallback_ttf, fallback_start, NULL, NULL, NULL, NULL, 0, 0, 0, 0};
     return draw_png_images(cells, NULL, 0, cols, rows, &font, fallback_ttf ? &fallback : NULL, font_px, out_path, verbose,
                            NULL, 0, NULL);
 }

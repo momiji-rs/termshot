@@ -8,6 +8,7 @@
 //! the outlines through a Face.
 
 use crate::cff;
+use crate::metrics;
 use crate::variations;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
@@ -202,33 +203,94 @@ fn pad(mut font: Font) -> Font {
     font
 }
 
-/// draw.c's Face: a checked font, and for a CFF font the outlines stb must
-/// not read itself.
+/// draw.c's Face: a checked font, for a CFF font the outlines stb must not
+/// read itself, and at an instance the metrics HVAR and MVAR vary.
 #[repr(C)]
 pub struct Face<'a> {
     ttf: *const u8,
     start: c_int,
     outline: Option<unsafe extern "C" fn(*const c_void, c_int, *mut cff::Vertex, c_int, *mut c_int) -> c_int>,
     cff: *const c_void,
+    advance: Option<unsafe extern "C" fn(*const c_void, c_int, c_int) -> c_int>,
+    advances: *const c_void,
+    /// Set when ascent, descent and line_gap replace hhea's.
+    varied: c_int,
+    ascent: c_int,
+    descent: c_int,
+    line_gap: c_int,
     font: PhantomData<&'a Font>,
 }
 
+/// The metrics of a face at its instance, where it varies them; neither at
+/// the default instance.
+struct Varied<'a> {
+    advances: Option<metrics::Advances<'a>>,
+    vertical: Option<[i32; 3]>,
+}
+
+/// Read the HVAR and MVAR of the face at `start` for the instance at
+/// `coords`, as cff::Font::parse_cff2 takes them.
+fn varied<'a>(d: &'a [u8], start: usize, coords: &[i32]) -> Result<Varied<'a>, String> {
+    if coords.is_empty() {
+        return Ok(Varied { advances: None, vertical: None });
+    }
+    let advances = match table(d, start, b"HVAR")? {
+        Some(hvar) => Some(metrics::Advances::parse(hvar.data, coords).map_err(|reason| format!("HVAR table: {reason}"))?),
+        None => None,
+    };
+    let vertical = match table(d, start, b"MVAR")? {
+        Some(mvar) => Some(
+            metrics::vertical(required(d, start, b"hhea")?, mvar.data, coords)
+                .map_err(|reason| format!("MVAR table: {reason}"))?,
+        ),
+        None => None,
+    };
+    // HarfBuzz varies advances only away from the default, and MVAR at any
+    // instance chosen.
+    let advances = advances.filter(|_| coords.iter().any(|&c| c != 0));
+    Ok(Varied { advances, vertical })
+}
+
 impl Font {
-    /// Call `f` with the face to draw with. The CFF table, checked at load,
-    /// is parsed again here, as what it parses into borrows the data.
+    /// Call `f` with the face to draw with. The CFF table and the variation
+    /// tables, checked at load, are parsed again here, as what they parse
+    /// into borrows the data.
     pub fn with_face<R>(&self, f: impl FnOnce(&Face) -> R) -> Result<R, String> {
-        let face = |outline, cff| Face {
+        let cff = cff_outlines(&self.data, self.start, &self.coords)?;
+        let varied = varied(&self.data, self.start, &self.coords)?;
+        Ok(f(&self.face(cff.as_ref(), &varied)))
+    }
+
+    /// Call `f` with the face's metrics and no outlines, for
+    /// draw_face_cell_size, which reads no glyph; this skips parsing the
+    /// CFF table.
+    pub fn with_metrics<R>(&self, f: impl FnOnce(&Face) -> R) -> Result<R, String> {
+        Ok(f(&self.face(None, &varied(&self.data, self.start, &self.coords)?)))
+    }
+
+    fn face<'a>(&'a self, cff: Option<&'a cff::Font>, varied: &'a Varied) -> Face<'a> {
+        let [ascent, descent, line_gap] = varied.vertical.unwrap_or_default();
+        Face {
             ttf: self.data.as_ptr(),
             start: self.start as c_int,
-            outline,
-            cff,
+            outline: if cff.is_some() { Some(outline) } else { None },
+            cff: cff.map_or(std::ptr::null(), |cff| cff as *const cff::Font as *const c_void),
+            advance: if varied.advances.is_some() { Some(advance) } else { None },
+            advances: varied.advances.as_ref().map_or(std::ptr::null(), |a| a as *const metrics::Advances as *const c_void),
+            varied: varied.vertical.is_some() as c_int,
+            ascent,
+            descent,
+            line_gap,
             font: PhantomData,
-        };
-        Ok(match cff_outlines(&self.data, self.start, &self.coords)? {
-            None => f(&face(None, std::ptr::null())),
-            Some(cff) => f(&face(Some(outline), &cff as *const cff::Font as *const c_void)),
-        })
+        }
     }
+}
+
+/// Face.advance: the advance of `glyph` at the instance, given its hmtx
+/// advance.
+unsafe extern "C" fn advance(advances: *const c_void, glyph: c_int, hmtx: c_int) -> c_int {
+    // A panic must not unwind into C.
+    std::panic::catch_unwind(|| (*(advances as *const metrics::Advances)).advance(glyph as u32, hmtx)).unwrap_or(hmtx)
 }
 
 /// Face.outline: the outline of `glyph` into out[..capacity] as
@@ -324,9 +386,11 @@ fn vary(font: &mut Font, axes: &str, path: &str) -> Result<(), String> {
         None => Vec::new(),
     };
     font.coords = variations::coords(&all, &maps, &settings).map_err(|reason| format!("{path}: {reason}"))?;
-    // The store is checked against fvar only at an instance, so check it
-    // again now, at load, rather than when drawing.
-    cff_outlines(&font.data, font.start, &font.coords).map_err(|reason| format!("{path}: not a usable font: {reason}"))?;
+    // The CFF2 store is checked against fvar, and HVAR and MVAR read, only
+    // at an instance, so check them now, at load, rather than when drawing.
+    let broken = |reason: String| format!("{path}: not a usable font: {reason}");
+    cff_outlines(&font.data, font.start, &font.coords).map_err(broken)?;
+    varied(&font.data, font.start, &font.coords).map_err(broken)?;
     font.instance = Some(variations::instance(&all, &settings));
     Ok(())
 }

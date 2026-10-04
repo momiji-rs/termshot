@@ -176,6 +176,8 @@ printf '東京' | ./termshot --size 4x1 --cursor none --fallback-font "$vf#wght=
 check "a CFF2 instance draws differently" '! cmp -s "$out/cli-cff2-900.png" "$out/cli-cff2-font.png"'
 check "the default's own setting draws the default" 'cmp -s "$out/cli-cff2-100.png" "$out/cli-cff2-font.png"'
 check "a CFF2 fallback font takes an instance" '! cmp -s "$out/cli-cff2-fallback-900.png" "$out/cli-cff2-fallback.png"'
+check "a CFF2 instance sizes its cells by its HVAR advances (26x49 by default)" \
+    './termshot -v --font "$vf#wght=900" "$log" "$out/cli-cff2-v.png" 2>&1 | grep -q "^advance 877 units .* cell 29x48 "'
 check "-v names the instance, clamped" \
     './termshot -v --font "$vf#wght=1000" "$log" "$out/cli-cff2-v.png" 2>&1 | grep -qx -- "--font instance wght=900 (1000 clamped)"'
 expect 2 "$log" "$out/x.png" --font "$vf#wght=bold"

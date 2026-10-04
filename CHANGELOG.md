@@ -159,8 +159,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   font match hb-vector's at three weights. `-v` prints the instance. Bad
   syntax exits 2. An axis the font lacks exits 1 and lists those it has; a
   font whose outlines don't vary here (TrueType or CFF) exits 1 with that
-  reason. Metrics stay the default instance's (`HVAR` and `MVAR` are not
-  applied yet, #77), so a heavy instance as the main font crowds its cells.
+  reason. An instance's metrics vary too, as in HarfBuzz (#77): each glyph's
+  advance by `HVAR`, so a heavy instance as the main font gets wider cells,
+  and the ascender, descender and line gap by `MVAR`. Every glyph of the
+  CFF2 test font has HarfBuzz's advance at four instances. A damaged `HVAR`
+  or `MVAR` is refused with a reason (exit 1) at an instance, and not read
+  at the default one.
 - Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
   is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
   outline is slanted 12 degrees before it is rasterized, so it is as smooth
