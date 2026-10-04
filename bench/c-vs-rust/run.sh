@@ -136,15 +136,15 @@ if [ "$mode" = glyphs ]; then
         # The C left a glyph's bitmap as malloc gave it when stb wrote
         # nothing there: a glyph with a box but no points, such as Α and А,
         # composites of the hollow font's empty 'A'. The Rust zeroes it, so
-        # those draw nothing. glibc's perturb gives the C zeroed blocks too;
-        # macOS's malloc (which zeroes freed blocks) gave it zeroed ones in
-        # every run here.
+        # those draw nothing. glibc's perturb, with no tcache (which skips
+        # it), gives the C zeroed blocks too; macOS's malloc (which zeroes
+        # freed blocks) gave it zeroed ones in every run here.
         compare() {
             log=$1
             shift
             rm -f "$work/out/c.png" "$work/out/rust.png"
             set +e
-            GLIBC_TUNABLES=glibc.malloc.perturb=255 "$old" "$@" "$log" "$work/out/c.png" 2>"$work/out/c.err"
+            GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=255 "$old" "$@" "$log" "$work/out/c.png" 2>"$work/out/c.err"
             c=$?
             ./termshot "$@" "$log" "$work/out/rust.png" 2>"$work/out/rust.err"
             r=$?
