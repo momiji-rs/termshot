@@ -3,7 +3,10 @@
    deflate included). No Core Text, FreeType, window, or distro package.
    Box drawing and blocks are geometry, so the joints meet at an integer cell
    size; that painter is Rust (src/geometry.rs), and so are the image layers
-   and the backdrop under the text (src/composite.rs) and the compressor. */
+   and the backdrop under the text (src/composite.rs), the text itself
+   (src/glyphs.rs, which calls back into stb here for cmaps, metrics and
+   rasterizing) and the compressor. Font setup, cell metrics, the order of
+   the passes and the PNG write stay here. */
 
 #include <limits.h>
 #include <math.h>
@@ -82,23 +85,6 @@ _Static_assert(sizeof(CellMarks) == 20, "CellMarks ABI must match the Rust side"
 /* 2^27 pixels keeps the 3-byte rows plus filter bytes near 384 MiB, well under INT_MAX. */
 #define MAX_PIXELS (1 << 27)
 
-/* Bounded per-render cache. Bold and colors reuse the same coverage bitmap.
-   1024 slots avoid thrashing on mixed Unicode screens (800 distinct codepoints
-   in the benchmark), while keeping metadata to 64 KiB on 64-bit builds. */
-typedef struct {
-    uint32_t cp;
-    /* wide, italic and mark are part of the key: a wide glyph is centered
-       over two cells, an italic one is slanted, and a combining mark is
-       neither centered nor shrunk, as the font places it. shift moves the
-       glyph right within its cell (or cells), and advance is how far the
-       glyph, so drawn, moves the pen, in pixels; missing means neither font
-       has it, and empty which fonts (EMPTY_IN_*) map it to an empty glyph. */
-    int valid, wide, italic, mark, missing, empty, shift, ix0, iy0, w, h;
-    float advance;
-    unsigned char *bitmap;
-} Glyph;
-#define GLYPH_CACHE_SIZE 1024
-
 /* A checked font (see src/font.rs) and the face of it to draw with: start is
    0 for a single font, its offset in a collection. stb_truetype runs CFF
    charstrings without bounds, so a CFF face brings its own outlines: outline
@@ -113,51 +99,9 @@ typedef struct {
     const void *cff;
 } Face;
 
+/* As Face in src/glyphs.rs (and src/font.rs, which makes it). */
+_Static_assert(sizeof(Face) == 32, "Face ABI must match the Rust side");
 _Static_assert(sizeof(stbtt_vertex) == 14, "stbtt_vertex ABI must match cff::Vertex");
-
-/* The outline last fetched from a CFF face, so the check for an empty glyph
-   and the drawing share one run of its charstring. */
-typedef struct {
-    stbtt_vertex *v;
-    int n, capacity;
-    const Face *face; /* whose glyph v holds, or NULL */
-    int glyph;
-    int box[4];
-} Outline;
-
-/* Fetch glyph of a CFF face into o, unless o holds it already. Returns the
-   vertex count, or -1 when memory runs out. A glyph with more vertices than
-   o has room for runs its charstring twice, so o starts with room for most
-   glyphs and doubles. */
-static int cff_outline(Outline *o, const Face *face, int glyph) {
-    if (o->face == face && o->glyph == glyph) return o->n;
-    o->face = NULL;
-    int want = o->capacity ? 0 : 512;
-    for (;;) {
-        if (want > o->capacity) {
-            stbtt_vertex *v = (stbtt_vertex *)realloc(o->v, (size_t)want * sizeof *v);
-            if (!v) return -1;
-            o->v = v;
-            o->capacity = want;
-        }
-        int n = face->outline(face->cff, glyph, o->v, o->capacity, o->box);
-        if (n <= o->capacity) {
-            o->n = n < 0 ? 0 : n;
-            o->face = face;
-            o->glyph = glyph;
-            return o->n;
-        }
-        want = o->capacity > INT_MAX / 2 || n > 2 * o->capacity ? n : 2 * o->capacity;
-    }
-}
-
-/* stbtt_IsGlyphEmpty, asked of the face's own outlines for CFF. -1 when
-   memory runs out. */
-static int glyph_empty(const stbtt_fontinfo *info, const Face *face, int glyph, Outline *o) {
-    if (!face->outline) return stbtt_IsGlyphEmpty(info, glyph);
-    int n = cff_outline(o, face, glyph);
-    return n < 0 ? -1 : n == 0;
-}
 
 /* The image being painted. Passed explicitly so draw_png is reentrant, and
    shared with src/geometry.rs, which paints box drawing and blocks into it:
@@ -192,8 +136,12 @@ _Static_assert(sizeof(Canvas) == 40, "Canvas ABI must match the Rust side");
 
    termshot_fill_rect: fill [x0, x1) x [y0, y1), clipped to the canvas.
 
-   termshot_paint_failed: nonzero if a call above failed (a bug) on this
-   thread since termshot_geometry_new; the render then fails. */
+   The text (src/glyphs.rs) paints box drawing, underlines and the boxes of
+   missing glyphs through these from Rust; draw.c declares the two for the
+   C harnesses (tests/boxes.c, bench/c-vs-rust/geometry.c).
+
+   termshot_paint_failed: nonzero if a painter failed (a bug) on this thread
+   since termshot_geometry_new; the render then fails. */
 Geometry *termshot_geometry_new(int reuse_strokes);
 void termshot_geometry_free(Geometry *geometry);
 int termshot_paint_geometry(const Canvas *cv, int col, int row, int cell_w, int cell_h, uint32_t cp, int bold,
@@ -207,64 +155,6 @@ typedef struct {
     size_t hits, misses, uncached, bytes, peak;
 } GeometryStats;
 void termshot_geometry_stats(const Geometry *geometry, GeometryStats *out);
-
-/* Italic is synthetic: the outline is slanted by 12 degrees before it is
-   rasterized, so its edges are as smooth as upright ones. The slant pivots on
-   the middle of the body, pivot font units above the baseline, so a glyph
-   stays centered in its cell and leans as far into each neighbour. Slants
-   the outline in place and returns its pixel box at scale s. */
-#define ITALIC_SLANT 0.21256f /* tan(12 degrees) */
-static void slant_outline(stbtt_vertex *v, int n, float pivot, float s, int *ix0, int *iy0, int *ix1, int *iy1) {
-    float min_x = 0, min_y = 0, max_x = 0, max_y = 0;
-    for (int i = 0; i < n; i++) {
-        /* Control points are inside the box of the curve's points, so the
-           box of all of them holds the outline. A line has none. */
-        int points = v[i].type == STBTT_vcubic ? 3 : v[i].type == STBTT_vcurve ? 2 : 1;
-        stbtt_vertex_type *xs[3] = {&v[i].x, &v[i].cx, &v[i].cx1};
-        stbtt_vertex_type ys[3] = {v[i].y, v[i].cy, v[i].cy1};
-        for (int k = 0; k < points; k++) {
-            float x = *xs[k] + ITALIC_SLANT * (ys[k] - pivot);
-            x = x < -32768 ? -32768 : x > 32767 ? 32767 : x;
-            *xs[k] = (stbtt_vertex_type)lroundf(x);
-            if ((i == 0 && k == 0) || *xs[k] < min_x) min_x = *xs[k];
-            if ((i == 0 && k == 0) || *xs[k] > max_x) max_x = *xs[k];
-            if ((i == 0 && k == 0) || ys[k] < min_y) min_y = ys[k];
-            if ((i == 0 && k == 0) || ys[k] > max_y) max_y = ys[k];
-        }
-    }
-    /* As stbtt_GetGlyphBitmapBox rounds the glyph's own box; y grows down. */
-    *ix0 = (int)floorf(min_x * s);
-    *iy0 = (int)floorf(-max_y * s);
-    *ix1 = (int)ceilf(max_x * s);
-    *iy1 = (int)ceilf(-min_y * s);
-    if (n <= 0) *ix0 = *iy0 = *ix1 = *iy1 = 0;
-}
-
-static void blend(Canvas *cv, int dx, int dy, const unsigned char *bm, int gw, int gh,
-                   uint8_t r, uint8_t g, uint8_t b) {
-    int x0 = dx < 0 ? -dx : 0;
-    int y0 = dy < 0 ? -dy : 0;
-    int x1 = gw < cv->w - dx ? gw : cv->w - dx;
-    int y1 = gh < cv->h - dy ? gh : cv->h - dy;
-    for (int y = y0; y < y1; y++) {
-        int iy = dy + y;
-        for (int x = x0; x < x1; x++) {
-            int ix = dx + x;
-            unsigned char a = bm[y * gw + x];
-            if (a == 0) continue;
-            uint8_t *p = cv->px + (size_t)iy * cv->stride + (size_t)ix * BPP;
-            if (a == 255) {
-                p[0] = r;
-                p[1] = g;
-                p[2] = b;
-            } else {
-                p[0] = (uint8_t)((r * a + p[0] * (255 - a) + 127) / 255);
-                p[1] = (uint8_t)((g * a + p[1] * (255 - a) + 127) / 255);
-                p[2] = (uint8_t)((b * a + p[2] * (255 - a) + 127) / 255);
-            }
-        }
-    }
-}
 
 /* stbtt_InitFont for a CFF2 face, which stb refuses: with no glyf it wants a
    CFF table to read outlines from. A CFF2 face's outlines come from Rust
@@ -309,30 +199,6 @@ static int init_font(stbtt_fontinfo *font, const unsigned char *ttf, int start) 
 /* A CFF face without outlines of its own would have stb run its charstrings. */
 static int init_face(stbtt_fontinfo *font, const Face *face) {
     return init_font(font, face->ttf, face->start) && (font->glyf || face->outline);
-}
-
-/* Characters that draw nothing by design, so blank even when no font has
-   them: Unicode's space separators (Zs), the line and paragraph separators,
-   and the blank Braille pattern that TUIs use as an empty dot graph. */
-static int is_blank(uint32_t cp) {
-    return cp == 0x20 || cp == 0xa0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200a) || cp == 0x2028 ||
-           cp == 0x2029 || cp == 0x202f || cp == 0x205f || cp == 0x2800 || cp == 0x3000;
-}
-
-/* An outlined box for a character neither font has, inset in its cells. */
-static void paint_tofu(Canvas *cv, int x, int y, int span, int cell_w, int cell_h,
-                       uint8_t r, uint8_t g, uint8_t b) {
-    int t = cell_w / 12 < 1 ? 1 : cell_w / 12;
-    int x0 = x + cell_w / 6, x1 = x + span - cell_w / 6;
-    int y0 = y + cell_h / 6, y1 = y + cell_h - cell_h / 6;
-    if (x1 - x0 <= 2 * t || y1 - y0 <= 2 * t) {
-        termshot_fill_rect(cv, x0, y0, x1, y1, r, g, b);
-        return;
-    }
-    termshot_fill_rect(cv, x0, y0, x1, y0 + t, r, g, b);
-    termshot_fill_rect(cv, x0, y1 - t, x1, y1, r, g, b);
-    termshot_fill_rect(cv, x0, y0 + t, x0 + t, y1 - t, r, g, b);
-    termshot_fill_rect(cv, x1 - t, y0 + t, x1, y1 - t, r, g, b);
 }
 
 typedef struct {
@@ -393,8 +259,8 @@ enum { LAYER_BELOW, LAYER_UNDER_TEXT, LAYER_OVER_TEXT };
 
 /* The cells drawn as a box because a font maps the character to an empty
    glyph, as color bitmap fonts do: how many, and the first one, its
-   character, and which fonts did. The caller says so; draw.c stays quiet.
-   As EmptyGlyphs in src/main.rs. */
+   character, and which fonts did. The caller says so; painting stays quiet.
+   As EmptyGlyphs in src/glyphs.rs. */
 #define EMPTY_IN_FONT 1
 #define EMPTY_IN_FALLBACK 2
 typedef struct {
@@ -444,207 +310,106 @@ typedef struct {
     int32_t cols, rows, cell_w, cell_h;
     int32_t done; /* rows painted */
     int32_t whole; /* paint every row at the first call */
-    double ms; /* draw.c's: the time spent in it, for TERMSHOT_PROFILE */
 } Backdrop;
 
-_Static_assert(sizeof(Backdrop) == 56, "Backdrop ABI must match the Rust side");
+_Static_assert(sizeof(Backdrop) == 48, "Backdrop ABI must match the Rust side");
 
 void termshot_backdrop_init(Backdrop *bd, const Canvas *cv, const Cell *cells, int cols, int rows, int cell_w,
                             int cell_h, const ImageView *images, size_t image_count, size_t row_bytes);
 int termshot_backdrop_through(const Canvas *cv, Backdrop *bd, int64_t y);
 int termshot_paint_images(const Canvas *cv, const ImageView *images, size_t count, int layer);
 
-/* Paint the backdrop of every row of cells above pixel row y. The test is
-   termshot_backdrop_through's own, made here so that a glyph with nothing
-   to paint under it costs neither a call into Rust nor, when profiling,
-   the clock. A failure is reported by termshot_paint_failed. */
-static void backdrop_through(Canvas *cv, Backdrop *bd, int64_t y) {
-    if (bd->done >= bd->rows || y <= (int64_t)bd->done * bd->cell_h) return;
-    double tick = now_ms();
-    termshot_backdrop_through(cv, bd, y);
-    bd->ms += now_ms() - tick;
+/* The text, painted in Rust (src/glyphs.rs): each cell's glyph from the font
+   or else the fallback, cached, slanted for italic and doubled for bold; box
+   drawing and blocks as geometry; an outlined box for a character neither
+   font has; combining marks; then underlines and strike-through. It paints
+   the backdrop a row of cells ahead of the text, and all of it by the end.
+
+   stb_truetype stays here, and Rust calls only the stb functions it is
+   handed. GlyphFace is one face: stb's font, the Face, its scale, and the
+   four stb functions that read glyph outlines, which glyph_face sets for a
+   TrueType face only. A CFF or CFF2 face gets NULL for them, so stb never
+   runs its charstrings: its outlines come from Face.outline (src/cff.rs)
+   and go to stbtt_Rasterize. TextFonts is both faces (fallback.info NULL
+   for none), the stb functions any face may be asked (cmap, metrics, the
+   rasterizer, freeing a shape), the italic pivot and the baseline. As in
+   src/glyphs.rs, which asserts the same sizes.
+
+   termshot_paint_text: paint the text of bd's cells, with marks (mark_count
+   long, sorted by cell, or NULL); empty, if not NULL, is filled in as
+   EmptyGlyphs says; profiling times the stages into stats. 0, or one of
+   TEXT_* with the render unfinished. A panic in the box painter or the
+   backdrop is also remembered for termshot_paint_failed. */
+typedef struct {
+    const stbtt_fontinfo *info;
+    const Face *face;
+    float scale;
+    int (*is_glyph_empty)(const stbtt_fontinfo *info, int glyph);
+    int (*get_glyph_shape)(const stbtt_fontinfo *info, int glyph, stbtt_vertex **vertices);
+    void (*get_glyph_bitmap_box)(const stbtt_fontinfo *info, int glyph, float scale_x, float scale_y, int *ix0,
+                                 int *iy0, int *ix1, int *iy1);
+    void (*make_glyph_bitmap)(const stbtt_fontinfo *info, unsigned char *output, int out_w, int out_h,
+                              int out_stride, float scale_x, float scale_y, int glyph);
+} GlyphFace;
+
+typedef struct {
+    GlyphFace font, fallback;
+    int (*find_glyph_index)(const stbtt_fontinfo *info, int unicode_codepoint);
+    void (*get_glyph_h_metrics)(const stbtt_fontinfo *info, int glyph, int *advance, int *left_side_bearing);
+    void (*rasterize)(stbtt__bitmap *result, float flatness_in_pixels, stbtt_vertex *vertices, int num_verts,
+                      float scale_x, float scale_y, float shift_x, float shift_y, int x_off, int y_off, int invert,
+                      void *userdata);
+    void (*free_shape)(const stbtt_fontinfo *info, stbtt_vertex *vertices);
+    float italic_pivot; /* the middle of the body, in pixels above the baseline */
+    int32_t baseline;
+} TextFonts;
+
+/* The time spent painting the backdrop, box drawing, finding glyphs and
+   blending them, and the glyph cache's counts, for TERMSHOT_PROFILE. */
+typedef struct {
+    double backdrop_ms, geometry_ms, glyph_ms, blend_ms;
+    size_t glyphs, cache_hits, evictions, missing, fallback_lookups, fallback_glyphs;
+} TextStats;
+
+_Static_assert(sizeof(GlyphFace) == 56, "GlyphFace ABI must match the Rust side");
+_Static_assert(sizeof(TextFonts) == 152, "TextFonts ABI must match the Rust side");
+_Static_assert(sizeof(TextStats) == 80, "TextStats ABI must match the Rust side");
+
+enum { TEXT_OUT_OF_MEMORY = 1, TEXT_BOX_DRAWING = 2, TEXT_PANICKED = 3 };
+int termshot_paint_text(const Canvas *cv, Backdrop *bd, const CellMarks *marks, size_t mark_count,
+                        const TextFonts *fonts, int profiling, EmptyGlyphs *empty, TextStats *stats);
+
+/* A face for termshot_paint_text, with stb's outline readers for TrueType
+   only (init_face has checked that a face without Face.outline has glyf);
+   info NULL for none. */
+static GlyphFace glyph_face(const stbtt_fontinfo *info, const Face *face, float scale) {
+    GlyphFace f = {info, face, scale, NULL, NULL, NULL, NULL};
+    if (info && !face->outline && info->glyf) {
+        f.is_glyph_empty = stbtt_IsGlyphEmpty;
+        f.get_glyph_shape = stbtt_GetGlyphShape;
+        f.get_glyph_bitmap_box = stbtt_GetGlyphBitmapBox;
+        f.make_glyph_bitmap = stbtt_MakeGlyphBitmap;
+    }
+    return f;
 }
 
-/* Free what the glyph pass holds when it fails: memory ran out, or the box
+/* Free what the render holds when painting fails: memory ran out, or a
    painter failed. Says why; returns 2. */
-static int paint_failed(Canvas *cv, Glyph *cache, Outline *scratch, const char *why) {
-    for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
+static int paint_failed(Canvas *cv, const char *why) {
     termshot_geometry_free(cv->geometry);
-    free(scratch->v);
     free(cv->filtered);
     cv->px = NULL;
     fprintf(stderr, "termshot: %s\n", why);
     return 2;
 }
 
-/* What finding a glyph needs: both fonts (fallback NULL when there is none),
-   their scales, the cache and outline scratch, and the profile's counters. */
-typedef struct {
-    const stbtt_fontinfo *font, *fallback;
-    const Face *font_face, *fallback_face;
-    float scale, fallback_scale, italic_pivot;
-    Glyph *cache;
-    Outline *scratch;
-    size_t glyphs, cache_hits, evictions, missing, fallback_lookups, fallback_glyphs;
-} Glyphs;
-
-/* The cached glyph of cp, rasterized on a miss, from the font or else the
-   fallback; span is the width of its cells in pixels. A mark is placed as its
-   font places it, never centered or shrunk. NULL when memory runs out. */
-static Glyph *find_glyph(Glyphs *g, uint32_t cp, int wide, int italic, int mark, int span) {
-    /* An italic glyph has its own slot, so mixed text doesn't evict. */
-    Glyph *entry = &g->cache[(cp ^ (italic ? GLYPH_CACHE_SIZE / 2 : 0)) % GLYPH_CACHE_SIZE];
-    if (entry->valid && entry->cp == cp && entry->wide == wide && entry->italic == italic && entry->mark == mark) {
-        g->cache_hits++;
-        return entry;
-    }
-    g->evictions += entry->valid;
-    free(entry->bitmap);
-    *entry = (Glyph){.cp = cp, .valid = 1, .wide = wide, .italic = italic, .mark = mark};
-    const stbtt_fontinfo *face = g->font;
-    const Face *source = g->font_face;
-    float s = g->scale;
-    /* A glyph with no outline counts as missing unless the
-       character is blank by design: color emoji fonts (sbix,
-       CBDT) map characters to empty glyphs and draw them from
-       bitmaps, which stb_truetype cannot. */
-    int blank = is_blank(cp);
-    int glyph = stbtt_FindGlyphIndex(g->font, (int)cp), hollow = 0;
-    /* bare is 1 for an empty glyph, -1 when memory ran out. */
-    int bare = glyph != 0 && !blank ? glyph_empty(g->font, g->font_face, glyph, g->scratch) : 0;
-    if (bare > 0) {
-        glyph = 0;
-        hollow = EMPTY_IN_FONT;
-    }
-    if (glyph == 0 && g->fallback && bare >= 0) {
-        g->fallback_lookups++;
-        face = g->fallback;
-        source = g->fallback_face;
-        s = g->fallback_scale;
-        glyph = stbtt_FindGlyphIndex(g->fallback, (int)cp);
-        bare = glyph != 0 && !blank ? glyph_empty(g->fallback, g->fallback_face, glyph, g->scratch) : 0;
-        if (bare > 0) {
-            glyph = 0;
-            hollow |= EMPTY_IN_FALLBACK;
-        }
-    }
-    if (bare < 0) return NULL;
-    entry->missing = glyph == 0;
-    if (!mark) g->missing += entry->missing;
-    entry->empty = hollow;
-    if (glyph != 0) {
-        /* The primary font's narrow glyphs sit where the font puts
-           them. Wide and fallback glyphs are centered, and a
-           fallback glyph too wide for its cells is shrunk. A
-           mark is neither (paint_marks places it). */
-        int glyph_adv, glyph_lsb;
-        stbtt_GetGlyphHMetrics(face, glyph, &glyph_adv, &glyph_lsb);
-        float advance = glyph_adv * s;
-        if (!mark && face == g->fallback && advance > span) {
-            s *= span / advance;
-            advance = (float)span;
-        }
-        entry->advance = advance;
-        if (!mark && (wide || face == g->fallback)) entry->shift = (int)floorf((span - advance) / 2 + 0.5f);
-        int ix1, iy1;
-        /* stb's outline, to free; or the CFF face's, in scratch. */
-        stbtt_vertex *shape = NULL, *outline = NULL;
-        int verts = 0;
-        if (source->outline) {
-            verts = cff_outline(g->scratch, source, glyph);
-            if (verts < 0) return NULL;
-            outline = g->scratch->v;
-        } else if (italic) {
-            verts = stbtt_GetGlyphShape(face, glyph, &shape);
-            outline = shape;
-        }
-        if (italic) {
-            slant_outline(outline, verts, g->italic_pivot / s, s, &entry->ix0, &entry->iy0, &ix1, &iy1);
-            g->scratch->face = NULL; /* now slanted */
-        } else if (source->outline) {
-            /* As stbtt_GetGlyphBitmapBox rounds the glyph's box. */
-            const int *box = g->scratch->box;
-            entry->ix0 = (int)floorf(box[0] * s);
-            entry->iy0 = (int)floorf(-box[3] * s);
-            ix1 = (int)ceilf(box[2] * s);
-            iy1 = (int)ceilf(-box[1] * s);
-            if (verts == 0) entry->ix0 = entry->iy0 = ix1 = iy1 = 0;
-        } else {
-            stbtt_GetGlyphBitmapBox(face, glyph, s, s, &entry->ix0, &entry->iy0, &ix1, &iy1);
-        }
-        entry->w = ix1 - entry->ix0;
-        entry->h = iy1 - entry->iy0;
-        if (entry->w > 0 && entry->h > 0) {
-            entry->bitmap = (unsigned char *)malloc((size_t)entry->w * entry->h);
-            if (!entry->bitmap) {
-                stbtt_FreeShape(face, shape);
-                return NULL;
-            }
-            if (outline) {
-                stbtt__bitmap out = {entry->w, entry->h, entry->w, entry->bitmap};
-                stbtt_Rasterize(&out, 0.35f, outline, verts, s, s, 0, 0, entry->ix0, entry->iy0, 1, face->userdata);
-            } else {
-                stbtt_MakeGlyphBitmap(face, entry->bitmap, entry->w, entry->h, entry->w, s, s, glyph);
-            }
-            g->glyphs++;
-            g->fallback_glyphs += face == g->fallback;
-        }
-        stbtt_FreeShape(face, shape);
-    }
-    return entry;
-}
-
-/* Default_Ignorable_Code_Point, past U+00AD: joiners, direction marks,
-   variation selectors, fillers and tags, which draw nothing even when a font
-   has a glyph for them. Most are zero width, and so marks; the Hangul fillers
-   U+115F, U+3164 and U+FFA0 take cells of their own. */
-static int is_ignorable(uint32_t cp) {
-    return cp == 0x034f || cp == 0x061c || (cp >= 0x115f && cp <= 0x1160) || (cp >= 0x17b4 && cp <= 0x17b5) ||
-           (cp >= 0x180b && cp <= 0x180f) || (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) ||
-           (cp >= 0x2060 && cp <= 0x206f) || cp == 0x3164 || (cp >= 0xfe00 && cp <= 0xfe0f) || cp == 0xfeff ||
-           cp == 0xffa0 || (cp >= 0xfff0 && cp <= 0xfff8) || (cp >= 0x1bca0 && cp <= 0x1bca3) ||
-           (cp >= 0x1d173 && cp <= 0x1d17a) || (cp >= 0xe0000 && cp <= 0xe0fff);
-}
-
-/* Draw a cell's combining marks over its character, in the cell's colours
-   and attributes, from the font or else the fallback; a mark neither has is
-   left out. There is no shaping (no GPOS anchors), so a mark goes where its
-   own outline puts it. Most fonts draw a mark to the left of its origin, with
-   no advance, to overlay the character before it: that mark is drawn from
-   where the character ends (base_x plus its advance). A mark drawn to the
-   right of its origin, as in right-to-left fonts, is centered over the
-   character instead. y is the baseline. Adds the time spent finding glyphs
-   and blending them to glyph_ms and blend_ms. Returns 0, or 2 when memory
-   runs out. */
-static int paint_marks(Canvas *cv, Backdrop *backdrop, Glyphs *g, const CellMarks *marks, const Cell *cell, int base_x,
-                       float base_advance, int y, double *glyph_ms, double *blend_ms) {
-    int italic = (cell->attrs & ATTR_ITALIC) != 0;
-    for (int k = 0; k < MAX_MARKS && marks->marks[k]; k++) {
-        uint32_t cp = marks->marks[k];
-        if (is_ignorable(cp)) continue;
-        double tick = now_ms();
-        Glyph *mark = find_glyph(g, cp, 0, italic, 1, 0);
-        *glyph_ms += now_ms() - tick;
-        if (!mark) return 2;
-        if (!mark->bitmap) continue;
-        backdrop_through(cv, backdrop, (int64_t)y + mark->iy0 + mark->h);
-        tick = now_ms();
-        int dx = 2 * mark->ix0 + mark->w < 0 ? base_x + (int)floorf(base_advance + 0.5f) + mark->ix0
-                                             : base_x + (int)floorf((base_advance - (float)mark->w) / 2 + 0.5f);
-        int dy = y + mark->iy0;
-        blend(cv, dx, dy, mark->bitmap, mark->w, mark->h, cell->fr, cell->fg, cell->fb);
-        if (cell->attrs & ATTR_BOLD) blend(cv, dx + 1, dy, mark->bitmap, mark->w, mark->h, cell->fr, cell->fg, cell->fb);
-        *blend_ms += now_ms() - tick;
-    }
-    return 0;
-}
-
 /* Paint cells with the face font and write a PNG. fallback_face, or NULL,
    supplies the characters font_face lacks; characters neither has are drawn
    as an outlined box. marks, mark_count long and sorted by cell, gives the
-   cells' combining marks, drawn over them (paint_marks); NULL when none.
-   The canvas and cache are local; timing hooks use
-   thread-local state so concurrent renders remain independent.
+   cells' combining marks, drawn over them (src/glyphs.rs); NULL when none.
+   The canvas, and the glyph cache in Rust, are the render's own, and the
+   timing hooks and fault counters are per thread, so concurrent renders
+   remain independent.
    verbose prints the cell and image size to stderr. empty, if not NULL,
    is filled in as EmptyGlyphs says.
    Returns 0; 1 for an unusable font; 2 when the image is too large, memory
@@ -704,115 +469,30 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
     cv->geometry = termshot_geometry_new(1);
     double allocated = now_ms();
     /* The backgrounds and the images under the text are painted a row of
-       cells ahead of the text over them (backdrop_through); background_ms
-       is their time, and foreground_ms the rest. */
+       cells ahead of the text over them (src/glyphs.rs); background_ms is
+       their time, and foreground_ms the rest. */
     Backdrop backdrop;
     termshot_backdrop_init(&backdrop, cv, cells, cols, rows, cell_w, cell_h, images, image_count, BACKDROP_ROW_BYTES);
     double background = now_ms();
-    double geometry_ms = 0, glyph_ms = 0, blend_ms = 0;
-    Glyph cache[GLYPH_CACHE_SIZE] = {0};
-    Outline scratch = {0};
-    Glyphs g = {&font, fallback_face ? &fallback : NULL, font_face, fallback_face, scale, fallback_scale,
-                italic_pivot, cache, &scratch, 0, 0, 0, 0, 0, 0};
-    size_t next_mark = 0;
-    for (int r = 0; r < rows; r++) {
-        backdrop_through(cv, &backdrop, (int64_t)(r + 1) * cell_h);
-        for (int c = 0; c < cols; c++) {
-            size_t index = (size_t)r * (size_t)cols + (size_t)c;
-            const Cell *cell = &cells[index];
-            uint32_t cp = cell->ch;
-            /* The cell's marks, if any; the list is sorted by cell. */
-            const CellMarks *cell_marks = NULL;
-            while (next_mark < mark_count && marks[next_mark].cell < index) next_mark++;
-            if (next_mark < mark_count && marks[next_mark].cell == index) cell_marks = &marks[next_mark];
-            if ((cp == 0 || cp == ' ') && !cell_marks) continue;
-            int wide = (cell->attrs & ATTR_WIDE) != 0;
-            int span = wide ? 2 * cell_w : cell_w;
-            /* Where the character starts and how far it advances, for its
-               marks: its cells, unless a glyph says otherwise. */
-            int base_x = c * cell_w;
-            float base_advance = (float)span;
-            /* A Hangul filler draws nothing, though its marks still do. */
-            if (cp != 0 && cp != ' ' && !is_ignorable(cp)) {
-                double tick = now_ms();
-                /* Box drawing and blocks, painted in Rust: one call per cell. */
-                int geometry = cp >= 0x2500 && cp <= 0x259F
-                                   ? termshot_paint_geometry(cv, c, r, cell_w, cell_h, cp, cell->attrs & ATTR_BOLD,
-                                                             cell->fr, cell->fg, cell->fb)
-                                   : 0;
-                geometry_ms += now_ms() - tick;
-                if (geometry < 0) return paint_failed(cv, cache, &scratch, "box drawing failed");
-                if (!geometry) {
-                    tick = now_ms();
-                    Glyph *entry = find_glyph(&g, cp, wide, (cell->attrs & ATTR_ITALIC) != 0, 0, span);
-                    if (!entry) return paint_failed(cv, cache, &scratch, "glyph allocation failed");
-                    glyph_ms += now_ms() - tick;
-                    tick = now_ms();
-                    double ahead = backdrop.ms;
-                    if (entry->missing && !is_blank(cp)) {
-                        if (entry->empty && empty && empty->cells++ == 0) {
-                            *empty = (EmptyGlyphs){.cp = cp, .fonts = (uint32_t)entry->empty, .col = c, .row = r, .cells = 1};
-                        }
-                        paint_tofu(cv, c * cell_w, r * cell_h, span, cell_w, cell_h, cell->fr, cell->fg, cell->fb);
-                    } else if (entry->bitmap) {
-                        const unsigned char *bm = entry->bitmap;
-                        int gw = entry->w, gh = entry->h;
-                        int dx = c * cell_w + entry->shift + entry->ix0;
-                        int dy = r * cell_h + baseline + entry->iy0;
-                        backdrop_through(cv, &backdrop, (int64_t)dy + gh);
-                        blend(cv, dx, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
-                        if (cell->attrs & ATTR_BOLD) blend(cv, dx + 1, dy, bm, gw, gh, cell->fr, cell->fg, cell->fb);
-                    }
-                    if (!entry->missing) {
-                        base_x += entry->shift;
-                        base_advance = entry->advance;
-                    }
-                    blend_ms += now_ms() - tick - (backdrop.ms - ahead);
-                }
-            }
-            if (cell_marks &&
-                paint_marks(cv, &backdrop, &g, cell_marks, cell, base_x, base_advance, r * cell_h + baseline, &glyph_ms,
-                            &blend_ms) != 0)
-                return paint_failed(cv, cache, &scratch, "glyph allocation failed");
-        }
-    }
-
-    backdrop_through(cv, &backdrop, (int64_t)rows * cell_h);
-    /* Underlines and strike-through, over the glyphs, as thick as box-drawing
-       strokes and kept inside the cell. */
-    int line_t = cell_w / 12 < 1 ? 1 : cell_w / 12;
-    int under_y = baseline + (cell_h - baseline) / 3;
-    if (under_y > cell_h - line_t) under_y = cell_h - line_t;
-    int double_y = under_y + 3 * line_t <= cell_h ? under_y : cell_h - 3 * line_t;
-    if (double_y < 0) double_y = 0;
-    int strike_y = baseline - baseline * 3 / 10;
-    for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            const Cell *cell = &cells[r * cols + c];
-            if (!(cell->attrs & (ATTR_UNDERLINE | ATTR_DOUBLE_UNDERLINE | ATTR_STRIKE))) continue;
-            int x0 = c * cell_w, x1 = x0 + cell_w, y = r * cell_h;
-            if (cell->attrs & ATTR_DOUBLE_UNDERLINE) {
-                termshot_fill_rect(cv, x0, y + double_y, x1, y + double_y + line_t, cell->fr, cell->fg, cell->fb);
-                termshot_fill_rect(cv, x0, y + double_y + 2 * line_t, x1, y + double_y + 3 * line_t, cell->fr, cell->fg, cell->fb);
-            } else if (cell->attrs & ATTR_UNDERLINE) {
-                termshot_fill_rect(cv, x0, y + under_y, x1, y + under_y + line_t, cell->fr, cell->fg, cell->fb);
-            }
-            if (cell->attrs & ATTR_STRIKE) {
-                termshot_fill_rect(cv, x0, y + strike_y, x1, y + strike_y + line_t, cell->fr, cell->fg, cell->fb);
-            }
-        }
-    }
+    TextFonts fonts = {glyph_face(&font, font_face, scale),
+                       glyph_face(fallback_face ? &fallback : NULL, fallback_face, fallback_scale),
+                       stbtt_FindGlyphIndex, stbtt_GetGlyphHMetrics, stbtt_Rasterize, stbtt_FreeShape,
+                       italic_pivot, baseline};
+    TextStats text;
+    int painted = termshot_paint_text(cv, &backdrop, marks, mark_count, &fonts, profiling, empty, &text);
+    if (painted != 0)
+        return paint_failed(cv, painted == TEXT_OUT_OF_MEMORY ? "glyph allocation failed"
+                                : painted == TEXT_BOX_DRAWING ? "box drawing failed"
+                                                              : "painting failed");
 
     termshot_paint_images(cv, images, image_count, LAYER_OVER_TEXT);
-    /* termshot_fill_rect and the backdrop have no result here: a fill or an
+    /* The fills and the backdrop have no result of their own: a fill or an
        image that failed says so now, before an incomplete image is written. */
-    if (termshot_paint_failed()) return paint_failed(cv, cache, &scratch, "painting failed");
-    for (int k = 0; k < GLYPH_CACHE_SIZE; k++) free(cache[k].bitmap);
+    if (termshot_paint_failed()) return paint_failed(cv, "painting failed");
     GeometryStats stamps;
     termshot_geometry_stats(cv->geometry, &stamps);
     termshot_geometry_free(cv->geometry);
     cv->geometry = NULL;
-    free(scratch.v);
     double foreground = now_ms();
     int png_len = 0;
     STBIW_PNG_PROFILE(0);
@@ -839,9 +519,10 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
         fprintf(stderr, "termshot-profile {\"deflate_allocate_ms\":%.6f,\"deflate_match_emit_ms\":%.6f,\"deflate_finalize_ms\":%.6f,\"deflate_checksum_ms\":%.6f,\"font_setup_ms\":%.6f,\"allocate_ms\":%.6f,\"background_ms\":%.6f,\"foreground_ms\":%.6f,\"geometry_ms\":%.6f,\"glyph_ms\":%.6f,\"blend_ms\":%.6f,\"png_filter_ms\":%.6f,\"png_deflate_ms\":%.6f,\"png_pack_ms\":%.6f,\"png_encode_ms\":%.6f,\"output_write_ms\":%.6f,\"cleanup_ms\":%.6f,\"geometry_cache_hits\":%zu,\"geometry_cache_misses\":%zu,\"geometry_cache_uncached\":%zu,\"geometry_cache_bytes\":%zu,\"glyph_rasterizations\":%zu,\"glyph_cache_hits\":%zu,\"glyph_cache_evictions\":%zu,\"glyph_missing\":%zu,\"fallback_lookups\":%zu,\"fallback_rasterizations\":%zu,\"png_bytes\":%d,\"pixel_bytes\":%zu}\n",
             deflate.allocate_ms, deflate.match_emit_ms, deflate.finalize_ms, deflate.checksum_ms,
             font_setup - started, allocated - font_setup,
-            background - allocated + backdrop.ms, foreground - background - backdrop.ms, geometry_ms, glyph_ms, blend_ms,
+            background - allocated + text.backdrop_ms, foreground - background - text.backdrop_ms, text.geometry_ms,
+            text.glyph_ms, text.blend_ms,
             png_marks[1] - png_marks[0], png_marks[2] - png_marks[1], png_marks[3] - png_marks[2],
-            encoded - foreground, written - encoded, now_ms() - written, stamps.hits, stamps.misses, stamps.uncached, stamps.bytes, g.glyphs, g.cache_hits, g.evictions, g.missing, g.fallback_lookups, g.fallback_glyphs, png_len, (size_t)(width * height * BPP));
+            encoded - foreground, written - encoded, now_ms() - written, stamps.hits, stamps.misses, stamps.uncached, stamps.bytes, text.glyphs, text.cache_hits, text.evictions, text.missing, text.fallback_lookups, text.fallback_glyphs, png_len, (size_t)(width * height * BPP));
     }
     if (encode_failed) return 2;
     if (!ok) {

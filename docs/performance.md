@@ -1,6 +1,10 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[glyph-painting-in-Rust round](#glyph-painting-in-rust-2026-10-04-ab924ca-12-step-2c)
+(2026-10-04, `ab924ca`, #12 step 2c) moved the text (glyphs, the glyph
+cache, marks, lines) from `src/draw.c` to `src/glyphs.rs` and remeasured
+every case against main `c0b7b02` on the same two machines. The
 [image-layers-in-Rust round](#image-layers-in-rust-2026-10-04-82c3f3d-12-step-2b)
 (2026-10-04, `82c3f3d`, #12 step 2b) moved image compositing and the
 backdrop under the text from `src/draw.c` to `src/composite.rs` and
@@ -37,6 +41,212 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## Glyph painting in Rust (2026-10-04, `ab924ca`, #12 step 2c)
+
+#12 step 2c moves the text from `src/draw.c` to `src/glyphs.rs`: the glyph
+cache, the font and fallback lookups, the fallback's scaling, italic, bold,
+combining marks, the box of a missing glyph, underlines and strike-through,
+and the glyph blend; draw.c calls it once per render, and stb_truetype stays
+C. The bar was no regression beyond noise. Every pixel is the same, but for
+one C bug: `bench/c-vs-rust/run.sh glyphs` renders 3,640 PNGs with the CLI
+built at main `c0b7b02` and with the branch, the same bytes, exit codes and
+stderr on both hosts (glibc's malloc made to hand the old C zeroed blocks,
+see Validation); all 48 cases below gave one output per case on both
+binaries and batches; and every PNG `./test.sh` writes hashes the same as on
+main, but for the reentrancy test's, whose screens changed.
+
+### Result
+
+| | macOS arm64 (M2 Max) | Linux x86-64 (Ryzen 7 8745HS) |
+| --- | --- | --- |
+| end to end, 48 cases, paired wall speedup (main/branch) | 0.989-1.022 (A), 0.988-1.017 (B) | 0.918-1.044 (A), 0.955-1.061 (B) |
+| slower with confidence in both batches | none | none |
+| faster with confidence in both batches | `large` 1.016 / 1.017, `large-color` 1.008 / 1.006, `image-over` 1.018 / 1.013 | `large` 1.027 / 1.034 |
+| `blend_ms`, the glyph blend | up to 16% lower (`reply-128px`, `large`, `large-color`), within 4% at small cells | 6-23% lower |
+
+The cases asked about, wall median (ms) of main and the branch from each
+batch, the paired speedup (main/branch, above 1 is faster) with its 95%
+bootstrap interval, and the glyph stages, batch A medians: `glyph_ms`
+(finding and rasterizing glyphs), `blend_ms` (blending them, with the boxes
+of missing ones) and `foreground_ms` (the text, box drawing and the images
+over it):
+
+macOS arm64:
+
+| case | wall A | wall B | speedup A | speedup B | glyph_ms | blend_ms | foreground_ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `reply-sent` | 8.70 / 8.77 | 8.81 / 8.76 | 0.997 [0.988, 1.009] | 1.000 [0.982, 1.029] | 0.24 → 0.25 | 0.25 → 0.23 | 0.61 → 0.61 |
+| `reply-128px` | 28.83 / 28.55 | 28.52 / 28.18 | 1.010 [0.994, 1.025] | 1.008 [1.000, 1.020] | 0.55 → 0.55 | 1.25 → 1.05 | 2.08 → 1.87 |
+| `glyph-overflow` | 16.40 / 16.35 | 16.26 / 16.22 | 1.000 [0.992, 1.008] | 0.998 [0.990, 1.011] | 4.71 → 4.72 | 0.92 → 0.90 | 5.93 → 5.91 |
+| `cjk-none` | 4.97 / 4.93 | 4.91 / 4.96 | 1.010 [0.989, 1.029] | 1.001 [0.987, 1.011] | 0.07 → 0.08 | 0.12 → 0.12 | 0.34 → 0.34 |
+| `cjk-subset` | 9.51 / 9.57 | 9.64 / 9.45 | 1.001 [0.991, 1.022] | 1.015 [1.004, 1.028] | 0.29 → 0.30 | 0.53 → 0.51 | 0.98 → 0.95 |
+| `cjk-cff-primary` | 9.21 / 9.37 | 9.13 / 9.05 | 1.001 [0.986, 1.012] | 1.016 [1.001, 1.023] | 0.31 → 0.31 | 0.51 → 0.51 | 0.98 → 0.96 |
+| `cjk-full` | 12.68 / 12.63 | 12.53 / 12.51 | 1.007 [0.998, 1.012] | 0.999 [0.991, 1.010] | 0.32 → 0.32 | 0.52 → 0.51 | 0.99 → 0.98 |
+| `cjk-overflow-full` | 26.69 / 26.61 | 26.83 / 26.92 | 1.004 [0.995, 1.011] | 0.996 [0.988, 1.010] | 9.61 → 9.54 | 1.05 → 1.03 | 10.81 → 10.78 |
+| `mixed-subset` | 7.62 / 7.56 | 7.61 / 7.60 | 0.992 [0.980, 1.017] | 0.996 [0.987, 1.015] | 0.71 → 0.70 | 0.22 → 0.22 | 1.10 → 1.07 |
+| `mixed-full` | 11.43 / 11.21 | 11.05 / 11.03 | 1.008 [0.999, 1.017] | 0.996 [0.987, 1.013] | 0.92 → 0.93 | 0.25 → 0.26 | 1.34 → 1.35 |
+| `thai-combining` | 24.33 / 24.36 | 24.22 / 24.21 | 0.998 [0.989, 1.003] | 1.004 [0.995, 1.009] | 0.08 → 0.09 | 0.10 → 0.10 | 0.35 → 0.36 |
+| `large` | 37.44 / 37.00 | 36.78 / 36.01 | 1.016 [1.006, 1.025] | 1.017 [1.012, 1.028] | 0.32 → 0.34 | 4.08 → 3.50 | 5.35 → 4.79 |
+| `large-color` | 146.31 / 145.06 | 145.38 / 144.52 | 1.008 [1.005, 1.013] | 1.006 [1.003, 1.010] | 0.43 → 0.50 | 6.90 → 5.83 | 9.02 → 7.95 |
+
+Linux x86-64:
+
+| case | wall A | wall B | speedup A | speedup B | glyph_ms | blend_ms | foreground_ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `reply-sent` | 7.61 / 7.65 | 7.45 / 7.38 | 0.992 [0.968, 1.021] | 0.994 [0.974, 1.035] | 0.25 → 0.26 | 0.29 → 0.26 | 0.68 → 0.67 |
+| `reply-128px` | 23.62 / 23.52 | 23.95 / 23.72 | 1.006 [0.994, 1.014] | 1.004 [0.998, 1.020] | 0.61 → 0.62 | 1.25 → 1.07 | 2.16 → 2.01 |
+| `glyph-overflow` | 15.16 / 15.40 | 15.14 / 15.25 | 0.990 [0.962, 1.010] | 0.996 [0.977, 1.023] | 4.49 → 4.55 | 1.14 → 1.03 | 5.97 → 5.89 |
+| `cjk-none` | 4.20 / 4.38 | 4.47 / 4.49 | 0.961 [0.865, 1.036] | 0.977 [0.945, 1.026] | 0.07 → 0.07 | 0.12 → 0.11 | 0.36 → 0.35 |
+| `cjk-subset` | 9.75 / 9.75 | 9.79 / 9.67 | 1.011 [0.994, 1.038] | 1.012 [0.975, 1.047] | 0.28 → 0.28 | 0.81 → 0.64 | 1.25 → 1.09 |
+| `cjk-cff-primary` | 8.65 / 8.72 | 8.75 / 8.60 | 0.983 [0.951, 1.026] | 0.989 [0.965, 1.033] | 0.32 → 0.31 | 0.79 → 0.61 | 1.28 → 1.09 |
+| `cjk-full` | 13.83 / 13.62 | 13.51 / 13.47 | 1.009 [0.987, 1.050] | 0.978 [0.945, 1.039] | 0.29 → 0.30 | 0.80 → 0.63 | 1.27 → 1.09 |
+| `cjk-overflow-full` | 27.21 / 27.57 | 27.92 / 27.91 | 0.993 [0.970, 1.017] | 1.014 [0.988, 1.026] | 9.62 → 9.78 | 1.16 → 1.02 | 10.98 → 11.01 |
+| `mixed-subset` | 7.72 / 7.49 | 7.51 / 7.57 | 1.017 [1.006, 1.053] | 1.013 [0.982, 1.035] | 0.66 → 0.67 | 0.29 → 0.26 | 1.14 → 1.10 |
+| `mixed-full` | 11.74 / 12.07 | 12.03 / 11.91 | 0.969 [0.946, 0.996] | 1.019 [0.983, 1.040] | 0.85 → 0.90 | 0.32 → 0.30 | 1.36 → 1.37 |
+| `thai-combining` | 24.46 / 24.11 | 23.75 / 23.98 | 1.009 [1.000, 1.026] | 0.995 [0.975, 1.008] | 0.09 → 0.09 | 0.10 → 0.09 | 0.38 → 0.35 |
+| `large` | 33.43 / 32.43 | 33.56 / 32.68 | 1.027 [1.012, 1.045] | 1.034 [1.016, 1.041] | 0.34 → 0.32 | 5.22 → 4.25 | 6.57 → 5.59 |
+| `large-color` | 136.65 / 134.42 | 136.09 / 134.81 | 1.011 [1.008, 1.023] | 1.009 [0.997, 1.021] | 0.47 → 0.45 | 8.99 → 7.42 | 11.19 → 9.60 |
+
+`bench-report.py` on the raw files gives every case. The blend is where the
+time moved: `blend_ms` of `large` 4.08 → 3.50 (macOS) and 5.22 → 4.25 ms
+(Linux), of the CJK cases 0.80 → 0.63 on Linux. On Linux `cjk-none` read
+0.961 and 0.977 with intervals across 1 and the same `foreground_ms`, and
+`mixed-full` 0.969 [0.946, 0.996] in batch A only (1.019 in B); the
+text-only cases, which paint nothing, ranged 0.918-1.061, which is this
+host's noise at these sizes.
+
+`glyph_ms` on the M2 reads 0.01-0.07 ms more on screens of cache hits
+(`large-color`, 17,271 hits: 0.43 → 0.50), about 3 ns a hit, with the same
+or lower `foreground_ms`. Built with 64-byte loop alignment
+(`CFLAGS=-falign-loops=64`, `-C llvm-args=-align-loops=64`), a 240x80
+screen of random coloured ASCII still read 0.687 → 0.750 ms of `glyph_ms`
+and 5.667 → 5.648 of `foreground_ms` (41 rounds, `bench/c-vs-rust/glyphs.rs
+time`), so it is not alignment, and it is not in the wall time.
+
+### Glyph stages alone
+
+`bench/c-vs-rust/run.sh glyphs 61`, after its pixel check, renders a few
+screens with both CLIs in alternating rounds and reports the median of each
+stage of `TERMSHOT_PROFILE` (ms, Rust ÷ C):
+
+| screen | macOS glyph | blend | foreground | Linux glyph | blend | foreground |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `reply-sent` `--px 48` | 0.243 → 0.244 (1.004) | 0.254 → 0.233 (0.917) | 0.619 → 0.599 (0.968) | 0.375 → 0.354 (0.944) | 0.973 → 0.942 (0.969) | 1.581 → 1.544 (0.977) |
+| `reply-sent` `--px 128` | 0.538 → 0.545 (1.013) | 1.243 → 1.057 (0.850) | 2.057 → 1.873 (0.911) | 0.938 → 0.942 (1.005) | 2.122 → 2.060 (0.971) | 3.495 → 3.463 (0.991) |
+| `glyph-overflow` `--px 24` | 4.756 → 4.738 (0.996) | 0.918 → 0.930 (1.013) | 6.026 → 6.000 (0.996) | 6.415 → 6.516 (1.016) | 2.682 → 2.425 (0.904) | 9.544 → 9.385 (0.983) |
+| `cjk-dense`, CFF fallback | 0.287 → 0.290 (1.010) | 0.538 → 0.516 (0.959) | 0.982 → 0.953 (0.970) | 0.398 → 0.405 (1.018) | 1.379 → 1.176 (0.853) | 1.985 → 1.812 (0.913) |
+| `cjk-dense`, CFF font | 0.298 → 0.306 (1.027) | 0.505 → 0.497 (0.984) | 0.955 → 0.960 (1.005) | 0.422 → 0.438 (1.037) | 1.297 → 1.084 (0.836) | 1.941 → 1.731 (0.892) |
+| `italic` `--px 48` | 0.117 → 0.117 (1.000) | 0.064 → 0.061 (0.953) | 0.203 → 0.201 (0.990) | 0.145 → 0.153 (1.056) | 0.177 → 0.178 (1.007) | 0.384 → 0.407 (1.059) |
+| marks, marks fallback | 0.207 → 0.209 (1.010) | 0.093 → 0.088 (0.946) | 0.348 → 0.346 (0.994) | 0.276 → 0.282 (1.025) | 0.297 → 0.286 (0.965) | 0.672 → 0.648 (0.964) |
+| JetBrains Mono's cmap, italic | 3.622 → 3.622 (1.000) | 1.138 → 1.092 (0.960) | 4.876 → 4.876 (1.000) | 5.522 → 5.597 (1.014) | 2.845 → 2.876 (1.011) | 8.684 → 8.743 (1.007) |
+| the CFF2 subset's cmap | 0.735 → 0.741 (1.008) | 0.103 → 0.106 (1.029) | 0.865 → 0.878 (1.015) | 1.077 → 1.101 (1.022) | 0.336 → 0.328 (0.976) | 1.486 → 1.485 (1.000) |
+
+macOS ran at a load of 3.3-4.8. The Linux run began at a load of 12 and
+ended at 33, under another session's compile, so its absolute numbers are
+high; the alternating rounds keep the ratios paired. Two choices made the
+port's numbers what they are, each measured:
+
+1. **The blend checks a row once.** The glyph's row and the canvas's are
+   sliced once per row, then blended through pointers by composite.rs's
+   `blend_pixel`, the core it shares with the images (the C's `blend`, with
+   the same 255 and 0 shortcuts).
+2. **The profile reads the C's clock.** With std's `Instant`, the profiled
+   `foreground_ms` of cache-hit screens read up to 15% over the C's
+   (`cjk-dense` 0.34 → 0.39 ms) at the same wall time; reading
+   `CLOCK_MONOTONIC` as draw.c's `now_ms` does gives 0.349 → 0.346. The
+   cache's hit path is inline and its miss path a call of its own.
+
+### What was measured
+
+- **main**: `c0b7b02` (main after #78), built with `./build.sh`.
+- **branch**: `ab924ca`, the step 2c commits on top of it, merged with
+  `c0b7b02`. Later commits change only the differential test and
+  documentation.
+
+Method as in the
+[step 2b round](#image-layers-in-rust-2026-10-04-82c3f3d-12-step-2b):
+`bench.py` with every suite, 5 warmups and 40 shuffled rounds of plain and
+profiled runs per case and binary, 5 peak-RSS runs, seeds 17 (batch A) and
+29 (batch B), `--verify-identical`, and the full CJK collection (sha256
+`b76b0433…`, a copy on macOS) on both hosts. On Linux both binaries were
+built from fresh clones of the pushed branch and of main in a temp dir,
+since removed.
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, macOS 26.6.2 | `starship`, kernel 7.2.5-3-omarchy, glibc 2.44, governor `performance` |
+| compilers | rustc 1.98.1, Apple clang 21.0.0 (clang-2100.3.34.2) | rustc 1.98.1, GCC 16.2.1 20260810 |
+| main / branch sha256 | `242b467b8689…` / `0b2a3291cd63…` | `93cf9593e62f…` / `abb45f3f1599…` |
+| load average (1 min), start → end | A 4.96 → 4.78, B 4.78 → 4.45 | A 3.60 → 2.11, B 2.11 → 3.96 (the 15-minute average was 14 → 11 after another session's compile) |
+
+Raw results: macOS [batch A](performance-2026-10-04-glyphs-rust-macos-a.json)
+and [batch B](performance-2026-10-04-glyphs-rust-macos-b.json); Linux
+[batch A](performance-2026-10-04-glyphs-rust-linux-a.json) and
+[batch B](performance-2026-10-04-glyphs-rust-linux-b.json). They hold every
+sample; none was discarded.
+
+### Validation
+
+- `./test.sh`, `SANITIZE=1 ./test.sh`, `SANITIZE=1 ./tests/run.sh` and
+  `./test.sh` under rustc 1.70.0 on macOS; `./test.sh`, `./tests/run.sh` and
+  `bench/c-vs-rust/run.sh glyphs` on starship (x86-64, GCC 16).
+- `bench/c-vs-rust/run.sh glyphs`: 3,640 renders, PNG, exit code and stderr
+  byte for byte, on both hosts (with the full Noto CJK as a 13th font
+  setup). A deliberate `+ 128` in the blend changes `reply-sent`'s PNG, and
+  a slant of 0.2126 instead of 0.21256 changes `italic.pty`'s.
+- One difference was a C bug, now fixed: a glyph with a box but no points (Α
+  and А in the font `tests/glyphs.c` writes with an empty 'A', of which they
+  are composites) makes stb write nothing into its bitmap. The C blended
+  what malloc returned: zeros on macOS, but on glibc, in `glyph-overflow`,
+  six cells of leftovers. The Rust's bitmap starts zeroed, so they draw
+  nothing; the differential runs the old C with
+  `GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=255`,
+  which zeroes its blocks, and then they match.
+- Every PNG `./test.sh` writes hashes the same as main's on both hosts: 395
+  of the 403 names both write, and the other eight are the reentrancy
+  test's `thread-N.png`, which now draws four other screens on twelve
+  threads.
+- `src/glyphs_tests.rs` drives the Rust with fake stb functions: the
+  cache's slots, keys and conflicts, the lookups, missing and empty glyphs
+  and their report, that a CFF face never reaches stb's outline readers, the
+  outline scratch's growth, the fallback's scaling and centering, both mark
+  rules, the slant and the lines, and a failure at each of its 9
+  allocations (all 3 sites) in turn. `a_failed_glyph_allocation_fails_the_render`
+  fails each of 8 with the vendored fonts through draw.c (2, no PNG), and
+  `tests/run.sh` each of 10 in the CLI (exit 2, no PNG, no `--text`).
+- `tests/glyphs.c` (168 placement checks) and `tests/draw.c` pass unchanged
+  in what they check, now against the Rust.
+- `scripts/release.sh macos-universal`: both slices render the samples like
+  the host build, and 32 glyph renders each (italic, marks, CJK, missing
+  glyphs, the overflow screen, random cells; at `--px` 46, 47.5, 24 and 9,
+  with CFF, CFF2 at `wght=700` and the marks font) like it too, the x86_64
+  slice under Rosetta.
+
+### Remaining limits
+
+- One batch pair per host; on Linux the differential's timing ran under
+  another session's load.
+- The musl release builds were not run locally; `release.yml` builds and
+  checks them on this pull request.
+
+### Reproduce
+
+```sh
+git worktree add /tmp/termshot-main c0b7b02 && (cd /tmp/termshot-main && ./build.sh)
+./build.sh && cp termshot /tmp/termshot-branch
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
+    --describe main=c0b7b02 --describe branch=ab924ca \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 \
+    --verify-identical --cjk-font "$cjk" \
+    --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
+done
+python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+CJK_FONT="$cjk" bench/c-vs-rust/run.sh glyphs 61
+```
 
 ## Image layers in Rust (2026-10-04, `82c3f3d`, #12 step 2b)
 

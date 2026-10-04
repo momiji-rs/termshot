@@ -273,21 +273,83 @@ fn mutated_fonts_are_rejected_or_render() {
     assert!(rendered > 100, "only {rendered} of 400 mutated fonts rendered");
 }
 
+const CJK_FONT: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
+const CJK_VF_FONT: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
+
+/// Renders on several threads at once are independent (#8 was a glyph cache
+/// shared between them): each thread draws one of four different screens,
+/// with different fonts (TrueType, a CFF fallback, CFF2) and sizes, three
+/// times over, and each PNG is the one drawn alone. The glyph cache, the
+/// outline scratch, the box-drawing cache, the backdrop and the fault
+/// counters are all the render's or the thread's own.
 #[test]
 fn draw_png_is_reentrant() {
     let font = load(FONT);
-    let cells = parse("\x1b[1mbold\x1b[0m ─╭╮ plain".as_bytes(), 20, 2);
-    let outs: Vec<String> = (0..8).map(|i| format!("target/test/thread-{i}.png")).collect();
+    let (cjk, vf, marks_font) = (load(CJK_FONT), load(CJK_VF_FONT), load(MARKS_FONT));
+    let logs = ["\x1b[1mbold\x1b[0m ─╭╮ plain \x1b[4munder\x1b[0m",
+                "\x1b[3mitalic\x1b[23m q\u{301}x \u{e31}\u{e49} \x1b[9m\u{1F600}\x1b[0m",
+                "中文 \x1b[3m界\x1b[1m面\x1b[0m ab\u{16910}",
+                "\x1b[1;3m中文 Ag\x1b[0m ╰─╯ 界"];
+    let screens: Vec<(Vec<Cell>, Vec<CellMarks>)> = logs.iter().map(|log| {
+        let g = replay(log.as_bytes(), 20, 2, Lf::Index);
+        (g.cells, g.marks)
+    }).collect();
+    let draw = |k: usize, out: &str| {
+        let (fonts, px): ((&font::Font, Option<&font::Font>), f64) = match k {
+            0 => ((&font, None), 48.0),
+            1 => ((&font, Some(&marks_font)), 46.0),
+            2 => ((&font, Some(&cjk)), 24.0),
+            _ => ((&vf, Some(&font)), 47.5),
+        };
+        let (cells, marks) = &screens[k];
+        assert_eq!(render_marked(cells, marks, 20, 2, fonts.0, fonts.1, px, out), 0);
+        fs::read(out).unwrap()
+    };
+    let alone: Vec<Vec<u8>> = (0..4).map(|k| draw(k, &format!("target/test/thread-alone-{k}.png"))).collect();
+    for k in 1..4 {
+        assert!(alone[k] != alone[0], "screen {k} draws as screen 0 does");
+    }
     std::thread::scope(|scope| {
-        for out in &outs {
-            let (font, cells) = (&font, &cells);
-            scope.spawn(move || assert_eq!(render(cells, 20, 2, font, 48.0, out), 0));
+        for t in 0..12 {
+            let (draw, alone) = (&draw, &alone);
+            scope.spawn(move || {
+                for round in 0..3 {
+                    let k = (t + round) % 4;
+                    let out = format!("target/test/thread-{t}.png");
+                    assert!(draw(k, &out) == alone[k], "thread {t} round {round}: screen {k} differs");
+                }
+            });
         }
     });
-    let first = fs::read(&outs[0]).unwrap();
-    for out in &outs[1..] {
-        assert!(fs::read(out).unwrap() == first, "{out} differs from {}", outs[0]);
+}
+
+/// A glyph allocation that fails (the cache's slots, a CFF outline's
+/// scratch, or a glyph's bitmap; src/glyphs.rs fails each in turn with fake
+/// fonts) fails the render with the vendored fonts too: draw.c returns 2,
+/// which main makes exit 2, and writes no PNG.
+#[test]
+fn a_failed_glyph_allocation_fails_the_render() {
+    use glyphs::faults::{Faults, FAULTS};
+    let (font, cjk) = (load(FONT), load(CJK_FONT));
+    let g = replay("ab\x1b[3mc\x1b[0m 中q\u{301}".as_bytes(), 8, 1, Lf::Index);
+    let path = "target/test/failed-glyph-allocation.png";
+    let mut fail = 0;
+    loop {
+        FAULTS.with(|f| f.set(Faults { calls: 0, fail_at: fail }));
+        let _ = fs::remove_file(path);
+        let code = render_marked(&g.cells, &g.marks, 8, 1, &cjk, Some(&font), 16.0, path);
+        let calls = FAULTS.with(|f| f.get().calls);
+        FAULTS.with(|f| f.set(Faults::default()));
+        if fail > calls {
+            break;
+        }
+        assert_eq!(code, if fail == 0 { 0 } else { 2 }, "allocation {fail} of {calls}");
+        assert_eq!(fs::metadata(path).is_ok(), fail == 0, "allocation {fail}");
+        fail += 1;
     }
+    // The cache, the scratch, and the bitmaps of a, b, c (italic), 中, q
+    // and the mark.
+    assert!(fail > 6, "only {} allocations", fail - 1);
 }
 
 /// Written for test.sh's CLI checks, which run after these tests.

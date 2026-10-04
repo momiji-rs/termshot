@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 ./build.sh
 scratch=$(mktemp -d)
-trap 'rm -f "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
+trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
 sanitize=''
 if [ "${SANITIZE:-0}" = 1 ]; then
     sanitize='-fsanitize=address,undefined -fno-omit-frame-pointer'
@@ -83,6 +83,43 @@ if [ "$n" -le 8 ]; then
     exit 1
 fi
 echo "ok, each of $((n - 1)) geometry allocation failures draws the same PNG"
+
+# Fail each glyph allocation in turn (src/glyphs.rs: the cache's slots, a
+# CFF outline's scratch, each glyph's bitmap), with a CFF font, a TrueType
+# fallback, italic and a mark: the run must exit 2, say so, and leave no
+# output. The fault build says which allocation failed; when none does,
+# all have been.
+printf 'ab \033[3mcd\033[0m \344\270\255q\314\201 \033[1m\342\224\200x\033[0m\r\n' > "$scratch/glyphs.pty"
+n=1
+while :; do
+    rm -f "$scratch/fault.png" "$scratch/fault.txt"
+    set +e
+    TERMSHOT_GLYPH_FAIL_AT=$n "$scratch/termshot-faults" --size 20x2 --text "$scratch/fault.txt" \
+        --font third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf \
+        --fallback-font third_party/jetbrains-mono/JetBrainsMono-Regular.ttf \
+        "$scratch/glyphs.pty" "$scratch/fault.png" 2>"$scratch/fault.err"
+    code=$?
+    set -e
+    if ! grep -q "glyph allocation $n " "$scratch/fault.err"; then
+        [ "$code" -eq 0 ] && [ -e "$scratch/fault.png" ] && break
+        echo "FAIL with no glyph allocation $n failing: exit $code" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
+        ! grep -q "glyph allocation failed" "$scratch/fault.err"; then
+        echo "FAIL glyph allocation $n: exit $code, want 2 with no output left" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    n=$((n + 1))
+done
+# The cache, the scratch, and the bitmaps of a, b, c, d, 中, q, the mark and x.
+if [ "$n" -le 9 ]; then
+    echo "FAIL only $((n - 1)) glyph allocations failed" >&2
+    exit 1
+fi
+echo "ok, each of $((n - 1)) glyph allocation failures exits 2 and leaves no output"
 
 # The image layers and the backdrop (src/composite.rs) allocate nothing; the
 # raster they paint is draw.c's one allocation for them. When it fails the

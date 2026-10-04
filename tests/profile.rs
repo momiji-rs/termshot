@@ -1,6 +1,6 @@
 //! TERMSHOT_PROFILE records. Renders a fixture with and without profiling,
-//! then runs the reentrancy unit test, which renders eight frames at once,
-//! and checks every record it prints.
+//! then runs the reentrancy unit test, which renders four screens on twelve
+//! threads at once, and checks every record it prints.
 //!
 //! Built and run by tests/run.sh from the repo root:
 //!   profile <unit-test-binary>
@@ -145,6 +145,11 @@ fn fallback_render() -> Result<(), String> {
     Ok(())
 }
 
+/// The reentrancy test draws four screens alone, then each again on twelve
+/// threads at once, three times over (src/draw_tests.rs). Every record of a
+/// concurrent render must match its screen's alone, as a render's counters
+/// are its own: the glyphs it rasterized and found cached, what it missed
+/// and drew from the fallback, and the PNG's size.
 fn concurrent_renders(unit: &str) -> Result<(), String> {
     let output = Command::new(unit)
         .args(["--exact", "draw_tests::draw_png_is_reentrant", "--nocapture"])
@@ -154,19 +159,28 @@ fn concurrent_renders(unit: &str) -> Result<(), String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     ensure(output.status.success() && stdout.contains("1 passed"), format!("{unit}: {}\n{stdout}", output.status))?;
     let found = records(&output.stderr)?;
-    ensure(found.len() == 8, format!("want 8 records, got {}", found.len()))?;
-    let png = format!("{OUT}/thread-0.png");
-    let png_len = fs::metadata(&png).map_err(|error| format!("{png}: {error}"))?.len() as f64;
-    for record in &found {
+    ensure(found.len() == 4 + 36, format!("want 40 records, got {}", found.len()))?;
+    let (alone, together) = found.split_at(4);
+    for (k, record) in alone.iter().enumerate() {
+        let png = format!("{OUT}/thread-alone-{k}.png");
+        let png_len = fs::metadata(&png).map_err(|error| format!("{png}: {error}"))?.len() as f64;
         ensure(get(record, "png_bytes")? == png_len, format!("png_bytes is not the size of {png}"))?;
+        for other in &alone[..k] {
+            ensure(get(other, "pixel_bytes")? != get(record, "pixel_bytes")?, "two screens of one size".into())?;
+        }
+    }
+    for record in together {
+        let size = get(record, "pixel_bytes")?;
+        let screen = alone.iter().find(|a| a.get("pixel_bytes") == Some(&size)).ok_or("a render of no screen")?;
         let parts = get(record, "png_filter_ms")? + get(record, "png_deflate_ms")? + get(record, "png_pack_ms")?;
         let encode = get(record, "png_encode_ms")?;
         ensure(parts <= encode + 0.00001, format!("png parts {parts} exceed png_encode_ms {encode}"))?;
-        for key in ["glyph_rasterizations", "glyph_cache_hits", "pixel_bytes"] {
-            ensure(get(record, key)? == get(&found[0], key)?, format!("{key} differs between threads"))?;
+        for key in ["png_bytes", "glyph_rasterizations", "glyph_cache_hits", "glyph_cache_evictions", "glyph_missing",
+                    "fallback_lookups", "fallback_rasterizations", "geometry_cache_hits"] {
+            ensure(get(record, key)? == get(screen, key)?, format!("{key} differs from the screen drawn alone"))?;
         }
     }
-    println!("8 concurrent renders produced consistent pixels and independent profile records");
+    println!("36 concurrent renders of 4 screens match each drawn alone, pixels and profile records");
     Ok(())
 }
 
