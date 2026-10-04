@@ -56,7 +56,7 @@ pub fn parse(settings: &str) -> Result<Vec<Setting>, String> {
                 return Err(format!("{setting:?} is not an axis setting; {example}"));
             };
             if tag.is_empty() || tag.len() > 4 || !tag.bytes().all(|b| b.is_ascii_graphic()) {
-                return Err(format!("{tag:?} is not an axis tag: tags are 1 to 4 ASCII letters, such as wght"));
+                return Err(format!("{tag:?} is not an axis tag: tags are 1 to 4 printable ASCII characters other than a space, such as wght"));
             }
             let mut padded = *b"    ";
             padded[..tag.len()].copy_from_slice(tag.as_bytes());

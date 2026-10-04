@@ -136,7 +136,7 @@ fn axis_settings_parse_strictly() {
         ("wght", r#""wght" is not an axis setting"#),
         ("wght=700,", r#""" is not an axis setting"#),
         ("=700", r#""" is not an axis tag"#),
-        ("weight=700", r#""weight" is not an axis tag: tags are 1 to 4 ASCII letters"#),
+        ("weight=700", r#""weight" is not an axis tag: tags are 1 to 4 printable ASCII characters other than a space"#),
         ("weigh=700", r#""weigh" is not an axis tag"#),
         ("w t=1", r#""w t" is not an axis tag"#),
         ("wgh\u{e9}=1", "is not an axis tag"),
