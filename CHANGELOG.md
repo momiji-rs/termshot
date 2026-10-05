@@ -219,6 +219,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   glyphs are blended: the blend is up to 16% faster on macOS and 23% on
   Linux (docs/performance.md). Running out of memory for a glyph
   still exits 2 ("glyph allocation failed").
+- The render driver is Rust (`src/render.rs`) instead of C, step 2d of #12:
+  the font setup call, the raster, the order of the passes, the errors and
+  exit codes, the PNG write and the `TERMSHOT_PROFILE` record, whose keys
+  and stage boundaries are unchanged. `src/draw.c` is gone; the C left is
+  `src/stb_glue.c`, stb_truetype's font setup and metrics and the PNG
+  encoder of stb_image_write. Every PNG, warning and exit code is the same:
+  `bench/c-vs-rust/run.sh full` renders every fixture and generated logs
+  with each kind of font at several sizes, `-v`, oversized images and
+  unwritable outputs through the CLI with the C driver and with the Rust,
+  and CI runs that on all three hosts. Renders take the same time on macOS
+  arm64 and Linux x86-64, within 2%, the moves of 1-2% in code the port did
+  not touch, the parser and the compressor (docs/performance.md). Running out of
+  memory for the raster or the PNG still exits 2.
 - After a kitty placement, the cursor moves as kitty moves it
   (`handle_put_command`, `screen_handle_graphics_command`): right by the
   placement's columns and down by its rows less one, so it ends beside the
