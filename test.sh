@@ -19,7 +19,10 @@ if [ "${SANITIZE:-}" = 1 ]; then
     rt="$(cc -print-resource-dir)/lib/darwin"
     export CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined"
     export RUSTC_LINK_ARGS="-C link-arg=-fsanitize=address,undefined -C link-arg=$rt/libclang_rt.asan_osx_dynamic.dylib -C link-arg=-Wl,-rpath,$rt"
-    export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1
+    # termshot handles a failed allocation (exit 2), so ASan returns null for
+    # one it can't make, as malloc would, instead of aborting; a unit test
+    # asks for a raster no memory can hold.
+    export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:allocator_may_return_null=1
 fi
 
 ./build.sh
