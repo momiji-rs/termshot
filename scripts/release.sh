@@ -31,7 +31,8 @@ mv termshot "$work/host"
 # panic=abort: a panic at an FFI boundary is caught (exit 2, or an outline
 # or advance recovered), and under panic=abort it would abort instead.
 build() {
-    RUSTFLAGS='-C lto=fat' ./build.sh
+    # A caller's RUSTFLAGS are kept, as in the host build.
+    RUSTFLAGS="-C lto=fat ${RUSTFLAGS:-}" ./build.sh
     mv termshot "$work/$1"
 }
 
