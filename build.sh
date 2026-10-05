@@ -1,6 +1,7 @@
 #!/bin/sh
 # Same command on macOS and Linux. Links libc and libm only.
-# CFLAGS and RUSTC_LINK_ARGS add flags (test.sh uses them for sanitizers).
+# CFLAGS and RUSTC_LINK_ARGS add flags (test.sh uses them for sanitizers),
+# and RUSTFLAGS adds rustc flags (scripts/release.sh's size profile).
 # CC picks the C compiler and TARGET a rustc target triple, for release builds
 # (.github/workflows/release.yml); both default to the host.
 set -eu
@@ -22,4 +23,4 @@ rm -f libtermshot_c.a
 ar rcs libtermshot_c.a stb_glue.o image.o
 # shellcheck disable=SC2086
 rustc --edition 2021 src/main.rs -o termshot -C opt-level=2 $target \
-  -L native="$PWD" -l static=termshot_c ${RUSTC_LINK_ARGS:-}
+  ${RUSTFLAGS:-} -L native="$PWD" -l static=termshot_c ${RUSTC_LINK_ARGS:-}
