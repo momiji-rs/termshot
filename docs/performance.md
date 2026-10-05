@@ -50,6 +50,17 @@ changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
 
+**Result files.** Since #83, `scripts/bench.py` writes a slim result by
+default. It keeps every per-run wall, CPU, profiled-wall and peak-RSS
+sample, the output hashes and sizes, and the metadata. Of the per-run
+`TERMSHOT_PROFILE` records, it keeps only the stages named with `--stage`
+(repeatable, e.g. `--stage parse_ms`). `--full-profile` keeps every stage
+and counter, which `bench-report.py`'s stage table needs, at about ten times
+the size. `bench.py --slim FULL.json --output SLIM.json [--stage KEY]`
+slims an existing full file. Commit the slim form, with only the stages a
+section cites. The files from earlier rounds are full; slimming them is a
+possible follow-up.
+
 ## Release size profile (2026-10-05, `66780fc`, #83)
 
 #83 asks which size options the release archives should be built with, now
@@ -500,8 +511,31 @@ Round 1: macOS [A](performance-2026-10-05-release-macos-a.json) and
 macOS [A](performance-2026-10-05-release-lto-macos-a.json) and
 [B](performance-2026-10-05-release-lto-macos-b.json), Linux
 [A](performance-2026-10-05-release-lto-linux-a.json) and
-[B](performance-2026-10-05-release-lto-linux-b.json). They hold every sample;
-none was discarded.
+[B](performance-2026-10-05-release-lto-linux-b.json).
+
+These files are slim (`bench.py --slim`): they keep every per-run wall, CPU,
+profiled-wall and peak-RSS sample, each binary's output hash and size, and
+all the metadata, but none of the per-run `TERMSHOT_PROFILE` records, which
+this section does not cite. That is 3,589,881 bytes for the ten files,
+against 30,343,230 for the full ones. Every summary, paired speedup and
+interval recomputes from the samples (`summary` and `paired_ratio` are
+deterministic), and every table row and number in this section was
+recomputed from the slim files and matched. The full files are not in the
+repository; ask for them by sha256:
+
+| file | full sha256 |
+| --- | --- |
+| `release-macos-a` | `664f7c585ec38ea62d5c7172ef09fe952006f695d182928d1dea69368620f779` |
+| `release-macos-b` | `f9ed47f582b532aaffbd829e9403ec6b66a861f05bccb9d6f40d0c305bfbc488` |
+| `release-linux-a` | `e8f6ba21d528d49155a8112902329ace6456a3bb71da7a6b488d7d2b16541b39` |
+| `release-linux-b` | `770e9a9939b6c9156aa006fbe39e8d0fffc8de6f1d4e0d6a587036eabe9a1792` |
+| `release-probe-linux` | `9c916fc9e325c4ee979a5ac9814fd6a682d6c3401b646de34ba4bd402b26f517` |
+| `release-lto-macos-a` | `643b27640fe11df0f1f4c09a2041ef11c2eb63848707f5460d44d4135cfd53f0` |
+| `release-lto-macos-b` | `5866a77a0c0e8c642b5b1774aff682c1a2fd9316e0187dc82665546f9d9fb182` |
+| `release-lto-linux-a` | `96df4b289929c0e24468dd0e5541f0058159b155bf046b4689a975676da1f787` |
+| `release-lto-linux-b` | `2593680fd81d95b9a7e4efb64745b9f0d70d80d45ff426bd8b0713935971e672` |
+
+No sample was discarded.
 
 ### Remaining limits
 
