@@ -213,7 +213,7 @@ fn offset_images_scroll_and_clip_as_wholes() {
     let s = g.images[0].slices[0];
     assert_eq!((s.y, s.top, s.bottom), (50, 50, 54));
     // At the bottom of the screen it runs on below, as in kitty, where a
-    // scroll can bring it into view; draw.c clips it at the canvas.
+    // scroll can bring it into view; the render clips it at the canvas.
     let mut log = b"\x1b[10;1H".to_vec();
     log.extend(put("Y=19,C=1"));
     let g = replay(&log);

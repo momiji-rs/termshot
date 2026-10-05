@@ -56,12 +56,19 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin $(sed -n 's/^glyphs_rev=//p' bench/c-vs-rust/run.sh)
           bench/c-vs-rust/run.sh glyphs 1
+      # The render driver in Rust makes what draw.c's did, PNGs, exit codes and
+      # stderr, through the CLI with each kind of font at several sizes, on
+      # each host (#12 step 2d).
+      - name: the render matches the C driver it was ported from
+        run: |
+          git fetch --no-tags --depth=1 origin $(sed -n 's/^driver_rev=//p' bench/c-vs-rust/run.sh)
+          bench/c-vs-rust/run.sh full 1
 
   sanitize:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: draw.c under ASan + UBSan
+      - name: the C (stb_glue.c) under ASan + UBSan
         run: SANITIZE=1 ./test.sh
 
   msrv:

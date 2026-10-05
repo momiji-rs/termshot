@@ -20,7 +20,7 @@
    alternating rounds, median per screen. TIME_ONLY=1 skips the pixels. */
 #include "draw.c"
 
-/* The Rust side, as src/draw.c now declares it; Canvas there is RustCanvas
+/* The Rust side, as tests/termshot.h declares it; Canvas there is RustCanvas
    here, since the snapshot has its own. */
 typedef struct {
     uint8_t *px, *filtered;

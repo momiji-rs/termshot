@@ -4,7 +4,7 @@
 //! and centering, mark placement, the slant, the lines, and a failure at
 //! each allocation in turn. That the real fonts draw the same pixels as the
 //! C did is bench/c-vs-rust/run.sh glyphs; tests/glyphs.c checks glyph
-//! placement with them through draw.c, and src/draw_tests.rs renders them.
+//! placement with them through the render, and src/draw_tests.rs renders them.
 
 use super::faults::{Faults, FAILED, FAULTS};
 use super::*;

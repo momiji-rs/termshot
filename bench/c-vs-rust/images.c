@@ -24,7 +24,7 @@
    alternating rounds, median per screen. TIME_ONLY=1 skips the pixels. */
 #include "draw.c"
 
-/* The Rust side, as src/draw.c now declares it. Canvas, Cell and ImageView
+/* The Rust side, as src/composite.rs defines it. Canvas, Cell and ImageView
    are the snapshot's, which have the same layout; Backdrop is RustBackdrop
    here, since the snapshot has its own. */
 typedef struct {

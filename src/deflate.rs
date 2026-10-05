@@ -1,4 +1,4 @@
-//! The zlib compressor for stb_image_write's PNG writer. draw.c defines
+//! The zlib compressor for stb_image_write's PNG writer. stb_glue.c defines
 //! STBIW_ZLIB_COMPRESS as termshot_zlib_compress, so stb's writer, which
 //! stays C, calls this through FFI. It is stb's own algorithm (public domain,
 //! Sean Barrett) and writes the same bytes; tests/deflate_diff.c checks that
@@ -24,7 +24,7 @@
 //! stb frees what this returns with free(), so the output buffer comes from
 //! libc's malloc and realloc, not from Rust's allocator. Every allocation is
 //! checked: when one fails, the call frees what it holds and returns NULL, as
-//! stb's own hash-table failure does, and draw.c reports that as running out
+//! stb's own hash-table failure does, and src/render.rs reports that as running out
 //! of memory (exit 2). Nothing here aborts on allocation failure.
 //!
 //! The C version was `src/deflate.c` until #12 step 1; docs/c-vs-rust.md has
@@ -80,7 +80,7 @@ pub unsafe extern "C" fn termshot_zlib_compress(data: *mut c_uchar, data_len: c_
     }
 }
 
-/// Stage timings of a call, for TERMSHOT_PROFILE (draw.c prints them as the
+/// Stage timings of a call, for TERMSHOT_PROFILE (src/render.rs prints them as the
 /// deflate_* fields).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -97,8 +97,8 @@ thread_local! {
     static PROFILE: Cell<(bool, DeflateTimings)> = Cell::new((false, DeflateTimings::default()));
 }
 
-/// Times this thread's calls from now on when `enabled` is nonzero (draw.c
-/// sets it from TERMSHOT_PROFILE), and clears the last timings.
+/// Times this thread's calls from now on when `enabled` is nonzero (the
+/// render sets it from TERMSHOT_PROFILE), and clears the last timings.
 #[no_mangle]
 pub extern "C" fn termshot_deflate_profiling(enabled: c_int) {
     PROFILE.with(|p| p.set((enabled != 0, DeflateTimings::default())));

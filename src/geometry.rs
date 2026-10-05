@@ -1,16 +1,16 @@
 //! Box drawing (U+2500..U+257F) and block elements (U+2580..U+259F), painted
 //! as geometry so the joints meet at any integer cell size, and Stamps, the
-//! cache that reuses rounded corners and diagonals. draw.c paints the rest of
-//! the image and calls this through FFI, once per cell or coarser, never per
-//! pixel: termshot_paint_geometry paints one cell's character, and
-//! termshot_fill_rect is the rectangle fill of draw.c's backgrounds,
-//! underlines and missing-glyph boxes.
+//! cache that reuses rounded corners and diagonals. src/glyphs.rs calls this
+//! once per cell or coarser, never per pixel: paint_cell paints one cell's
+//! character, and fill_rect is the rectangle fill of the underlines and
+//! missing-glyph boxes. The C harnesses call the same through FFI
+//! (termshot_paint_geometry, termshot_fill_rect).
 //!
 //! This was C in draw.c until #12 step 2a, and it paints the same pixels:
 //!
 //! - The float arithmetic is the C's, operation for operation, in f32 where
 //!   the C used float and in the same order. Rust never fuses a multiply and
-//!   an add unless asked to with mul_add, which is not used here; draw.c is
+//!   an add unless asked to with mul_add, which is not used here; draw.c was
 //!   built with -ffp-contract=off for the same reason.
 //! - floor, ceil and sqrt are exact IEEE operations, so f32::floor, ceil
 //!   and sqrt give what floorf, ceilf and sqrtf do. sin and cos are the
@@ -19,7 +19,7 @@
 //! - C's (int) of a float truncates, and is undefined out of int's range;
 //!   `as i32` truncates and saturates. Every float cast here is a pixel
 //!   coordinate, a stroke width or a step count, bounded by the canvas
-//!   (2^27 pixels at most, MAX_PIXELS in draw.c), so the two agree on every
+//!   (2^27 pixels at most, MAX_PIXELS in src/render.rs), so the two agree on every
 //!   input that occurs. Integer arithmetic is i32 like the C's int, and the
 //!   same bounds keep it from overflowing.
 //!
@@ -32,11 +32,11 @@ use std::ffi::c_int;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-/// Bytes per pixel: the canvas is RGB, as BPP in draw.c.
+/// Bytes per pixel: the canvas is RGB, as BPP in src/render.rs.
 const BPP: usize = 3;
 
-/// The image being painted, shared with draw.c (its Canvas). draw.c owns the
-/// pixels: `filtered` is the PNG's filtered scanlines, a filter byte then
+/// The image being painted, shared with the C harnesses (tests/termshot.h).
+/// src/render.rs owns the pixels: `filtered` is the PNG's filtered scanlines, a filter byte then
 /// `w` RGB pixels each, `stride` bytes apart, and `px` its first pixel, so
 /// the pixel (x, y) is at `px + y * stride + 3 * x`. Painting here writes
 /// through `px` only. `geometry` is this module's state for the render, from
@@ -53,7 +53,7 @@ pub struct Canvas {
     pub geometry: *mut Geometry,
 }
 
-/// As draw.c asserts of its Canvas.
+/// As tests/termshot.h asserts of its Canvas.
 const _: () = assert!(std::mem::size_of::<Canvas>() == 40);
 
 /// What geometry keeps over a render: the offsets of each arc's points from
@@ -63,7 +63,8 @@ pub struct Geometry {
     stamps: Option<Stamps>,
 }
 
-/// The cache's counters, for TERMSHOT_PROFILE; as GeometryStats in draw.c.
+/// The cache's counters, for TERMSHOT_PROFILE; as GeometryStats in
+/// tests/termshot.h.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct GeometryStats {
@@ -137,8 +138,8 @@ pub unsafe extern "C" fn termshot_geometry_stats(geometry: *const Geometry, out:
 /// Paints the box-drawing or block character `cp` of the cell at `col`,
 /// `row` (of `cell_w` x `cell_h` pixels), in (r, g, b), inside the cell.
 /// Bold strokes are a pixel thicker. Returns 1 when painted; 0 for other
-/// characters, which draw.c draws from the font; -1 if painting panicked
-/// (a bug), which draw.c treats as a failed render.
+/// characters, which are drawn from the font; -1 if painting panicked (a
+/// bug), which fails the render.
 ///
 /// # Safety
 /// `cv` must point to a Canvas whose `px` holds its `h` rows of `w` pixels,
@@ -220,7 +221,7 @@ pub(crate) fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
 
 /// Nonzero if painting panicked (a bug) on this thread since
 /// termshot_geometry_new began the render: termshot_fill_rect has no result
-/// of its own, so draw.c asks once, before it writes the PNG, and fails the
+/// of its own, so the render asks once, before it writes the PNG, and fails the
 /// render (exit 2) rather than write an incomplete image.
 #[no_mangle]
 pub extern "C" fn termshot_paint_failed() -> c_int {

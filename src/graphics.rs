@@ -2,7 +2,7 @@
 //! images, stored (a=t) and placed (a=p, a=T), at the cursor, relative to
 //! another placement, or in Unicode placeholder cells, and deleted as kitty
 //! does. All coordinates are pixels computed from the same font metrics as
-//! draw.c.
+//! the render (stb_glue.c's draw_cell_size).
 
 use std::rc::Rc;
 
@@ -840,7 +840,7 @@ impl Graphics {
         self.images[index].atime = self.tick();
         if visible {
             // Not clipped at the screen's bottom: the screen may scroll the
-            // rest into view, as kitty's does, and draw.c clips at the canvas.
+            // rest into view, as kitty's does, and the render clips at the canvas.
             let (ch, y) = (i64::from(cell.1), row as i64 * i64::from(cell.1) + y);
             let mut slices = Vec::new();
             // A relative placement is laid out from its parent by relayout.

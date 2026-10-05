@@ -4,8 +4,8 @@
 //! unless stb's reads stay inside it. The few reads still bounded only by
 //! 16-bit values (cmap format 4 and 0 lookups, hmtx for a glyph id the cmap
 //! made up) are covered by zero padding after the data. A CFF font's
-//! outlines never reach stb: src/cff.rs runs its charstrings, and draw.c gets
-//! the outlines through a Face.
+//! outlines never reach stb: src/cff.rs runs its charstrings, and the render
+//! gets the outlines through a Face.
 
 use crate::cff;
 use crate::variations;
@@ -202,7 +202,7 @@ fn pad(mut font: Font) -> Font {
     font
 }
 
-/// draw.c's Face: a checked font, and for a CFF font the outlines stb must
+/// stb_glue.c's Face: a checked font, and for a CFF font the outlines stb must
 /// not read itself.
 #[repr(C)]
 pub struct Face<'a> {
@@ -213,9 +213,18 @@ pub struct Face<'a> {
     font: PhantomData<&'a Font>,
 }
 
-// As draw.c and src/glyphs.rs (its Face, which reads the outline callback)
-// assert.
+// As stb_glue.c and src/glyphs.rs (its Face, which reads the outline
+// callback) assert.
 const _: () = assert!(std::mem::size_of::<Face>() == 32);
+
+impl Face<'_> {
+    /// The face as the render (src/render.rs) and stb_glue.c take it.
+    pub fn ffi(&self) -> &crate::glyphs::Face {
+        // SAFETY: both are repr(C) with the same fields in the same order
+        // (PhantomData has no size), as their size assertions say.
+        unsafe { &*(self as *const Face as *const crate::glyphs::Face) }
+    }
+}
 
 impl Font {
     /// Call `f` with the face to draw with. The CFF table, checked at load,

@@ -1,6 +1,11 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[render-driver-in-Rust round](#the-render-driver-in-rust-2026-10-04-cc29aed-12-step-2d)
+(2026-10-04, `cc29aed`, #12 step 2d) moved the driver (the raster, the
+passes, the PNG write and the profile record) from `src/draw.c` to
+`src/render.rs`, leaving `src/stb_glue.c`, and remeasured every case against
+main `48192f6` on the same two machines. The
 [glyph-painting-in-Rust round](#glyph-painting-in-rust-2026-10-04-ab924ca-12-step-2c)
 (2026-10-04, `ab924ca`, #12 step 2c) moved the text (glyphs, the glyph
 cache, marks, lines) from `src/draw.c` to `src/glyphs.rs` and remeasured
@@ -41,6 +46,178 @@ Figures published elsewhere (the repository's About description, issue #1, the
 changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
+
+## The render driver in Rust (2026-10-04, `cc29aed`, #12 step 2d)
+
+#12 step 2d moves the driver from `src/draw.c` to `src/render.rs`: the font
+setup call, the raster, the order of the passes, the errors, the PNG write
+and this profile record. What is left of the C is `src/stb_glue.c`, stb's
+font setup, metrics and PNG encoder behind three calls. The bar was no
+regression beyond noise. Every output is the same: `bench/c-vs-rust/run.sh
+full` renders 4,057 PNGs on macOS and 4,266 on Linux (with the system Noto
+CJK) with the CLI built at main `48192f6` and with the branch, the same
+bytes, exit codes and stderr; all 48 cases below gave one output per case
+on both binaries and batches (`--verify-identical`); and every PNG
+`./test.sh` writes hashes the same as on main on both hosts.
+
+### Result
+
+| | macOS arm64 (M2 Max) | Linux x86-64 (Ryzen 7 8745HS) |
+| --- | --- | --- |
+| end to end, 48 cases, paired wall speedup (main/branch) | 0.985-1.015 (A), 0.986-1.022 (B) | 0.960-1.077 (A), 0.933-1.055 (B) |
+| slower with confidence in both batches | `mixed-unicode` 0.992 / 0.991 and `text-mixed-unicode` 0.990 / 0.991: the parser's time, see below | none |
+| faster with confidence in both batches | none | `text-mixed-unicode` 1.020 / 1.011 |
+| `output_write_ms`, the PNG write | 2-17% lower (one `write` instead of stdio's buffered ones) | within 0.01 ms |
+
+The cases asked about, wall median (ms) of main and the branch from each
+batch, the paired speedup (main/branch, above 1 is faster) with its 95%
+bootstrap interval, and three stages the driver owns, batch A medians:
+`allocate_ms` (the raster), `background_ms` (the backdrop, which first
+touches the raster's pages) and `output_write_ms` (the PNG write):
+
+macOS arm64:
+
+| case | wall A | wall B | speedup A | speedup B | allocate_ms | background_ms | output_write_ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `reply-sent` | 8.72 / 8.78 | 8.70 / 8.68 | 0.996 [0.981, 1.006] | 1.000 [0.986, 1.018] | 0.004 → 0.004 | 0.845 → 0.865 | 0.176 → 0.146 |
+| `reply-24px` | 5.61 / 5.62 | 5.64 / 5.65 | 0.993 [0.976, 1.011] | 0.995 [0.986, 1.015] | 0.004 → 0.004 | 0.210 → 0.211 | 0.111 → 0.102 |
+| `reply-128px` | 27.91 / 27.91 | 28.25 / 28.08 | 1.000 [0.995, 1.004] | 1.007 [1.000, 1.022] | 0.004 → 0.004 | 5.249 → 5.230 | 0.401 → 0.356 |
+| `glyph-overflow` | 16.23 / 16.11 | 16.19 / 16.26 | 1.002 [0.997, 1.012] | 1.001 [0.994, 1.010] | 0.004 → 0.004 | 0.216 → 0.218 | 0.175 → 0.160 |
+| `cjk-subset` | 9.54 / 9.43 | 9.42 / 9.45 | 1.002 [0.989, 1.026] | 1.002 [0.991, 1.013] | 0.004 → 0.004 | 0.215 → 0.214 | 0.161 → 0.149 |
+| `cjk-cff-primary` | 9.01 / 9.12 | 9.12 / 9.22 | 0.994 [0.972, 1.007] | 0.992 [0.984, 0.999] | 0.004 → 0.004 | 0.243 → 0.243 | 0.147 → 0.129 |
+| `cjk-overflow-full` | 26.53 / 26.51 | 26.26 / 26.47 | 1.002 [0.992, 1.005] | 0.993 [0.986, 0.999] | 0.003 → 0.004 | 0.215 → 0.220 | 0.232 → 0.226 |
+| `large` | 36.53 / 36.43 | 36.65 / 36.53 | 1.003 [0.998, 1.008] | 1.004 [0.994, 1.010] | 0.004 → 0.004 | 5.349 → 5.423 | 0.509 → 0.482 |
+| `large-color` | 144.09 / 143.17 | 144.05 / 143.48 | 1.001 [0.996, 1.009] | 1.002 [0.998, 1.007] | 0.004 → 0.004 | 5.272 → 5.323 | 2.015 → 1.925 |
+| `geometry-all` | 88.32 / 88.50 | 90.05 / 89.87 | 1.000 [0.997, 1.003] | 1.006 [1.000, 1.008] | 0.004 → 0.004 | 5.301 → 5.278 | 0.467 → 0.435 |
+| `image-over` | 19.84 / 19.95 | 20.02 / 19.91 | 1.000 [0.990, 1.009] | 1.009 [0.996, 1.014] | 0.004 → 0.004 | 0.854 → 0.877 | 0.330 → 0.323 |
+| `mixed-unicode` | 29.11 / 29.31 | 29.18 / 29.51 | 0.992 [0.989, 0.997] | 0.991 [0.985, 0.995] | 0.001 → 0.037 | 0.087 → 0.065 | 0.155 → 0.141 |
+| `text-mixed-unicode` | 26.26 / 26.53 | 26.39 / 26.55 | 0.990 [0.984, 0.993] | 0.991 [0.988, 0.995] | — | — | — |
+
+Linux x86-64:
+
+| case | wall A | wall B | speedup A | speedup B | allocate_ms | background_ms | output_write_ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `reply-sent` | 6.96 / 6.99 | 7.31 / 7.31 | 0.985 [0.964, 1.006] | 0.988 [0.953, 1.043] | 0.007 → 0.006 | 0.789 → 0.767 | 0.095 → 0.093 |
+| `reply-24px` | 4.64 / 4.70 | 5.06 / 4.83 | 1.013 [0.962, 1.081] | 1.041 [0.960, 1.080] | 0.007 → 0.006 | 0.800 → 0.811 | 0.050 → 0.045 |
+| `reply-128px` | 23.09 / 23.25 | 22.84 / 23.40 | 0.994 [0.984, 1.003] | 0.995 [0.966, 1.013] | 0.007 → 0.007 | 4.080 → 4.096 | 0.378 → 0.369 |
+| `glyph-overflow` | 15.43 / 15.42 | 15.63 / 15.50 | 1.016 [0.993, 1.036] | 1.003 [0.983, 1.031] | 0.008 → 0.008 | 0.831 → 0.832 | 0.164 → 0.155 |
+| `cjk-subset` | 9.33 / 9.22 | 9.49 / 9.59 | 0.998 [0.973, 1.015] | 0.978 [0.961, 1.003] | 0.006 → 0.006 | 0.864 → 0.895 | 0.125 → 0.122 |
+| `cjk-cff-primary` | 8.00 / 8.42 | 8.57 / 8.49 | 0.983 [0.945, 1.006] | 1.003 [0.953, 1.034] | 0.007 → 0.007 | 0.418 → 0.403 | 0.123 → 0.121 |
+| `cjk-overflow-full` | 26.80 / 26.45 | 28.11 / 27.73 | 1.004 [0.988, 1.016] | 1.025 [0.983, 1.054] | 0.009 → 0.009 | 0.805 → 0.806 | 0.200 → 0.198 |
+| `large` | 30.69 / 30.69 | 31.73 / 31.45 | 0.987 [0.981, 1.008] | 0.998 [0.986, 1.035] | 0.005 → 0.005 | 3.641 → 3.699 | 0.568 → 0.569 |
+| `large-color` | 132.56 / 133.64 | 129.88 / 130.36 | 0.992 [0.985, 1.003] | 1.006 [0.984, 1.013] | 0.005 → 0.005 | 4.065 → 4.179 | 2.626 → 2.617 |
+| `geometry-all` | 78.84 / 79.83 | 78.24 / 79.08 | 0.982 [0.971, 1.001] | 0.991 [0.979, 0.997] | 0.005 → 0.006 | 3.891 → 3.978 | 0.684 → 0.675 |
+| `image-over` | 18.49 / 18.58 | 19.09 / 18.93 | 0.986 [0.969, 1.016] | 0.996 [0.988, 1.032] | 0.006 → 0.006 | 0.868 → 0.818 | 0.283 → 0.277 |
+| `mixed-unicode` | 27.76 / 27.23 | 27.83 / 27.29 | 1.009 [0.996, 1.033] | 1.025 [1.005, 1.039] | 0.005 → 0.050 | 0.826 → 0.778 | 0.088 → 0.082 |
+| `text-mixed-unicode` | 23.64 / 23.06 | 23.06 / 22.80 | 1.020 [1.009, 1.037] | 1.011 [1.003, 1.028] | — | — | — |
+
+`bench-report.py` on the raw files gives every case. What moved, and why:
+
+1. **The parser-bound cases on macOS** (`mixed-unicode`, and
+   `text-mixed-unicode`, which writes no PNG and never reaches the render)
+   read 0.8-1.0% slower in both batches: `parse_ms` 21.32 → 21.66 and
+   21.19 → 21.56 ms. The parser is unchanged, and on Linux the same two
+   cases read 1.1-2.5% faster (`parse_ms` 20.90 → 20.38), so this is where
+   the binary's code landed, not the driver.
+2. **The zeroed raster**: `allocate_ms` of `mixed-unicode` went 0.001 →
+   0.037 ms (macOS) and 0.005 → 0.050 (Linux), and its `background_ms` down
+   0.087 → 0.065 and 0.826 → 0.778. Its raster is small enough that calloc
+   reuses heap memory the parser freed and clears it, where malloc did not;
+   the backdrop then finds the pages mapped. A large raster is fresh pages,
+   which calloc does not clear: every other case's `allocate_ms` is the
+   same. The cost buys a raster whose every byte is initialized before
+   Rust reads it.
+3. **`geometry-all` on Linux**, 0.982 [0.971, 1.001] and 0.991 [0.979,
+   0.997], and 0.986 [0.981, 0.995] in an 80-round recheck (raw JSON below):
+   `deflate_match_emit_ms` 63.14 → 63.85 ms there. `src/deflate.rs` is
+   unchanged, but rustc emits `termshot_zlib_compress` differently in the
+   new crate (6,125 → 6,271 bytes on x86-64, the same calls, a 16-byte
+   larger frame; 6,040 → 6,008 on arm64, which shows no change). Calling the
+   deflate profile functions through `extern` declarations, as draw.c did,
+   left it at 6,271 bytes. It is about 1% of the compressor on the largest
+   PNGs on this host (`large-color` 0.992 / 1.006 overall).
+4. **The PNG write** is one `write` of the whole PNG (`File::write_all`)
+   instead of stdio's buffered `fwrite`: `output_write_ms` 2-17% lower on
+   macOS (`reply-128px` 0.401 → 0.356), unchanged on Linux.
+
+### What was measured
+
+- **main**: `48192f6` (main after #80), built with `./build.sh`.
+- **branch**: `cc29aed`, the step 2d commits on top of it. Later commits
+  change documentation and tests, and read the result of the PNG file's
+  `close`, which `File`'s drop made anyway: the same calls.
+
+Method as in the
+[step 2c round](#glyph-painting-in-rust-2026-10-04-ab924ca-12-step-2c):
+`bench.py` with every suite, 5 warmups and 40 shuffled rounds of plain and
+profiled runs per case and binary, 5 peak-RSS runs, seeds 17 (batch A) and
+29 (batch B), `--verify-identical`, and the full CJK collection (sha256
+`b76b0433…`, a copy on macOS) on both hosts. On Linux both binaries were
+built from fresh clones of the pushed branch and of main in a temp dir,
+since removed. The Linux recheck is `geometry-all`, `rounded-panes`,
+`large-color` and `reply-sent`, 80 rounds, seed 41.
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, macOS 26.6.2 | `starship`, kernel 7.2.5-3-omarchy, glibc 2.44, governor `performance` |
+| compilers | rustc 1.98.1, Apple clang 21.0.0 (clang-2100.3.34.2) | rustc 1.98.1, GCC 16.2.1 20260810 |
+| main / branch sha256 | `0b2a3291cd63…` / `fcbdafafe4e2…` | `abb45f3f1599…` / `3400376148c5…` |
+| load average (1 min), start → end | A 5.97 → 3.74, B 3.74 → 5.85 | A 1.09 → 2.65, B 2.65 → 1.50, recheck 2.80 → 5.63 |
+
+Raw results: macOS [batch A](performance-2026-10-04-driver-rust-macos-a.json)
+and [batch B](performance-2026-10-04-driver-rust-macos-b.json); Linux
+[batch A](performance-2026-10-04-driver-rust-linux-a.json),
+[batch B](performance-2026-10-04-driver-rust-linux-b.json) and the
+[recheck](performance-2026-10-04-driver-rust-linux-recheck.json). They hold
+every sample; none was discarded.
+
+### Validation
+
+- `./test.sh`, `SANITIZE=1 ./test.sh`, `SANITIZE=1 ./tests/run.sh` and
+  `./test.sh` under rustc 1.70.0 on macOS; `./test.sh`, `./tests/run.sh` and
+  `bench/c-vs-rust/run.sh full` on starship (x86-64, GCC 16).
+- `bench/c-vs-rust/run.sh full`: the glyphs matrix (every fixture,
+  `tests/vt/real/`, `examples/`, `tests/perf/` and the generated logs, with
+  12 font setups at `--px` 9, 24, 46, 47.5 and 128), plus `-v` and an image
+  over 2^27 pixels with three font setups per log, and two unwritable
+  outputs: 4,057 renders on macOS and 4,266 on Linux (a 13th setup with the
+  system Noto CJK), PNG, exit code and stderr byte for byte.
+- Every PNG `./test.sh` writes hashes the same as main's on both hosts: all
+  412 names both write; the branch writes one more, the new
+  `failed-render-allocation.png`.
+- `tests/run.sh` fails the render's two allocations (the raster, stb's PNG
+  buffer) in turn through the CLI, and the raster under `ulimit -v` on
+  Linux: exit 2, the same message, no output. The first version of the
+  raster dropped a `Raster` holding null when calloc failed, which is
+  undefined, and the Linux check segfaulted; fixed in `cc29aed` with a unit
+  test.
+- `draw_png_is_reentrant` (four screens on twelve threads) and
+  `tests/profile.rs`, which checks each concurrent profile record against
+  its screen's, pass.
+
+### Remaining limits
+
+- One batch pair per host, and the Linux recheck for one case.
+- The musl release builds were not run locally; `release.yml` builds and
+  checks them on this pull request.
+
+### Reproduce
+
+```sh
+git worktree add /tmp/termshot-main 48192f6 && (cd /tmp/termshot-main && ./build.sh)
+./build.sh && cp termshot /tmp/termshot-branch
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
+for batch in a:17 b:29; do
+  python3 scripts/bench.py \
+    --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
+    --describe main=48192f6 --describe branch=cc29aed \
+    --reference main --runs 40 --warmups 5 --memory-runs 5 \
+    --verify-identical --cjk-font "$cjk" \
+    --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
+done
+python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+CJK_FONT="$cjk" bench/c-vs-rust/run.sh full 1
+```
 
 ## Glyph painting in Rust (2026-10-04, `ab924ca`, #12 step 2c)
 

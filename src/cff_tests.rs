@@ -1,7 +1,7 @@
 //! CFF tests: cff.rs against stock stb_truetype on every glyph of a real CID
 //! font, hand-made hostile fonts (each with one defect that made stb hang,
 //! assert or read out of bounds; see docs/cff-rust-vs-c.md), and a mutation
-//! fuzz through draw.c. CFF2, which stb can't read, has hand-made fonts of
+//! fuzz through the render. CFF2, which stb can't read, has hand-made fonts of
 //! its own, and a real variable font checked against HarfBuzz's outlines and
 //! fuzzed the same way. Paths are relative to the repo root.
 

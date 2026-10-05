@@ -1,4 +1,4 @@
-//! A cell of the final screen, as draw.c, src/composite.rs and src/glyphs.rs
+//! A cell of the final screen, as src/render.rs, src/composite.rs and src/glyphs.rs
 //! read it, the bits of its attributes, and the combining marks a cell keeps
 //! beside it. Its own module so that the C harnesses' static library
 //! (tests/rust_lib.rs) can share it with the painters.
@@ -14,7 +14,7 @@ pub struct Cell {
     pub bg: u8,
     pub bb: u8,
     /// BOLD, UNDERLINE, DOUBLE_UNDERLINE, STRIKE, ITALIC, WIDE, TAIL and
-    /// OPAQUE bits, as ATTR_* in draw.c.
+    /// OPAQUE bits, as ATTR_* in tests/termshot.h, for the C harnesses.
     pub attrs: u8,
 }
 
@@ -50,8 +50,8 @@ pub type Marks = [u32; MAX_MARKS];
 
 /// One cell's combining marks, for --text, --json and src/glyphs.rs: the
 /// cell's index in screen order (row * cols + col) and its marks. A list of
-/// them is sorted by cell, one per cell. As CellMarks in src/draw.c, which
-/// passes the list on.
+/// them is sorted by cell, one per cell. src/render.rs passes the list
+/// on.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CellMarks {
