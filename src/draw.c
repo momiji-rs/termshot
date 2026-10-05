@@ -503,8 +503,10 @@ int draw_png_images(const Cell *cells, const CellMarks *marks, size_t mark_count
         fprintf(stderr, "advance %d units scale %.5f cell %dx%d baseline %d image %lldx%lld\n",
                 adv, scale, cell_w, cell_h, baseline, width, height);
     }
-    /* stb_image_write sizes its buffers with int: (width*BPP+1)*height must not wrap. */
-    if (width * height > MAX_PIXELS) {
+    /* stb_image_write sizes its buffers with int: (width*BPP+1)*height must not wrap.
+       Each side first, as a cell can be 2^28 pixels each way (to_px) and
+       their product overflow; a side past it is past it in pixels too. */
+    if (width > MAX_PIXELS || height > MAX_PIXELS || width * height > MAX_PIXELS) {
         fprintf(stderr, "termshot: image %lldx%lld is over %d pixels; lower px, cols or rows\n",
                 width, height, MAX_PIXELS);
         return 2;

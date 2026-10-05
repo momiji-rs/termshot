@@ -298,22 +298,24 @@ fn damaged_metrics_tables_are_refused_at_an_instance() {
 /// A cell past the largest image is saturated, not overflowed, and the
 /// render refuses it (exit 2): at ax0=1, MVAR takes the height to 1 unit,
 /// so the scale to 24, and the line gap or every advance far past 2^28
-/// pixels. A line gap as far below 0 adds nothing, as any below 0.
+/// pixels, or both, on a grid whose pixels overflow 64 bits. A line gap
+/// as far below 0 adds nothing, as any below 0.
 #[test]
 fn metrics_past_16_bits_size_the_cell_without_overflow() {
     fs::create_dir_all("target/test").unwrap();
     let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None, axes: None }).unwrap();
-    let cells = crate::parse(b"MM", 2, 1);
-    let size = |name: &str, data: Vec<u8>, axes: &str| {
+    let size_on = |name: &str, data: Vec<u8>, axes: &str, cols: usize, rows: usize| {
+        let cells = crate::parse(b"MM", cols, rows);
         let path = format!("target/test/metrics-cell-{name}.otf");
         fs::write(&path, data).unwrap();
         let font = font::load(&font::Spec { path: path.clone(), face: None, axes: Some(axes.into()) }).unwrap();
         let (mut w, mut h) = (0, 0);
         let sized = font.with_metrics(|face| unsafe { draw_face_cell_size(face, 24.0, &mut w, &mut h) });
         assert_eq!(sized, Ok(1), "{name}");
-        let code = render_with(&cells, 2, 1, &font, Some(&mono), 24.0, &path.replace(".otf", ".png"));
+        let code = render_with(&cells, cols, rows, &font, Some(&mono), 24.0, &path.replace(".otf", ".png"));
         (w, h, code)
     };
+    let size = |name: &str, data: Vec<u8>, axes: &str| size_on(name, data, axes, 2, 1);
     let wide = one_maps_to(&crafted(), b'M' as u16, 13);
     let (w, _, code) = size("wide-m", wide.clone(), "ax0=1,ax1=1");
     let font = font::load(&font::Spec { path: "target/test/metrics-cell-wide-m.otf".into(), face: None, axes: Some("ax0=1,ax1=1".into()) });
@@ -333,6 +335,10 @@ fn metrics_past_16_bits_size_the_cell_without_overflow() {
     let all = hvar(&store(2, &regions(), &[data(&[0], 0x8001, &[&[100_000_000]])]), &index_map(0, 1, 1, &[(0, 0)]));
     let (w, h, code) = size("advance-up", two_axes(&[(b"HVAR", &all), (b"MVAR", &short(0))]), "ax0=1");
     assert_eq!((w, code), (1 << 28, 2), "an advance past 2^28 pixels, cell {w}x{h}");
+    // Both ways, on a grid whose pixels (2^64 and more) overflow 64 bits.
+    let both = two_axes(&[(b"HVAR", &all), (b"MVAR", &short(2_000_000_000))]);
+    let (w, h, code) = size_on("both-up", both, "ax0=1", 16, 16);
+    assert!(w == 1 << 28 && h > 1 << 28 && code == 2, "a cell past 2^28 pixels each way: {w}x{h}, exit {code}");
 }
 
 /// The crafted font has HarfBuzz's metrics at each instance that
