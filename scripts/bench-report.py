@@ -88,8 +88,18 @@ def main():
                 cells.append(f"{s['median']:.3f} [{s['bootstrap_95pct'][0]:.3f}, {s['bootstrap_95pct'][1]:.3f}]")
             print(f'| {name} | ' + ' | '.join(cells) + ' |')
         print()
-    if not all(first['cases'][name][a.label].get('profile_samples', {}).get('total_ms') for name in first['cases']):
-        print('Top stages: not in this report (slim; bench.py --full-profile keeps them)')
+    if 'slim' in first:
+        # A slim report keeps only the stages named with --stage; the stage
+        # table and counters would read the dropped ones as zero.
+        kept = first['slim']['profile_stages_kept']
+        print('Top stages and counters: not in this report (slim; bench.py --full-profile keeps them)')
+        if kept:
+            print()
+            print(f'| case | ' + ' | '.join(f'{k} ({a.label}, batch 1 median)' for k in kept) + ' |')
+            print('| --- |' + ' ---: |' * len(kept))
+            for name, case in first['cases'].items():
+                prof = case[a.label]['profile']
+                print(f'| {name} | ' + ' | '.join(fmt(prof[k]['median'], 3) if k in prof else '-' for k in kept) + ' |')
         print()
     else:
         stages(first, a.label)
