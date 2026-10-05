@@ -228,10 +228,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bench/c-vs-rust/run.sh full` renders every fixture and generated logs
   with each kind of font at several sizes, `-v`, oversized images and
   unwritable outputs through the CLI with the C driver and with the Rust,
-  and CI runs that on all three hosts. Renders take the same time on macOS
-  arm64 and Linux x86-64, within 2%, the moves of 1-2% in code the port did
-  not touch, the parser and the compressor (docs/performance.md). Running out of
-  memory for the raster or the PNG still exits 2.
+  and CI runs that on all three hosts. On macOS arm64 and Linux x86-64 no
+  case is slower with confidence because of the driver; the repeatable
+  moves, of 1-2%, are in code the port did not touch: the parser on macOS
+  (slower) and on Linux (faster), and how rustc emits the unchanged
+  compressor on Linux (docs/performance.md). Running out of memory for the
+  raster or the PNG still exits 2.
 - After a kitty placement, the cursor moves as kitty moves it
   (`handle_put_command`, `screen_handle_graphics_command`): right by the
   placement's columns and down by its rows less one, so it ends beside the
