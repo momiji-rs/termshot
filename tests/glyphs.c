@@ -1,4 +1,4 @@
-/* Placement checks for draw.c's glyphs, at several sizes:
+/* Placement checks for the glyphs, at several sizes:
 
    - a character the font lacks is an outlined box inset in its cell, and a
      wide one's box spans both cells;
@@ -16,7 +16,10 @@
      and italic in one render are each drawn their own way, and italic leaves
      box drawing and the box for a missing character upright.
 
-   Renders with draw_png, decodes with tests/png_read.c. Built and run by
+   Renders with draw_png (src/render.rs, through the static library
+   tests/rust_lib.sh builds with --cfg termshot_render), decodes with
+   tests/png_read.c. It includes src/stb_glue.c, which the render calls,
+   for stb's own functions too. Built and run by
    test.sh with the vendored font:
 
        ./glyphs <font.ttf> <scratch.png> [<hollow.ttf> <reference.png>]
@@ -25,7 +28,8 @@
    from it with font.ttf as the fallback, in the CLI's default colours and
    size, to reference.png. test.sh checks that the CLI's --fallback-font
    renders that same PNG. */
-#include "../src/draw.c"
+#include "../src/stb_glue.c"
+#include "termshot.h"
 
 unsigned char *png_read_rgba(const char *path, int *width, int *height);
 void png_read_free(unsigned char *pixels);

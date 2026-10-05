@@ -1,7 +1,8 @@
 //! Replay a PTY log into a cell grid and paint it.
-//! No crates. The rasterizer is draw.c (vendored stb, no window, no system font),
-//! with box drawing and blocks in geometry.rs, the images in composite.rs, the
-//! text in glyphs.rs and the compressor in deflate.rs.
+//! No crates. The render is render.rs, with box drawing and blocks in
+//! geometry.rs, the images in composite.rs, the text in glyphs.rs and the
+//! compressor in deflate.rs; vendored stb (no window, no system font) does the
+//! font tables, the rasterizing and the PNG, through stb_glue.c.
 
 use std::env;
 use std::fs;
@@ -22,6 +23,7 @@ mod geometry;
 mod glyphs;
 mod graphics;
 mod metrics;
+mod render;
 #[rustfmt::skip]
 mod rowcolumn_diacritics;
 mod sixel;
@@ -147,15 +149,6 @@ impl Cell {
 
 extern "C" {
     fn draw_face_cell_size(font: *const font::Face, px: f64, w: *mut i32, h: *mut i32) -> i32;
-    // font is a face of a font that passed font::check; fallback is another,
-    // for the characters the first lacks, or null. empty, if not null, is
-    // filled in as EmptyGlyphs says.
-    // marks lists the cells' combining marks, sorted by cell (CellMarks).
-    fn draw_png_images(cells: *const Cell, marks: *const CellMarks, mark_count: usize, cols: i32, rows: i32,
-        font: *const font::Face,
-        fallback: *const font::Face, font_size: f64, out_path: *const std::ffi::c_char,
-        verbose: i32, images: *const graphics::ImageView, count: usize,
-        empty: *mut EmptyGlyphs) -> i32;
 }
 
 /// What a bare LF does.
@@ -1579,7 +1572,7 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
 /// kitty draws a Unicode placeholder (U+10EEEE) as a blank cell, its
 /// diacritics too: the image it shows comes from graphics::Graphics::finish.
 /// Make each one a space, with its colours and attributes, and drop its
-/// marks, for draw.c. --text and --json keep them.
+/// marks, for the render. --text and --json keep them.
 fn blank_placeholders(cells: &mut [Cell], mut marks: Vec<CellMarks>) -> Vec<CellMarks> {
     marks.retain(|m| cells[m.cell as usize].ch != graphics::PLACEHOLDER);
     for cell in cells.iter_mut().filter(|cell| cell.ch == graphics::PLACEHOLDER) {
@@ -1588,7 +1581,7 @@ fn blank_placeholders(cells: &mut [Cell], mut marks: Vec<CellMarks>) -> Vec<Cell
     marks
 }
 
-/// Mark every background that is not the default colour OPAQUE, for draw.c.
+/// Mark every background that is not the default colour OPAQUE, for the render.
 /// kitty compares the colour's value, so a background set to the default
 /// colour explicitly is a default one.
 fn opaque_backgrounds(cells: &mut [Cell]) {
@@ -2459,27 +2452,25 @@ fn main() -> ExitCode {
             }
             opaque_backgrounds(&mut cells);
             let out = if out == "-" { "/dev/stdout" } else { out };
-            let Ok(out) = std::ffi::CString::new(out) else {
+            if out.contains('\0') {
                 return cleanup(2, "output path contains a nul byte".into());
-            };
+            }
             // with_face parses a CFF table again; that is face_ms.
             let face_started = Instant::now();
             let mut draw = |font: &font::Face, fallback: Option<&font::Face>| unsafe {
                 face_ms = face_started.elapsed().as_secs_f64() * 1000.0;
-                draw_png_images(
-                    cells.as_ptr(),
-                    marks.as_ptr(),
-                    marks.len(),
-                    cols as i32,
-                    rows as i32,
-                    font,
-                    fallback.map_or(std::ptr::null(), |f| f as *const font::Face),
+                render::draw_png_images(
+                    &cells,
+                    &marks,
+                    cols,
+                    rows,
+                    font.ffi(),
+                    fallback.map(font::Face::ffi),
                     options.px,
-                    out.as_ptr(),
-                    i32::from(options.verbose),
-                    image_views.as_ptr(),
-                    image_views.len(),
-                    &mut empty,
+                    out,
+                    options.verbose,
+                    &image_views,
+                    Some(&mut empty),
                 )
             };
             let drawn = font.with_face(|font| match &fallback {
@@ -2515,7 +2506,7 @@ fn main() -> ExitCode {
             started.elapsed().as_secs_f64() * 1000.0
         );
     }
-    // draw.c has already said what went wrong.
+    // The render has already said what went wrong.
     match code {
         0 => ExitCode::SUCCESS,
         code => {

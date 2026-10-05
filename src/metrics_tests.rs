@@ -1,5 +1,5 @@
 //! Tests for src/metrics.rs: HVAR's advances and MVAR's vertical metrics,
-//! as draw.c gets them, against HarfBuzz's.
+//! as stb_glue.c gets them, against HarfBuzz's.
 
 use crate::cff_tests::craft;
 use crate::draw_tests::{self, render_with};

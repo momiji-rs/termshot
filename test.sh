@@ -4,7 +4,7 @@
 #
 #   ./test.sh                    run everything
 #   ./test.sh --update-goldens   rewrite tests/goldens.txt from this build
-#   SANITIZE=1 ./test.sh         build draw.c with ASan + UBSan (macOS clang)
+#   SANITIZE=1 ./test.sh         build the C (stb_glue.c) with ASan + UBSan (macOS clang)
 set -eu
 cd "$(dirname "$0")"
 mode=check
@@ -19,7 +19,10 @@ if [ "${SANITIZE:-}" = 1 ]; then
     rt="$(cc -print-resource-dir)/lib/darwin"
     export CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined"
     export RUSTC_LINK_ARGS="-C link-arg=-fsanitize=address,undefined -C link-arg=$rt/libclang_rt.asan_osx_dynamic.dylib -C link-arg=-Wl,-rpath,$rt"
-    export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1
+    # termshot handles a failed allocation (exit 2), so ASan returns null for
+    # one it can't make, as malloc would, instead of aborting; a unit test
+    # asks for a raster no memory can hold.
+    export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:allocator_may_return_null=1
 fi
 
 ./build.sh
@@ -31,9 +34,9 @@ rustc --edition 2021 --test src/main.rs -o "$out/unit" \
 "$out/unit" -q
 
 echo "== deflate matches stb"
-# The C harnesses link the Rust that draw.c calls (src/deflate.rs and
-# src/geometry.rs) as a static library, with the system libraries rustc
-# names for it (tests/rust_lib.sh).
+# The C harnesses link the Rust they call (src/deflate.rs, src/geometry.rs
+# and, built with --cfg termshot_render, the render) as a static library,
+# with the system libraries rustc names for it (tests/rust_lib.sh).
 rust="$out/libtermshot_rust.a"
 rust_libs=$(tests/rust_lib.sh "$rust")
 # shellcheck disable=SC2086
@@ -60,9 +63,12 @@ echo "== glyph placement"
 cc -c tests/png_read.c -o "$out/png_read.o" -O2 -I third_party/stb
 rm -f "$out/libpng_read.a"
 ar rcs "$out/libpng_read.a" "$out/png_read.o"
+# The render, which calls the stb glue tests/glyphs.c includes.
+render="$out/libtermshot_render.a"
+render_libs=$(tests/rust_lib.sh "$render" --cfg termshot_render)
 # shellcheck disable=SC2086
-cc tests/glyphs.c "$out/png_read.o" "$rust" -o "$out/glyphs" -O2 -Wno-deprecated-declarations \
-    -I src -I third_party/stb -lm ${CFLAGS:-} $rust_libs
+cc tests/glyphs.c "$out/png_read.o" "$render" -o "$out/glyphs" -O2 -ffp-contract=off -Wno-deprecated-declarations \
+    -I src -I third_party/stb -lm ${CFLAGS:-} $render_libs
 "$out/glyphs" "$font" "$out/glyphs.png" "$out/hollow-A.ttf" "$out/fb-reference.png"
 
 echo "== cli"

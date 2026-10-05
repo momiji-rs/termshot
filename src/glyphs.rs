@@ -1,15 +1,15 @@
 //! The text: each cell's glyph from the font or else the fallback, cached,
 //! slanted for italic and doubled for bold, the box of a character neither
 //! font has, combining marks over their cells, and underlines and
-//! strike-through, painted into draw.c's canvas over the backdrop
+//! strike-through, painted into the render's canvas over the backdrop
 //! (src/composite.rs), which it paints a row of cells ahead of the text.
-//! draw.c calls this once per render (termshot_paint_text); box drawing and
-//! blocks go to src/geometry.rs from here.
+//! src/render.rs calls this once per render (termshot_paint_text); box
+//! drawing and blocks go to src/geometry.rs from here.
 //!
-//! stb_truetype stays C (#12 step 3), so draw.c hands this module the stb
+//! stb_truetype stays C (#12 step 3), so src/stb_glue.c hands this module the stb
 //! functions it may call, in TextFonts: the cmap and metrics lookups and the
 //! rasterizer for any face, and, for a TrueType face only, the four that
-//! read glyph outlines (GlyphFace). draw.c leaves those null on a CFF or
+//! read glyph outlines (GlyphFace). stb_glue.c leaves those null on a CFF or
 //! CFF2 face, whose charstrings stb must never run: its outlines come from
 //! src/cff.rs through the Face's callback, as they did to the C, and go to
 //! stbtt_Rasterize. Source::new refuses a face that has both or neither, and
@@ -22,7 +22,7 @@
 //!
 //! - The float arithmetic is the C's, operation for operation, in f32 where
 //!   the C used float and in the same order, with no mul_add (Rust never
-//!   fuses; draw.c is built with -ffp-contract=off).
+//!   fuses; stb_glue.c is built with -ffp-contract=off, as draw.c was).
 //! - The C's floorf, ceilf and lroundf are exact (lroundf only on values
 //!   clamped to i16 first), so f32::floor, ceil and round give what they
 //!   do, however a compiler emits them. No rounded libm function is called:
@@ -47,7 +47,7 @@ use crate::cff::{Vertex, CUBIC};
 use crate::composite::{self, blend_pixel, Backdrop};
 use crate::geometry::{self, guarded, Canvas, Rgb};
 
-/// Bytes per pixel: the canvas is RGB, as BPP in draw.c.
+/// Bytes per pixel: the canvas is RGB, as BPP in src/render.rs.
 const BPP: usize = 3;
 
 /// stb_truetype's quadratic curve vertex (STBTT_vcurve); cff.rs makes none.
@@ -66,7 +66,7 @@ const ITALIC_SLANT: f32 = 0.21256;
 /// The cells drawn as a box because a font maps the character to an empty
 /// glyph, as color bitmap fonts do: how many, and the first one, its
 /// character and which fonts did (EMPTY_IN_*). main.rs says so; painting
-/// stays quiet. As EmptyGlyphs in src/draw.c.
+/// stays quiet.
 #[repr(C)]
 #[derive(Default)]
 pub struct EmptyGlyphs {
@@ -95,11 +95,11 @@ pub type OutlineFn = unsafe extern "C" fn(*const c_void, c_int, *mut Vertex, c_i
 /// (src/font.rs).
 pub type AdvanceFn = unsafe extern "C" fn(*const c_void, c_int, c_int) -> c_int;
 
-/// draw.c's Face, as src/font.rs makes it: a checked font, for a CFF face
+/// stb_glue.c's Face, as src/font.rs makes it: a checked font, for a CFF face
 /// the callback that gives its outlines, and at an instance of a variable
 /// face the one that gives its advances (HVAR) and its vertical metrics
-/// (MVAR). Read here only for the two callbacks; draw.c scales each face
-/// by its vertical metrics.
+/// (MVAR). Read here only for the two callbacks; stb_glue.c scales each
+/// face by its vertical metrics.
 #[repr(C)]
 pub struct Face {
     pub ttf: *const u8,
@@ -136,7 +136,7 @@ pub type RasterizeFn = unsafe extern "C" fn(*mut StbBitmap, f32, *mut Vertex, c_
                                             c_int, *mut c_void);
 pub type FreeShapeFn = unsafe extern "C" fn(*const FontInfo, *mut Vertex);
 
-/// One face to draw from, as draw.c fills it in (GlyphFace there): stb's
+/// One face to draw from, as stb_glue.c fills it in (GlyphFace there): stb's
 /// font, the Face it was made from, and its scale. The four stb functions
 /// that read glyph outlines are set for a TrueType face and null for a CFF
 /// or CFF2 one. `info` is null for no face (no fallback).
@@ -153,7 +153,7 @@ pub struct GlyphFace {
 
 const _: () = assert!(std::mem::size_of::<GlyphFace>() == 56);
 
-/// The fonts of a render, as draw.c's TextFonts: the font and the fallback
+/// The fonts of a render, as stb_glue.c's TextFonts: the font and the fallback
 /// (whose `info` is null when there is none), the stb functions any face
 /// may be asked, the italic pivot (the middle of the body, in pixels above
 /// the baseline, for both fonts) and the baseline in the cell.
@@ -171,7 +171,7 @@ pub struct TextFonts {
 
 const _: () = assert!(std::mem::size_of::<TextFonts>() == 152);
 
-/// What the text cost and did, for TERMSHOT_PROFILE, as draw.c's TextStats:
+/// What the text cost and did, for TERMSHOT_PROFILE (src/render.rs):
 /// the time spent painting the backdrop, box drawing, finding glyphs and
 /// blending them (with the boxes of missing ones), and the cache's counts.
 #[repr(C)]
@@ -193,7 +193,7 @@ pub struct TextStats {
 
 const _: () = assert!(std::mem::size_of::<TextStats>() == 80);
 
-/// termshot_paint_text's results other than 0, as TEXT_* in draw.c.
+/// termshot_paint_text's results other than 0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Failure {
     /// A glyph allocation failed.
@@ -209,7 +209,7 @@ pub enum Failure {
 /// `mark_count` long and sorted by cell, or null), the backdrop under them
 /// as they reach each row, all of it by the end, then underlines and
 /// strike-through. `empty`, if not null, counts the cells drawn as a box
-/// for an empty glyph, as EmptyGlyphs says; draw.c has cleared it.
+/// for an empty glyph, as EmptyGlyphs says; the render has cleared it.
 /// `profiling` times the stages into `stats`, which gets the counts too.
 ///
 /// Returns 0; 1 when a glyph allocation failed, 2 if box drawing panicked
@@ -219,7 +219,7 @@ pub enum Failure {
 /// # Safety
 /// `cv` and `bd` as for termshot_backdrop_through (src/composite.rs), and
 /// nothing else may use them during the call; `marks` null or `mark_count`
-/// entries; `fonts` filled in by draw.c, its faces live and their stb
+/// entries; `fonts` filled in by stb_glue.c, its faces live and their stb
 /// functions stb's; `stats` writable.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
@@ -238,14 +238,14 @@ pub unsafe extern "C" fn termshot_paint_text(cv: *const Canvas, bd: *mut Backdro
     }
 }
 
-/// The time in ms while profiling, from the clock draw.c's now_ms reads
-/// (CLOCK_MONOTONIC), so the stages it times here and the spans draw.c
-/// subtracts them from agree; 0 when not, which reads no clock. A clock
+/// The time in ms while profiling, from the clock stb_glue.c's now_ms reads
+/// (CLOCK_MONOTONIC), so the stages it times here, the spans src/render.rs
+/// subtracts them from and the PNG writer's marks agree; 0 when not, which reads no clock. A clock
 /// read per stage per cell is the profile's own cost, and the same as the
 /// C's: with std's Instant, the profiled foreground of a screen of cache
 /// hits read up to 15% over the C's (cjk-dense 0.34 → 0.39 ms) for the
 /// same wall time.
-struct Clock(bool);
+pub(crate) struct Clock(pub(crate) bool);
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn monotonic_ms() -> f64 {
@@ -274,7 +274,7 @@ fn monotonic_ms() -> f64 {
 }
 
 impl Clock {
-    fn now(&self) -> f64 {
+    pub(crate) fn now(&self) -> f64 {
         if self.0 {
             monotonic_ms()
         } else {
@@ -294,7 +294,7 @@ struct Ground<'a> {
 
 impl Ground<'_> {
     /// Paint the backdrop of every row of cells above pixel row y. A failure
-    /// is reported by termshot_paint_failed, which draw.c asks before it
+    /// is reported by termshot_paint_failed, which the render asks before it
     /// writes the PNG.
     ///
     /// # Safety
@@ -611,7 +611,7 @@ struct Source {
 }
 
 impl Source {
-    /// The face draw.c filled in; None for none. Panics (failing the render)
+    /// The face stb_glue.c filled in; None for none. Panics (failing the render)
     /// for a CFF face given stb's outline readers, or a TrueType one
     /// without them.
     ///

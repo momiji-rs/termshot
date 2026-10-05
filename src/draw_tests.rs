@@ -1,9 +1,9 @@
-//! Font checking and draw.c tests. These call draw_png_images through FFI;
-//! run them with SANITIZE=1 ./test.sh to have ASan watch stb_truetype.
+//! Font checking and render tests. These call render::draw_png_images, which
+//! calls stb through src/stb_glue.c; run them with SANITIZE=1 ./test.sh to
+//! have ASan watch stb_truetype.
 //! Paths are relative to the repo root, where test.sh runs.
 
 use super::*;
-use std::ffi::CString;
 
 pub(crate) const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 
@@ -35,15 +35,13 @@ pub(crate) fn render_marked(
     px: f64,
     out: &str,
 ) -> i32 {
-    let out = CString::new(out).unwrap();
-    let draw = |font: &font::Face, fallback: *const font::Face| unsafe {
-        let none = std::ptr::null();
-        draw_png_images(cells.as_ptr(), marks.as_ptr(), marks.len(), cols as i32, rows as i32, font, fallback, px,
-            out.as_ptr(), 0, none, 0, std::ptr::null_mut())
+    let draw = |font: &font::Face, fallback: Option<&font::Face>| unsafe {
+        render::draw_png_images(cells, marks, cols, rows, font.ffi(), fallback.map(font::Face::ffi), px, out, false,
+            &[], None)
     };
     font.with_face(|font| match fallback {
-        None => draw(font, std::ptr::null()),
-        Some(fallback) => fallback.with_face(|fallback| draw(font, fallback)).unwrap(),
+        None => draw(font, None),
+        Some(fallback) => fallback.with_face(|fallback| draw(font, Some(fallback))).unwrap(),
     })
     .unwrap()
 }
@@ -115,19 +113,18 @@ fn a_font_without_glyf_is_refused_for_what_it_has_instead() {
 }
 
 /// Render with the vendored font, as both fonts when fallback is set, and
-/// return what draw.c reports about empty glyphs.
+/// return what the render reports about empty glyphs.
 fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
     let font = font::prepare(fs::read(FONT).unwrap()).unwrap();
     let cells = parse(text.as_bytes(), cols, 2);
-    let out = CString::new("target/test/empty-glyphs.png").unwrap();
-    // Not zeroed: draw.c must clear it.
+    // Not zeroed: the render must clear it.
     let mut empty = EmptyGlyphs { cp: 1, fonts: 9, col: 9, row: 9, cells: 9 };
     let code = font
         .with_face(|face| {
-            let fallback = if fallback { face as *const font::Face } else { std::ptr::null() };
+            let fallback = fallback.then_some(face.ffi());
             unsafe {
-                draw_png_images(cells.as_ptr(), std::ptr::null(), 0, cols as i32, 2, face, fallback, 16.0, out.as_ptr(), 0,
-                    std::ptr::null(), 0, &mut empty)
+                render::draw_png_images(&cells, &[], cols, 2, face.ffi(), fallback, 16.0,
+                    "target/test/empty-glyphs.png", false, &[], Some(&mut empty))
             }
         })
         .unwrap();
@@ -136,14 +133,13 @@ fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
 }
 
 /// A bug in the image layers (here a crop outside its image, which
-/// termshot never makes) fails the render, in every layer: draw.c returns 2,
+/// termshot never makes) fails the render, in every layer: the render returns 2,
 /// which main makes exit 2, and writes no PNG.
 #[test]
 fn a_failed_image_layer_fails_the_render() {
     let font = font::prepare(fs::read(FONT).unwrap()).unwrap();
     let cells = parse(b"ab\r\ncd", 4, 2);
     let path = "target/test/failed-image-layer.png";
-    let out = CString::new(path).unwrap();
     let pixels = [255u8; 16];
     for z in [i32::MIN, -1, 0] {
         for src_y in [0, 2] {
@@ -153,8 +149,8 @@ fn a_failed_image_layer_fails_the_render() {
             let _ = fs::remove_file(path);
             let code = font
                 .with_face(|face| unsafe {
-                    draw_png_images(cells.as_ptr(), std::ptr::null(), 0, 4, 2, face, std::ptr::null(), 16.0,
-                        out.as_ptr(), 0, &view, 1, std::ptr::null_mut())
+                    render::draw_png_images(&cells, &[], 4, 2, face.ffi(), None, 16.0, path, false,
+                        std::slice::from_ref(&view), None)
                 })
                 .unwrap();
             assert_eq!(code, if src_y == 0 { 0 } else { 2 }, "z {z}, src_y {src_y}");
@@ -325,7 +321,7 @@ fn draw_png_is_reentrant() {
 
 /// A glyph allocation that fails (the cache's slots, a CFF outline's
 /// scratch, or a glyph's bitmap; src/glyphs.rs fails each in turn with fake
-/// fonts) fails the render with the vendored fonts too: draw.c returns 2,
+/// fonts) fails the render with the vendored fonts too: the render returns 2,
 /// which main makes exit 2, and writes no PNG.
 #[test]
 fn a_failed_glyph_allocation_fails_the_render() {
@@ -350,6 +346,39 @@ fn a_failed_glyph_allocation_fails_the_render() {
     // The cache, the scratch, and the bitmaps of a, b, c (italic), 中, q
     // and the mark.
     assert!(fail > 6, "only {} allocations", fail - 1);
+}
+
+/// The render's own allocations, the canvas and the PNG's buffer (which
+/// stb_image_write asks for through termshot_png_alloc), fail it each in
+/// turn: the render returns 2, which main makes exit 2, and writes no PNG.
+/// tests/run.sh fails them through the CLI too.
+#[test]
+fn a_failed_render_allocation_fails_the_render() {
+    use render::faults::{Faults, FAILED, FAULTS};
+    use render::Site;
+    let font = load(FONT);
+    let cells = parse("ab ─╮".as_bytes(), 6, 1);
+    let path = "target/test/failed-render-allocation.png";
+    let mut sites = Vec::new();
+    let mut fail = 0;
+    loop {
+        FAULTS.with(|f| f.set(Faults { calls: 0, fail_at: fail }));
+        FAILED.with(|f| f.set(None));
+        let _ = fs::remove_file(path);
+        let code = render(&cells, 6, 1, &font, 16.0, path);
+        let calls = FAULTS.with(|f| f.get().calls);
+        FAULTS.with(|f| f.set(Faults::default()));
+        if fail > calls {
+            break;
+        }
+        assert_eq!(code, if fail == 0 { 0 } else { 2 }, "allocation {fail} of {calls}");
+        assert_eq!(fs::metadata(path).is_ok(), fail == 0, "allocation {fail}");
+        if fail > 0 {
+            sites.push(FAILED.with(|f| f.get()).unwrap());
+        }
+        fail += 1;
+    }
+    assert_eq!(sites, [Site::Canvas, Site::Png]);
 }
 
 /// Written for test.sh's CLI checks, which run after these tests.

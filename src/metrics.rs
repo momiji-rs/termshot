@@ -227,7 +227,7 @@ impl<'a> Advances<'a> {
 /// hhea's ascender, descender and line gap at the instance at `coords`,
 /// varied by MVAR's hasc, hdsc and hlgp. As HarfBuzz does, the ascender
 /// is made positive and the descender negative, then each is rounded to
-/// whole units, each saturated at i32's bounds (draw.c's cell arithmetic
+/// whole units, each saturated at i32's bounds (stb_glue.c's cell arithmetic
 /// takes any). Refused if of no height.
 pub fn vertical(hhea: &[u8], mvar: &[u8], coords: &[i32]) -> Result<[i32; 3], String> {
     let major = u16_at(mvar, 0)?;
@@ -256,7 +256,7 @@ pub fn vertical(hhea: &[u8], mvar: &[u8], coords: &[i32]) -> Result<[i32; 3], St
     let ascender = round((hhea_at(4)? + delta(b"hasc")).abs()) as i32;
     let descender = round(-(hhea_at(6)? + delta(b"hdsc")).abs()) as i32;
     let line_gap = round(hhea_at(8)? + delta(b"hlgp")) as i32;
-    // As font::check refuses it in hhea: draw.c scales a face by its height.
+    // As font::check refuses it in hhea: stb_glue.c scales a face by its height.
     if ascender <= descender {
         return Err(format!("at this instance the ascender {ascender} is not above the descender {descender}"));
     }

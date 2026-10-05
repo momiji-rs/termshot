@@ -28,7 +28,7 @@ fn apc(keys: &str) -> String {
 }
 
 /// What is drawn: (image id, z, x, y, w, h, [left, top, right, bottom]),
-/// with the clip as draw.c applies it.
+/// with the clip as the render applies it.
 type Drawn = (u32, i32, i64, i64, i64, i64, [i64; 4]);
 
 fn drawn(grid: &crate::Grid) -> Vec<Drawn> {

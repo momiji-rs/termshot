@@ -292,9 +292,9 @@ HarfBuzz is the reference throughout, so each step is done as `hb_font_set_varia
   termshot lays text out horizontally only. Out of range indexes read as no delta, as in
   HarfBuzz (fonts rely on it: an identity advance map past the store's items); everything else
   HarfBuzz would ignore a table for, from a format to unsorted MVAR records, refuses the font
-  at an instance with a reason. draw.c (for the cell's width) and src/glyphs.rs (to place each
+  at an instance with a reason. stb_glue.c (for the cell's width) and src/glyphs.rs (to place each
   glyph) get the advances through a callback in the Face. As in HarfBuzz, an advance or extent
-  may vary past the 16 bits hmtx and hhea hold: draw.c works out the cell from any `int`
+  may vary past the 16 bits hmtx and hhea hold: stb_glue.c works out the cell from any `int`
   (its differences in 64 bits, each length in pixels saturated at 2^28, past the largest image).
   Checked against HarfBuzz 14.4.0 (`tools/cff2-metrics.py`, through libharfbuzz) on starship:
   every advance and the extents of the subset at four instances and of a crafted font at

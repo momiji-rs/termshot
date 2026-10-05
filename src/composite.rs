@@ -1,11 +1,11 @@
 //! The image layers: kitty and Sixel images and the underline and bar
-//! cursors (solid ImageViews), composited into draw.c's canvas, and the
+//! cursors (solid ImageViews), composited into the render's canvas, and the
 //! backdrop under the text, which is the cell backgrounds and the images
 //! under the text, painted a row of cells ahead of the glyphs over them.
-//! draw.c calls this through FFI, per backdrop row or per layer, never per
-//! pixel: termshot_backdrop_init and termshot_backdrop_through paint the
-//! backdrop, and termshot_paint_images a layer of images (the one over the
-//! text).
+//! src/render.rs and src/glyphs.rs call this per backdrop row or per layer,
+//! never per pixel: termshot_backdrop_init and termshot_backdrop_through
+//! paint the backdrop, and termshot_paint_images a layer of images (the one
+//! over the text).
 //!
 //! This was C in draw.c (`paint_image_rows`, `backdrop_through`) until #12
 //! step 2b, and it paints the same pixels:
@@ -25,20 +25,19 @@
 //!   termshot never asks for, the Rust panics instead; the panic is caught,
 //!   and the render fails with exit 2 (termshot_paint_failed).
 //!
-//! Memory: nothing here allocates. The backdrop lives in draw.c's frame.
+//! Memory: nothing here allocates. The backdrop lives in the render's frame.
 
 use std::ffi::c_int;
 
 use crate::cell::{Cell, OPAQUE};
 use crate::geometry::{guarded, Canvas};
 
-/// Bytes per pixel: the canvas is RGB, as BPP in draw.c.
+/// Bytes per pixel: the canvas is RGB, as BPP in src/render.rs.
 const BPP: usize = 3;
 
-/// A placement's visible part, or a solid rectangle, for draw.c and this
-/// module; borrowed only for the duration of draw_png_images, the pixels
-/// remaining Rust-owned. As ImageView in src/draw.c, which asserts the
-/// same size.
+/// A placement's visible part, or a solid rectangle, for the render;
+/// borrowed only for the duration of render::draw_png_images, the pixels
+/// remaining the placement's.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ImageView {
@@ -69,7 +68,7 @@ pub struct ImageView {
 }
 
 // 104 bytes on the 64-bit targets termshot supports: a pointer, two u32, eight
-// i64, five 32-bit fields and 4 bytes of tail padding. Checked in src/draw.c too.
+// i64, five 32-bit fields and 4 bytes of tail padding.
 const _: () = assert!(std::mem::size_of::<ImageView>() == 104);
 
 impl ImageView {
@@ -98,7 +97,7 @@ impl ImageView {
     }
 }
 
-/// kitty's three image layers, by z-index, as in draw.c: under the cell
+/// kitty's three image layers, by z-index: under the cell
 /// backgrounds that are not the default (z below INT32_MIN / 2), over every
 /// background but under the text (other negative z), and over the text.
 pub const LAYER_BELOW: c_int = 0;
@@ -136,8 +135,7 @@ pub const BACKDROP_ROW_IMAGES: usize = 64;
 /// painted first. With `whole`, every row is painted at the first call, then
 /// each layer of images over the whole canvas, as before rows.
 ///
-/// Shared with draw.c (its Backdrop), which keeps it in its frame:
-/// termshot_backdrop_init fills it in, and src/glyphs.rs paints it as the
+/// src/render.rs keeps it in its frame: termshot_backdrop_init fills it in, and src/glyphs.rs paints it as the
 /// text reaches each row (through), timing it for TERMSHOT_PROFILE.
 #[repr(C)]
 pub struct Backdrop {
@@ -155,7 +153,7 @@ pub struct Backdrop {
     pub whole: i32,
 }
 
-/// As draw.c asserts of its Backdrop.
+/// As bench/c-vs-rust/images.c declares it (RustBackdrop).
 const _: () = assert!(std::mem::size_of::<Backdrop>() == 48);
 
 /// The images, or none for a null pointer.
@@ -173,7 +171,7 @@ unsafe fn views<'a>(images: *const ImageView, count: usize) -> &'a [ImageView] {
 /// Fills in the backdrop of a render: cols x rows cells of cell_w x cell_h
 /// pixels, which is the canvas, and the images. It paints every row at the
 /// first call (`whole`) for a raster under `row_bytes`, which stays in the
-/// last-level cache anyway (draw.c's BACKDROP_ROW_BYTES: rows gained
+/// last-level cache anyway (render::BACKDROP_ROW_BYTES: rows gained
 /// nothing at 2200x1440, 9.5 MB, on either host measured, and on macOS they
 /// cost 1-2% there, but were up to 8% faster on Linux at 61-67 MB;
 /// docs/performance.md), and with more than BACKDROP_ROW_IMAGES images
@@ -228,7 +226,7 @@ pub(crate) fn due(bd: &Backdrop, y: i64) -> bool {
 }
 
 /// Paints the images of `layer` (LAYER_*), in their order, over the whole
-/// canvas: draw.c's call for the images over the text. 0, or -1 if painting
+/// canvas: the render's call for the images over the text. 0, or -1 if painting
 /// panicked (a bug), which termshot_paint_failed then reports.
 ///
 /// # Safety
