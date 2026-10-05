@@ -53,7 +53,8 @@ at the end.
 ## Release size profile (2026-10-05, `66780fc`, #83)
 
 #83 asks which size options the release archives should be built with, now
-that the code is Rust but for `src/stb_glue.c` and vendored stb. Release
+that the code is Rust but for `src/stb_glue.c`, `src/image.c` (the PNG
+decoder's wrapper) and vendored stb. Release
 archives were `build.sh`'s flags (C `-O2`, Rust `-C opt-level=2`) and then
 `strip`. `scripts/release.sh` now adds `-C lto=fat` (through `build.sh`'s new
 `RUSTFLAGS`) and nothing else: the binary is 5.0-8.7% smaller and the archive
@@ -83,7 +84,8 @@ that saves more is slower on more cases, or breaks the exit-code contract
 ### Sizes
 
 Each candidate was built the way `scripts/release.sh` builds, from `66780fc`
-(main): the C objects with `CFLAGS` added, then rustc with flags added. For
+(main): the C objects (`src/stb_glue.c` and `src/image.c`) with `CFLAGS`
+added, so `-Os` applies to both, then rustc with flags added. For
 macOS, both slices with `MACOSX_DEPLOYMENT_TARGET=11.0`, `lipo`, then
 `strip -x`. For Linux, `musl-gcc` and the `*-unknown-linux-musl` target, then
 `strip`. The archive is release.sh's `tar -czf` of the binary, licenses,
