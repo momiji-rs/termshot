@@ -465,7 +465,7 @@ second group's successful renders into failures, and it would also make a
 panic outside the FFI paths exit 2 instead of 101. Keeping the contract would
 take a hook that knows which boundary it is under. It would also take a
 second build configuration with panic injection, to prove every path end to
-end. That is not worth 1.8-4.4% of the binary, so unwinding stays.
+end. That is not worth 1.8-5.2% of the binary (the 5.2% is one 64 KiB step on aarch64), so unwinding stays.
 
 ### Output
 
