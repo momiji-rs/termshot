@@ -85,9 +85,11 @@ no longer reach the binary's C; the harnesses declare them in
   under `ulimit -v` that `tests/run.sh` caught on Linux. The fault build
   fails the render's two allocations in turn (`TERMSHOT_RENDER_FAIL_AT`):
   the raster, and stb's PNG buffer; both exit 2 with no output.
-- **The PNG write**: `File::create` and `write_all` instead of `fopen`,
-  `fwrite` and `fclose`, the same flags (`O_WRONLY | O_CREAT | O_TRUNC`,
-  mode 0666) and the same message for any failure, `/dev/full` included.
+- **The PNG write**: `File::create`, `write_all` and a checked `close` (a
+  `File`'s drop ignores close's result, where a filesystem may report a
+  write it deferred) instead of `fopen`, `fwrite` and a checked `fclose`,
+  the same flags (`O_WRONLY | O_CREAT | O_TRUNC`, mode 0666) and the same
+  message for any failure, `/dev/full` included.
 - **The profile**: the same keys, in the same order, on the same stage
   boundaries, read from the same clock (`CLOCK_MONOTONIC`, through
   `glyphs::Clock` in Rust and `now_ms` for stb's marks). The one move is

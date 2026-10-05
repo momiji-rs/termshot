@@ -144,7 +144,8 @@ Linux x86-64:
 
 - **main**: `48192f6` (main after #80), built with `./build.sh`.
 - **branch**: `cc29aed`, the step 2d commits on top of it. Later commits
-  change only documentation and tests.
+  change documentation and tests, and read the result of the PNG file's
+  `close`, which `File`'s drop made anyway: the same calls.
 
 Method as in the
 [step 2c round](#glyph-painting-in-rust-2026-10-04-ab924ca-12-step-2c):

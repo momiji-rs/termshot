@@ -32,6 +32,7 @@
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::ffi::{c_char, c_int, c_void};
 use std::io::Write;
+use std::os::unix::io::IntoRawFd;
 use std::mem::MaybeUninit;
 
 use crate::cell::{Cell, CellMarks};
@@ -104,6 +105,7 @@ extern "C" {
                            len: *mut c_int) -> *mut u8;
     fn malloc(size: usize) -> *mut c_void;
     fn free(p: *mut c_void);
+    fn close(fd: c_int) -> c_int;
 }
 
 /// STBIW_MALLOC in stb_glue.c: malloc, but where the fault tests fail it.
@@ -281,6 +283,9 @@ pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, 
         let bytes = std::slice::from_raw_parts(png, png_len.max(0) as usize);
         if let Ok(mut out) = std::fs::File::create(out_path) {
             ok = out.write_all(bytes).is_ok();
+            // File's drop ignores close's result, where a filesystem may
+            // report a write it deferred; the C's fclose was checked too.
+            ok &= close(out.into_raw_fd()) == 0;
         }
         free(png as *mut c_void);
     }
