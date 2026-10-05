@@ -98,7 +98,7 @@ rendered `reply-sent` and `draft-ready` byte for byte like the host build
 
 | candidate | flags on top of build.sh | macOS universal | Linux x86_64 musl | Linux aarch64 musl |
 | --- | --- | ---: | ---: | ---: |
-| `base` | (release flags now) | 2,478,016 (+0.0%) / 1,229,023 (+0.0%) | 1,409,872 (+0.0%) / 724,589 (+0.0%) | 1,315,160 (+0.0%) / 690,678 (+0.0%) |
+| `base` | none: the release flags before #83 | 2,478,016 (+0.0%) / 1,229,023 (+0.0%) | 1,409,872 (+0.0%) / 724,589 (+0.0%) | 1,315,160 (+0.0%) / 690,678 (+0.0%) |
 | `base-rstrip` | strip=symbols, no external strip | 2,404,000 (-3.0%) / 1,212,089 (-1.4%) | 1,409,872 (+0.0%) / 724,592 (+0.0%) | 1,315,160 (+0.0%) / 690,680 (+0.0%) |
 | `base-bstrip` | strip=symbols, then external strip | 2,404,032 (-3.0%) / 1,212,116 (-1.4%) | 1,409,872 (+0.0%) / 724,593 (+0.0%) | 1,315,160 (+0.0%) / 690,682 (+0.0%) |
 | `base-abort` | panic=abort | 2,378,624 (-4.0%) / 1,186,977 (-3.4%) | 1,373,040 (-2.6%) / 706,145 (-2.5%) | 1,249,632 (-5.0%) / 673,521 (-2.5%) |
