@@ -74,8 +74,8 @@ size option was measured and is rejected, `panic=abort` among them.
 | faster with confidence in both batches | `thai-combining` 1.021 / 1.017, `large-color` 1.006 / 1.006 | `thai-combining` 1.063 / 1.052 | — |
 
 **The trade-off.** The cases that slow down are parser stress logs
-(`cursor-moves`: 27.7 → 28.0 ms on macOS and 26.0 → 26.8 ms on Linux;
-`text-dense-sgr`: 16.4 → 16.9 ms on macOS) and the 128 px rounded boxes
+(`cursor-moves`: 27.7 → 28.0 ms on macOS and 26.0 → 26.7 ms on Linux;
+`text-dense-sgr`: 16.4 → 16.8 ms on macOS) and the 128 px rounded boxes
 on Linux (22.4 → 23.0 ms). The common case, `reply-sent`, and every
 other case are within noise or faster. That buys 5-9% of the binary. Every
 candidate that saves materially more is slower on more cases, or breaks the
@@ -133,7 +133,7 @@ rendered `reply-sent` and `draft-ready` byte for byte like the host build
 How to read it:
 
 - **aarch64 sizes move in steps of about 64 KiB** (65,536 between `o2-fat`
-  and `cos-o2-fat`, 65,632 between `base` and `o2-fat`): the segments are
+  and `o2-fat-abort`, 65,632 between `base` and `o2-fat`): the segments are
   aligned to 64 KiB pages. Use the archive size there.
 - **The archive is noisier than the binary** by about 20 bytes: tar records
   the files' times. `base`, built twice on macOS, gave 1,229,004 and
