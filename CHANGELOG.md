@@ -189,6 +189,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Release binaries are built with fat LTO (`-C lto=fat`, #83): 8.7% smaller
+  on macOS universal, 5.5% on Linux x86_64 musl and 5.0% on Linux aarch64
+  musl, and the archives 3.4-4.6% smaller. Every output is the same.
+  `reply-sent` renders at the same speed; a few cases are 1.5-3% slower
+  (`cursor-moves` on both hosts) and `thai-combining` is 2-6% faster. Other
+  size options were measured and left out (docs/performance.md). `build.sh`
+  takes extra rustc flags from `RUSTFLAGS`.
 - The PNG compressor is Rust (`src/deflate.rs`) instead of C, the first step
   of #12; stb_image_write, still C, calls it. PNGs are byte for byte the same.
   On x86-64 its Adler-32 uses SSE2, and the whole compressor is 4-13% faster

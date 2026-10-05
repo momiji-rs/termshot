@@ -1,0 +1,988 @@
+{
+ "issue": 83,
+ "revision": "66780fc (main); scripts/release.sh steps, scratch harness",
+ "fields": "binary_bytes: the stripped binary; archive_bytes: tar -czf of the release directory (binary, LICENSE, README.md, CHANGELOG.md, LICENSE-JetBrains-Mono.txt); renders_match: reply-sent and draft-ready byte-identical to the host build (both slices on macOS, x86_64 under Rosetta)",
+ "strip": "ext: the external strip release.sh runs; rustc: -C strip=symbols and no external strip; both: -C strip=symbols, then the external strip",
+ "platforms": {
+  "macos-universal": {
+   "built_on": "lawrences-mac-studio, macOS 26.6.2, rustc 1.98.1 (rustup), Apple clang 21.0.0, MACOSX_DEPLOYMENT_TARGET=11.0, lipo, then strip -x (ext)",
+   "variants": {
+    "base": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2",
+     "strip": "ext",
+     "binary_bytes": 2478016,
+     "archive_bytes": 1229023,
+     "renders_match": true
+    },
+    "o2-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 2435424,
+     "archive_bytes": 1219872,
+     "renders_match": true
+    },
+    "o2-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 2262304,
+     "archive_bytes": 1172809,
+     "renders_match": true
+    },
+    "o2-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 2411312,
+     "archive_bytes": 1216953,
+     "renders_match": true
+    },
+    "os": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s",
+     "strip": "ext",
+     "binary_bytes": 2380752,
+     "archive_bytes": 1181200,
+     "renders_match": true
+    },
+    "os-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 2291120,
+     "archive_bytes": 1148677,
+     "renders_match": true
+    },
+    "o2-thin-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=thin -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 2385664,
+     "archive_bytes": 1208178,
+     "renders_match": true
+    },
+    "o2-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 2245824,
+     "archive_bytes": 1166739,
+     "renders_match": true
+    },
+    "os-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 2065088,
+     "archive_bytes": 1092243,
+     "renders_match": true
+    },
+    "oz": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z",
+     "strip": "ext",
+     "binary_bytes": 2316272,
+     "archive_bytes": 1156310,
+     "renders_match": true
+    },
+    "os-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 2330080,
+     "archive_bytes": 1165864,
+     "renders_match": true
+    },
+    "oz-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 2228704,
+     "archive_bytes": 1131702,
+     "renders_match": true
+    },
+    "os-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 2065024,
+     "archive_bytes": 1088044,
+     "renders_match": true
+    },
+    "oz-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 2000560,
+     "archive_bytes": 1063991,
+     "renders_match": true
+    },
+    "cos": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2",
+     "strip": "ext",
+     "binary_bytes": 2445120,
+     "archive_bytes": 1208848,
+     "renders_match": true
+    },
+    "oz-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 2249376,
+     "archive_bytes": 1137222,
+     "renders_match": true
+    },
+    "oz-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1983936,
+     "archive_bytes": 1056073,
+     "renders_match": true
+    },
+    "base-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 2404000,
+     "archive_bytes": 1212089,
+     "renders_match": true
+    },
+    "cos-oz-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=z -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1951056,
+     "archive_bytes": 1035599,
+     "renders_match": true
+    },
+    "cos-os-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 2032144,
+     "archive_bytes": 1067397,
+     "renders_match": true
+    },
+    "cos-o2-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 2212944,
+     "archive_bytes": 1146031,
+     "renders_match": true
+    },
+    "base-bstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C strip=symbols",
+     "strip": "both",
+     "binary_bytes": 2404032,
+     "archive_bytes": 1212116,
+     "renders_match": true
+    },
+    "base-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 2378624,
+     "archive_bytes": 1186977,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 2244672,
+     "archive_bytes": 1166040,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-bstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C strip=symbols",
+     "strip": "both",
+     "binary_bytes": 2244704,
+     "archive_bytes": 1166057,
+     "renders_match": true
+    },
+    "os-fat-cgu1-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1982480,
+     "archive_bytes": 1054665,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 2163280,
+     "archive_bytes": 1133793,
+     "renders_match": true
+    },
+    "o2-fat-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 2261216,
+     "archive_bytes": 1172193,
+     "renders_match": true
+    },
+    "cos-o2-fat": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2 -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 2229424,
+     "archive_bytes": 1152415,
+     "renders_match": true
+    },
+    "o2-fat-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 2163312,
+     "archive_bytes": 1139744,
+     "renders_match": true
+    }
+   }
+  },
+  "linux-x86_64-musl": {
+   "built_on": "GitHub Actions ubuntu-latest (24.04), rustc 1.98.1, musl-tools over GCC 13.3.0, then strip (ext); release.yml runs 37265578364 and 37267462039",
+   "variants": {
+    "base": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2",
+     "strip": "ext",
+     "binary_bytes": 1409872,
+     "archive_bytes": 724589,
+     "renders_match": true
+    },
+    "o2-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1385320,
+     "archive_bytes": 721269,
+     "renders_match": true
+    },
+    "o2-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1331968,
+     "archive_bytes": 700294,
+     "renders_match": true
+    },
+    "o2-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1389392,
+     "archive_bytes": 717415,
+     "renders_match": true
+    },
+    "os": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s",
+     "strip": "ext",
+     "binary_bytes": 1352528,
+     "archive_bytes": 698773,
+     "renders_match": true
+    },
+    "o2-thin-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=thin -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1368936,
+     "archive_bytes": 714545,
+     "renders_match": true
+    },
+    "os-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1311592,
+     "archive_bytes": 683851,
+     "renders_match": true
+    },
+    "o2-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1327872,
+     "archive_bytes": 694835,
+     "renders_match": true
+    },
+    "os-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1237760,
+     "archive_bytes": 658407,
+     "renders_match": true
+    },
+    "oz": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z",
+     "strip": "ext",
+     "binary_bytes": 1352528,
+     "archive_bytes": 693934,
+     "renders_match": true
+    },
+    "os-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1327952,
+     "archive_bytes": 690878,
+     "renders_match": true
+    },
+    "os-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1237760,
+     "archive_bytes": 656103,
+     "renders_match": true
+    },
+    "oz-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1315688,
+     "archive_bytes": 681182,
+     "renders_match": true
+    },
+    "oz-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1315664,
+     "archive_bytes": 682369,
+     "renders_match": true
+    },
+    "oz-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1225472,
+     "archive_bytes": 649126,
+     "renders_match": true
+    },
+    "cos": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2",
+     "strip": "ext",
+     "binary_bytes": 1389392,
+     "archive_bytes": 713747,
+     "renders_match": true
+    },
+    "oz-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1213184,
+     "archive_bytes": 644494,
+     "renders_match": true
+    },
+    "cos-oz-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=z -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1192704,
+     "archive_bytes": 633615,
+     "renders_match": true
+    },
+    "base-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1409872,
+     "archive_bytes": 724592,
+     "renders_match": true
+    },
+    "cos-os-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1213184,
+     "archive_bytes": 644266,
+     "renders_match": true
+    },
+    "cos-o2-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1303296,
+     "archive_bytes": 684259,
+     "renders_match": true
+    },
+    "base-bstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C strip=symbols",
+     "strip": "both",
+     "binary_bytes": 1409872,
+     "archive_bytes": 724593,
+     "renders_match": true
+    },
+    "base-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1373040,
+     "archive_bytes": 706145,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1327872,
+     "archive_bytes": 694838,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-bstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C strip=symbols",
+     "strip": "both",
+     "binary_bytes": 1327872,
+     "archive_bytes": 694838,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1295104,
+     "archive_bytes": 680297,
+     "renders_match": true
+    },
+    "os-fat-cgu1-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1204992,
+     "archive_bytes": 640984,
+     "renders_match": true
+    },
+    "o2-fat-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1331968,
+     "archive_bytes": 700297,
+     "renders_match": true
+    },
+    "cos-o2-fat": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2 -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1307392,
+     "archive_bytes": 688661,
+     "renders_match": true
+    },
+    "o2-fat-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1307392,
+     "archive_bytes": 686992,
+     "renders_match": true
+    }
+   }
+  },
+  "linux-aarch64-musl": {
+   "built_on": "GitHub Actions ubuntu-24.04-arm, rustc 1.98.1, musl-tools over GCC 13.3.0, then strip (ext); release.yml runs 37265578364 and 37267462039",
+   "variants": {
+    "base": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2",
+     "strip": "ext",
+     "binary_bytes": 1315160,
+     "archive_bytes": 690678,
+     "renders_match": true
+    },
+    "o2-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1249632,
+     "archive_bytes": 685015,
+     "renders_match": true
+    },
+    "o2-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1249528,
+     "archive_bytes": 665747,
+     "renders_match": true
+    },
+    "o2-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1315160,
+     "archive_bytes": 684283,
+     "renders_match": true
+    },
+    "os": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s",
+     "strip": "ext",
+     "binary_bytes": 1249624,
+     "archive_bytes": 665194,
+     "renders_match": true
+    },
+    "o2-thin-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=thin -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1249632,
+     "archive_bytes": 678610,
+     "renders_match": true
+    },
+    "os-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1249632,
+     "archive_bytes": 651041,
+     "renders_match": true
+    },
+    "o2-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1249528,
+     "archive_bytes": 662654,
+     "renders_match": true
+    },
+    "os-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1183992,
+     "archive_bytes": 627796,
+     "renders_match": true
+    },
+    "oz": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z",
+     "strip": "ext",
+     "binary_bytes": 1249624,
+     "archive_bytes": 667300,
+     "renders_match": true
+    },
+    "os-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1249624,
+     "archive_bytes": 657000,
+     "renders_match": true
+    },
+    "oz-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1249632,
+     "archive_bytes": 656868,
+     "renders_match": true
+    },
+    "os-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1183992,
+     "archive_bytes": 625139,
+     "renders_match": true
+    },
+    "oz-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1118456,
+     "archive_bytes": 627649,
+     "renders_match": true
+    },
+    "cos": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2",
+     "strip": "ext",
+     "binary_bytes": 1315144,
+     "archive_bytes": 682358,
+     "renders_match": true
+    },
+    "oz-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1249624,
+     "archive_bytes": 656384,
+     "renders_match": true
+    },
+    "oz-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1118456,
+     "archive_bytes": 623387,
+     "renders_match": true
+    },
+    "base-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1315160,
+     "archive_bytes": 690680,
+     "renders_match": true
+    },
+    "cos-os-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1118440,
+     "archive_bytes": 615649,
+     "renders_match": true
+    },
+    "cos-oz-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=z -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1118440,
+     "archive_bytes": 613822,
+     "renders_match": true
+    },
+    "cos-o2-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1183976,
+     "archive_bytes": 652755,
+     "renders_match": true
+    },
+    "base-bstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C strip=symbols",
+     "strip": "both",
+     "binary_bytes": 1315160,
+     "archive_bytes": 690682,
+     "renders_match": true
+    },
+    "base-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1249632,
+     "archive_bytes": 673521,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1249528,
+     "archive_bytes": 662652,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-bstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C strip=symbols",
+     "strip": "both",
+     "binary_bytes": 1249528,
+     "archive_bytes": 662653,
+     "renders_match": true
+    },
+    "os-fat-cgu1-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1118456,
+     "archive_bytes": 612217,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1183992,
+     "archive_bytes": 649247,
+     "renders_match": true
+    },
+    "cos-o2-fat": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2 -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1183976,
+     "archive_bytes": 655488,
+     "renders_match": true
+    },
+    "o2-fat-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1249528,
+     "archive_bytes": 665744,
+     "renders_match": true
+    },
+    "o2-fat-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1183992,
+     "archive_bytes": 652070,
+     "renders_match": true
+    }
+   }
+  },
+  "linux-x86_64-musl (starship)": {
+   "built_on": "starship, Docker rust:1-bookworm, rustc 1.98.1, musl-tools over GCC 12.2.0, then strip (ext); the binaries benchmarked on Linux",
+   "variants": {
+    "base": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2",
+     "strip": "ext",
+     "binary_bytes": 1409864,
+     "archive_bytes": 723268,
+     "renders_match": true
+    },
+    "o2-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1385312,
+     "archive_bytes": 719826,
+     "renders_match": true
+    },
+    "o2-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1389384,
+     "archive_bytes": 716128,
+     "renders_match": true
+    },
+    "o2-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1331960,
+     "archive_bytes": 698889,
+     "renders_match": true
+    },
+    "os": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s",
+     "strip": "ext",
+     "binary_bytes": 1348424,
+     "archive_bytes": 697562,
+     "renders_match": true
+    },
+    "o2-thin-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=thin -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1368928,
+     "archive_bytes": 712578,
+     "renders_match": true
+    },
+    "os-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1311584,
+     "archive_bytes": 682017,
+     "renders_match": true
+    },
+    "o2-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1323768,
+     "archive_bytes": 693942,
+     "renders_match": true
+    },
+    "os-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1233656,
+     "archive_bytes": 656850,
+     "renders_match": true
+    },
+    "oz": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z",
+     "strip": "ext",
+     "binary_bytes": 1352520,
+     "archive_bytes": 693420,
+     "renders_match": true
+    },
+    "os-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1323848,
+     "archive_bytes": 690423,
+     "renders_match": true
+    },
+    "os-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1233656,
+     "archive_bytes": 654019,
+     "renders_match": true
+    },
+    "oz-thin": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=thin",
+     "strip": "ext",
+     "binary_bytes": 1311584,
+     "archive_bytes": 680252,
+     "renders_match": true
+    },
+    "oz-fat": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1221368,
+     "archive_bytes": 647530,
+     "renders_match": true
+    },
+    "cos": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2",
+     "strip": "ext",
+     "binary_bytes": 1385288,
+     "archive_bytes": 712670,
+     "renders_match": true
+    },
+    "oz-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1315656,
+     "archive_bytes": 681818,
+     "renders_match": true
+    },
+    "oz-fat-cgu1": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=z -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1217272,
+     "archive_bytes": 643377,
+     "renders_match": true
+    },
+    "base-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1409864,
+     "archive_bytes": 723270,
+     "renders_match": true
+    },
+    "cos-oz-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=z -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1192696,
+     "archive_bytes": 632328,
+     "renders_match": true
+    },
+    "cos-os-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1213176,
+     "archive_bytes": 643173,
+     "renders_match": true
+    },
+    "cos-o2-fat-cgu1": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1",
+     "strip": "ext",
+     "binary_bytes": 1303288,
+     "archive_bytes": 682756,
+     "renders_match": true
+    },
+    "base-bstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C strip=symbols",
+     "strip": "both",
+     "binary_bytes": 1409864,
+     "archive_bytes": 723276,
+     "renders_match": true
+    },
+    "base-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1368936,
+     "archive_bytes": 705862,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1323768,
+     "archive_bytes": 693939,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-bstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C strip=symbols",
+     "strip": "both",
+     "binary_bytes": 1323768,
+     "archive_bytes": 693940,
+     "renders_match": true
+    },
+    "o2-fat-cgu1-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C codegen-units=1 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1291000,
+     "archive_bytes": 677952,
+     "renders_match": true
+    },
+    "os-fat-cgu1-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=s -C lto=fat -C codegen-units=1 -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1204984,
+     "archive_bytes": 638979,
+     "renders_match": true
+    },
+    "cos-o2-fat": {
+     "cflags_added": "-Os",
+     "rustflags_added": "-C opt-level=2 -C lto=fat",
+     "strip": "ext",
+     "binary_bytes": 1307384,
+     "archive_bytes": 686994,
+     "renders_match": true
+    },
+    "o2-fat-abort": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C panic=abort",
+     "strip": "ext",
+     "binary_bytes": 1303288,
+     "archive_bytes": 685039,
+     "renders_match": true
+    },
+    "o2-fat-rstrip": {
+     "cflags_added": "",
+     "rustflags_added": "-C opt-level=2 -C lto=fat -C strip=symbols",
+     "strip": "rustc",
+     "binary_bytes": 1331960,
+     "archive_bytes": 698892,
+     "renders_match": true
+    }
+   }
+  }
+ }
+}
