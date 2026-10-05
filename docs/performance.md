@@ -77,9 +77,10 @@ size option was measured and is rejected, `panic=abort` among them.
 (`cursor-moves`: 27.7 → 28.0 ms on macOS and 26.0 → 26.8 ms on Linux;
 `text-dense-sgr`: 16.4 → 16.9 ms on macOS) and the 128 px rounded boxes
 on Linux (22.4 → 23.0 ms). The common case, `reply-sent`, and every
-other case are within noise or faster. That buys 5-9% of the binary. Every candidate
-that saves more is slower on more cases, or breaks the exit-code contract
-(`panic=abort`).
+other case are within noise or faster. That buys 5-9% of the binary. Every
+candidate that saves materially more is slower on more cases, or breaks the
+exit-code contract (`panic=abort`). `-C strip=symbols` on top saves 1,088
+bytes (0.05%) on macOS and nothing on Linux, and is left out (Sizes).
 
 ### Sizes
 
@@ -482,7 +483,10 @@ end. That is not worth 1.8-4.4% of the binary, so unwinding stays.
 
 The `toolchain` and `build_flags` fields in the JSON are bench.py's host
 tools and `build.sh`'s defaults. Each binary's flags are in its `describe`
-field. On macOS the timed `o2-fat` slice was built in a scratch directory.
+field, except in the Linux probe, which has none: its labels are the
+candidates' names in the size table, and its `binary_sha256` values match
+the binaries of the same name in the other files (`base` `dc3b8ab5d2df…`,
+`o2-fat` `b0aa617e6149…`, `o2-fat-cgu1` `fba2f5b562df…`). On macOS the timed `o2-fat` slice was built in a scratch directory.
 release.sh's build is 8 bytes larger with the same flags, and its PNGs match
 (above).
 
