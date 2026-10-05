@@ -23,12 +23,13 @@ done
 mv termshot "$work/host"
 
 # The release profile: build.sh's flags plus fat LTO, a 5-9% smaller
-# binary; reply-sent is as fast, a few parser-bound cases are 1-3% slower.
-# docs/performance.md (#83) has every candidate measured and why the
-# others are out: codegen-units=1 slows the parser 5-9%, lto=thin up to 5%,
-# opt-level s or z everything by up to 2x, and C -Os large glyphs by 3% on
-# Linux. Not panic=abort: a panic at an FFI boundary is caught (exit 2, or
-# an outline or advance recovered), and under panic=abort it would abort.
+# binary. reply-sent is as fast; cursor-moves and two others are 1.5-3%
+# slower, thai-combining 2-6% faster. docs/performance.md (#83) has every
+# candidate measured and why the others are out: codegen-units=1 slows the
+# parser 5-10%, lto=thin up to 6%, opt-level s and z nearly everything (up
+# to 3x), and C -Os the CJK and glyph-heavy cases up to 3% on Linux. Not
+# panic=abort: a panic at an FFI boundary is caught (exit 2, or an outline
+# or advance recovered), and under panic=abort it would abort instead.
 build() {
     RUSTFLAGS='-C lto=fat' ./build.sh
     mv termshot "$work/$1"
