@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Dependency-free, interleaved CLI benchmark. JSON is the durable result.
+"""Dependency-free, interleaved CLI benchmark. JSON is the durable result,
+slim by default (--full-profile keeps every per-run profile record).
 
 Every round runs each binary twice, without and with TERMSHOT_PROFILE, in a
 shuffled order, so wall/CPU samples, profile records and the profiling
@@ -359,6 +360,25 @@ def paired_ratio(numerator, denominator):
             'bootstrap_95pct': [estimates[49], estimates[1949]]}
 
 
+def slim(report, stages=()):
+    """The slim form of a report, in place: every per-run wall, CPU and RSS
+    sample, the outputs' hashes and sizes and all metadata stay; the
+    per-run TERMSHOT_PROFILE records (profile and profile_samples), which
+    are most of a full report's bytes, keep only the stages named. A slim
+    report records what it dropped under 'slim'."""
+    stages = list(stages)
+    for case in report['cases'].values():
+        for label, entry in case.items():
+            if label == 'workload' or 'profile_samples' not in entry:
+                continue
+            samples, prof = entry['profile_samples'], entry.get('profile', {})
+            entry['profile_samples'] = {key: samples[key] for key in stages if key in samples}
+            entry['profile'] = {key: prof[key] for key in stages if key in prof}
+    report['slim'] = {'profile_stages_kept': stages,
+                      'dropped': 'every other key of profile and profile_samples (bench.py --full-profile keeps them)'}
+    return report
+
+
 def relative(path):
     """The path from the repository root, or just the name of a generated file.
     (Path.is_relative_to needs Python 3.9.)"""
@@ -445,11 +465,17 @@ def drop_caches():
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--binary', action='append', required=True, help='label=/path/to/binary (repeatable)')
+    p.add_argument('--binary', action='append', help='label=/path/to/binary (repeatable)')
     p.add_argument('--describe', action='append', default=[], help='label=text, e.g. the revision a binary is built from')
     p.add_argument('--runs', type=int, default=10)
     p.add_argument('--warmups', type=int, default=2)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--full-profile', action='store_true',
+                   help='keep every per-run TERMSHOT_PROFILE stage and counter (the result is about 10x larger)')
+    p.add_argument('--stage', action='append', default=[],
+                   help='a profile key to keep per run in the slim result, e.g. parse_ms (repeatable)')
+    p.add_argument('--slim', type=Path, metavar='REPORT',
+                   help='write the slim form of an existing full report to --output, keeping --stage keys, and exit')
     p.add_argument('--case', action='append')
     p.add_argument('--suite', choices=('all', 'legacy', 'fonts', 'draw', 'parser', 'text'), default='all')
     p.add_argument('--cjk-font', type=Path, default=SYSTEM_CJK if SYSTEM_CJK.exists() else None,
@@ -463,6 +489,12 @@ def main():
                    help='binary label exempt from the path checks, for one that predates the counters (repeatable)')
     p.add_argument('--seed', type=int, default=0, help='seed for interleaved execution order')
     args = p.parse_args()
+    if args.slim:
+        report = slim(json.loads(args.slim.read_text()), args.stage)
+        args.output.write_text(json.dumps(report, separators=(',', ':')) + '\n')
+        return
+    if not args.binary:
+        p.error('--binary is required')
     if args.runs < 1 or args.warmups < 0 or args.memory_runs < 0 or args.cold_runs < 0:
         p.error('runs must be positive; warmups, memory-runs and cold-runs must be nonnegative')
     binaries = {label: str(Path(path).resolve()) for label, path in (item.split('=', 1) for item in args.binary)}
@@ -626,6 +658,8 @@ def main():
             for label in binaries:
                 print(f'{case.name:18} {label:10} cold median={statistics.median(cold[label]):8.2f} ms', flush=True)
     report['load_average_end'] = os.getloadavg()
+    if not args.full_profile:
+        slim(report, args.stage)
     args.output.write_text(json.dumps(report, separators=(',', ':')) + '\n')
 
 

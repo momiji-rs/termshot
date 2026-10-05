@@ -88,12 +88,21 @@ def main():
                 cells.append(f"{s['median']:.3f} [{s['bootstrap_95pct'][0]:.3f}, {s['bootstrap_95pct'][1]:.3f}]")
             print(f'| {name} | ' + ' | '.join(cells) + ' |')
         print()
-    print(f'Top stages ({a.label}, batch 1 medians, ms) and counters:')
+    if not all(first['cases'][name][a.label].get('profile_samples', {}).get('total_ms') for name in first['cases']):
+        print('Top stages: not in this report (slim; bench.py --full-profile keeps them)')
+        print()
+    else:
+        stages(first, a.label)
+    outputs(batches, a.results, labels)
+
+
+def stages(first, label):
+    print(f'Top stages ({label}, batch 1 medians, ms) and counters:')
     print()
     print('| case | profiled wall | total_ms | top stages | font_load parts | glyphs: raster / hits / evict / missing / fallback lookups / fallback raster |')
     print('| --- | ---: | ---: | --- | --- | --- |')
     for name, case in first['cases'].items():
-        entry = case[a.label]
+        entry = case[label]
         med = leaves(entry['profile_samples'])
         top = sorted(med.items(), key=lambda kv: -kv[1])[:3]
         prof = entry['profile']
@@ -105,6 +114,10 @@ def main():
         print(f"| {name} | {fmt(entry['profiled_wall_ms']['median'])} | {fmt(m('total_ms'))} | "
               + ', '.join(f'{k[:-3]} {fmt(v)}' for k, v in top) + f' | {parts} | {counters} |')
     print()
+
+
+def outputs(batches, results, labels):
+    first = batches[0]
     hashes = {}
     for name, case in first['cases'].items():
         hashes.setdefault(output(case[labels[0]], 'sha256'), []).append(name)
@@ -113,7 +126,7 @@ def main():
     agree = all(output(b['cases'][n][l], 'sha256') == output(first['cases'][n][labels[0]], 'sha256')
                 for b in batches for n in first['cases'] for l in labels)
     print(f'All binaries and batches give the same output per case: {agree}')
-    for b, path in zip(batches, a.results):
+    for b, path in zip(batches, results):
         for name, cold in b.get('cold', {}).items():
             warm = b['cases'][name]
             print(f"cold {path.name} {name}: " + ', '.join(
