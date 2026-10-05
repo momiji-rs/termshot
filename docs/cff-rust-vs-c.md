@@ -254,13 +254,15 @@ Added 2026-10-04. `--font FILE#wght=700` (or `FILE.ttc#1#wght=700,wdth=90`) pick
 HarfBuzz is the reference throughout, so each step is done as `hb_font_set_variations` does it:
 
 - **Normalizing**: in f32, each setting clamped to its axis's range (widened to hold the default,
-  as HarfBuzz widens it), scaled to -1..1 on its side of the default, and rounded to 16.16.
+  as HarfBuzz widens it), scaled to -1..1 on its side of the default, and rounded to 16.16 with HarfBuzz's `roundf`,
+  which is `floorf(v + 0.5f)`: a half rounds up, so -2.5 to -2 where `f32::round` gives -3.
   Then avar's segment map for the axis is applied, ported from `SegmentMaps::map_float`, with
   its answers for maps that OpenType calls malformed: none or one pair, repeated or unsorted
   `from` values, and the skipped (-1, -1) and (1, 1) ends. Last, it is rounded to 2.14 with
-  `(c + 2) >> 2`. `variations_tests.rs` has an axis for each case, 27 in one font: hb-vector,
-  `hb_font_get_var_coords_normalized` and termshot give the same 27 coordinates. Two cases,
-  found by search, are there because their f32 details are each 1/16384 off if missed. A
+  `(c + 2) >> 2`. `variations_tests.rs` has an axis for each case, 29 in one font: hb-vector,
+  `hb_font_get_var_coords_normalized` and termshot give the same 29 coordinates. Four cases,
+  two found by search and two at a half, are there because their f32 details are each
+  1/16384 off if missed. A
   setting sets every axis with its tag, as `hb_font_set_variations` does, should fvar repeat
   one (hb-vector agrees).
 - **Coordinates of 0 are the default**: HarfBuzz draws a font whose coordinates are all 0
@@ -275,13 +277,32 @@ HarfBuzz is the reference throughout, so each step is done as `hb_font_set_varia
   missing axis as 0 and drops an extra one). An axis the font lacks
   is refused with the axes it has, where HarfBuzz ignores the setting, and a TrueType or CFF
   face with that reason: `glyf` variations (gvar) are not read.
-- **Metrics stay the default's** ([#77](https://github.com/momiji-rs/termshot/issues/77)):
-  HVAR, VVAR and MVAR are not applied, so the cell size, the centering of wide and fallback
-  glyphs, and the baseline come from the default instance. For
-  CJK as the fallback that changes nothing: in Noto Sans CJK VF an ideograph advances 1000 at
-  every weight. Its Latin letters do not: at wght=900 HarfBuzz advances `M` 877 units, and
-  the cell, sized from the default's `M`, stays 770, so with it as the main font at a heavy
-  weight the Latin letters crowd their cells (checked with `hb-shape`, 2026-10-04).
+- **Metrics** ([#77](https://github.com/momiji-rs/termshot/issues/77)): `src/metrics.rs`
+  varies each glyph's advance by HVAR, as `hb_font_get_glyph_h_advance` does: hmtx's advance
+  plus the delta, the delta summed in f32 in row order and rounded with `roundf`, and the sum
+  at least 0. It varies hhea's ascender, descender and line gap by MVAR's `hasc`, `hdsc` and
+  `hlgp`, as `hb_font_get_h_extents` does: the ascender made positive and the descender
+  negative. It starts from hhea, as stb does at the default, even where HarfBuzz starts from
+  OS/2's typo metrics (fsSelection's USE_TYPO_METRICS). Neither table is read when every
+  coordinate is 0, so a setting at the default
+  draws as none does, and a damaged table refuses the font only where it would be used. So the
+  cell size, the centering of wide and fallback glyphs, and the baseline follow the instance:
+  at wght=900 Noto Sans CJK VF advances `M` 877 units, not 770, and the cell widens with it
+  (`test.sh` checks it). An ideograph advances 1000 at every weight. VVAR is not read, as
+  termshot lays text out horizontally only. Out of range indexes read as no delta, as in
+  HarfBuzz (fonts rely on it: an identity advance map past the store's items); everything else
+  HarfBuzz would ignore a table for, from a format to unsorted MVAR records, refuses the font
+  at an instance with a reason. stb_glue.c (for the cell's width) and src/glyphs.rs (to place each
+  glyph) get the advances through a callback in the Face. As in HarfBuzz, an advance or extent
+  may vary past the 16 bits hmtx and hhea hold: stb_glue.c works out the cell from any `int`
+  (its differences in 64 bits, each length in pixels saturated at 2^28, past the largest image).
+  Checked against HarfBuzz 14.4.0 (`tools/cff2-metrics.py`, through libharfbuzz) on starship:
+  every advance and the extents of the subset at four instances and of a crafted font at
+  seven (`metrics_tests.rs`; deltas of each width, a null ItemVariationData, an advance map
+  with entries past the store), and of the full Noto font, Source Serif 4 and Adobe's
+  prototype (both with an advance map) at two instances each, through the ignored
+  `any_cff2_font_s_metrics_match_harfbuzz`. None of those three varies `hasc`, `hdsc` or
+  `hlgp`, so only the crafted font tests MVAR.
 - **Cost**: the coordinates are worked out once, when the font loads, and the region scalars
   once per font, when the store is read. A `blend` at an instance costs its k multiply-adds
   per value; at the default, where every scalar is 0, it costs nothing extra.

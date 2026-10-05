@@ -207,7 +207,9 @@ pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, 
         );
     }
     // stb_image_write sizes its buffers with int: (width*BPP+1)*height must not wrap.
-    if width * height > MAX_PIXELS {
+    // Each side first, as a cell can be 2^28 pixels each way (stb_glue.c's
+    // to_px) and their product overflow; a side past it is past it in pixels too.
+    if width > MAX_PIXELS || height > MAX_PIXELS || width * height > MAX_PIXELS {
         eprintln!("termshot: image {width}x{height} is over {MAX_PIXELS} pixels; lower px, cols or rows");
         return 2;
     }
@@ -333,8 +335,21 @@ pub unsafe extern "C" fn draw_png(cells: *const Cell, cols: c_int, rows: c_int, 
                                   out_path: *const c_char, verbose: c_int) -> c_int {
     let (cols, rows) = (cols.max(0) as usize, rows.max(0) as usize);
     let cells = if cells.is_null() { &[][..] } else { std::slice::from_raw_parts(cells, cols * rows) };
-    let font = Face { ttf, start: ttf_start, outline: None, cff: std::ptr::null() };
-    let fallback = Face { ttf: fallback_ttf, start: fallback_start, outline: None, cff: std::ptr::null() };
+    // TrueType faces at their default instance: no callbacks.
+    let face = |ttf, start| Face {
+        ttf,
+        start,
+        outline: None,
+        cff: std::ptr::null(),
+        advance: None,
+        advances: std::ptr::null(),
+        varied: 0,
+        ascent: 0,
+        descent: 0,
+        line_gap: 0,
+    };
+    let font = face(ttf, ttf_start);
+    let fallback = face(fallback_ttf, fallback_start);
     let fallback = (!fallback_ttf.is_null()).then_some(&fallback);
     let Ok(out_path) = std::ffi::CStr::from_ptr(out_path).to_str() else { return 3 };
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

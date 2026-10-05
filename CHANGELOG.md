@@ -159,8 +159,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   font match hb-vector's at three weights. `-v` prints the instance. Bad
   syntax exits 2. An axis the font lacks exits 1 and lists those it has; a
   font whose outlines don't vary here (TrueType or CFF) exits 1 with that
-  reason. Metrics stay the default instance's (`HVAR` and `MVAR` are not
-  applied yet, #77), so a heavy instance as the main font crowds its cells.
+  reason. An instance's metrics vary too, as in HarfBuzz (#77): each glyph's
+  advance by `HVAR`, so a heavy instance as the main font gets wider cells,
+  and the ascender, descender and line gap by `MVAR`. Every glyph of the
+  CFF2 test font has HarfBuzz's advance at four instances. A damaged `HVAR`
+  or `MVAR` is refused with a reason (exit 1) at an instance, and not read
+  at the default one. An advance or extent varied past the 16 bits `hmtx`
+  and `hhea` hold sizes the cell as any does; a cell past the largest
+  image exits 2, as a large `--px` does.
 - Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
   is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
   outline is slanted 12 degrees before it is rasterized, so it is as smooth
@@ -296,6 +302,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A font whose `hhea` ascender is not above its descender is refused at
+  load with that reason (exit 1). As `--fallback-font` it was scaled by a
+  height of 0 or less, and as `--font` it was refused only when drawing,
+  as "font metrics unusable". An instance whose `MVAR` takes the height to
+  0 is refused the same way.
 - A glyph with a box but no points, such as a composite of an empty glyph,
   draws nothing. It drew whatever its bitmap's memory held, which on Linux
   was not always zeros, so it could paint pixels that depended on what was

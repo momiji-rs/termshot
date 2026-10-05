@@ -37,6 +37,15 @@
 //!         path in a directory of the caller's, not a shared one), under
 //!         TERMSHOT_PROFILE, and prints the median glyph_ms, blend_ms and
 //!         foreground_ms of each and their ratio.
+//!
+//!     glyphs unvaried FONT OUT
+//!         Writes FONT to OUT with its HVAR and MVAR tables renamed
+//!         `HVA_` and `MVA_`, which keeps the table directory sorted, so
+//!         neither CLI finds them. The C at the step had no HVAR or MVAR:
+//!         at an instance, the CLI now places glyphs by the varied advances
+//!         and scales them by the varied extents, while the outlines are
+//!         the same. Without the two tables, both CLIs paint the instance's
+//!         outlines with the default metrics.
 
 use std::fs;
 use std::path::Path;
@@ -223,6 +232,17 @@ fn be32(d: &[u8], at: usize) -> u32 {
     u32::from_be_bytes([d[at], d[at + 1], d[at + 2], d[at + 3]])
 }
 
+fn unvaried(font: &str, out: &str) {
+    let mut d = fs::read(font).unwrap();
+    for i in 0..be16(&d, 4) as usize {
+        let at = 12 + 16 * i;
+        if &d[at..at + 4] == b"HVAR" || &d[at..at + 4] == b"MVAR" {
+            d[at + 3] = b'_';
+        }
+    }
+    fs::write(out, d).unwrap();
+}
+
 /// The code points a font's Unicode cmap subtable covers: format 12's
 /// groups, or format 4's segments (some code points of a segment may map to
 /// no glyph, which draws a box, as it should).
@@ -365,11 +385,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("logs") if args.len() >= 3 => logs(Path::new(&args[2]), &args[3..]),
+        Some("unvaried") if args.len() == 4 => unvaried(&args[2], &args[3]),
         Some("time") if args.len() >= 7 => {
             time(args[2].parse().unwrap(), &args[3], &args[4], &args[5], &args[6], &args[7..])
         }
         _ => {
-            eprintln!("usage: glyphs logs DIR [FONT...] | glyphs time ROUNDS OLD NEW OUT LOG [ARGS...]");
+            eprintln!("usage: glyphs logs DIR [FONT...] | glyphs time ROUNDS OLD NEW OUT LOG [ARGS...] | glyphs unvaried FONT OUT");
             std::process::exit(2);
         }
     }

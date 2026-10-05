@@ -8,6 +8,7 @@
 //! gets the outlines through a Face.
 
 use crate::cff;
+use crate::metrics;
 use crate::variations;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
@@ -202,20 +203,56 @@ fn pad(mut font: Font) -> Font {
     font
 }
 
-/// stb_glue.c's Face: a checked font, and for a CFF font the outlines stb must
-/// not read itself.
+/// stb_glue.c's Face: a checked font, for a CFF font the outlines stb must not
+/// read itself, and at an instance the metrics HVAR and MVAR vary.
 #[repr(C)]
 pub struct Face<'a> {
     ttf: *const u8,
     start: c_int,
     outline: Option<unsafe extern "C" fn(*const c_void, c_int, *mut cff::Vertex, c_int, *mut c_int) -> c_int>,
     cff: *const c_void,
+    advance: Option<unsafe extern "C" fn(*const c_void, c_int, c_int) -> c_int>,
+    advances: *const c_void,
+    /// Set when ascent, descent and line_gap replace hhea's.
+    varied: c_int,
+    ascent: c_int,
+    descent: c_int,
+    line_gap: c_int,
     font: PhantomData<&'a Font>,
 }
 
-// As stb_glue.c and src/glyphs.rs (its Face, which reads the outline
-// callback) assert.
-const _: () = assert!(std::mem::size_of::<Face>() == 32);
+// As stb_glue.c and src/glyphs.rs (its Face, which reads the outline and
+// advance callbacks) assert.
+const _: () = assert!(std::mem::size_of::<Face>() == 64);
+
+/// The metrics of a face at its instance, where it varies them; neither at
+/// the default instance.
+struct Varied<'a> {
+    advances: Option<metrics::Advances<'a>>,
+    vertical: Option<[i32; 3]>,
+}
+
+/// Read the HVAR and MVAR of the face at `start` for the instance at
+/// `coords`, as cff::Font::parse_cff2 takes them. Coordinates that are all
+/// 0 are the default instance, which neither table moves, so neither is
+/// read: a setting at the default draws as no setting does.
+fn varied<'a>(d: &'a [u8], start: usize, coords: &[i32]) -> Result<Varied<'a>, String> {
+    if coords.iter().all(|&c| c == 0) {
+        return Ok(Varied { advances: None, vertical: None });
+    }
+    let advances = match table(d, start, b"HVAR")? {
+        Some(hvar) => Some(metrics::Advances::parse(hvar.data, coords).map_err(|reason| format!("HVAR table: {reason}"))?),
+        None => None,
+    };
+    let vertical = match table(d, start, b"MVAR")? {
+        Some(mvar) => Some(
+            metrics::vertical(required(d, start, b"hhea")?, mvar.data, coords)
+                .map_err(|reason| format!("MVAR table: {reason}"))?,
+        ),
+        None => None,
+    };
+    Ok(Varied { advances, vertical })
+}
 
 impl Face<'_> {
     /// The face as the render (src/render.rs) and stb_glue.c take it.
@@ -227,21 +264,45 @@ impl Face<'_> {
 }
 
 impl Font {
-    /// Call `f` with the face to draw with. The CFF table, checked at load,
-    /// is parsed again here, as what it parses into borrows the data.
+    /// Call `f` with the face to draw with. The CFF table and the variation
+    /// tables, checked at load, are parsed again here, as what they parse
+    /// into borrows the data.
     pub fn with_face<R>(&self, f: impl FnOnce(&Face) -> R) -> Result<R, String> {
-        let face = |outline, cff| Face {
+        let cff = cff_outlines(&self.data, self.start, &self.coords)?;
+        let varied = varied(&self.data, self.start, &self.coords)?;
+        Ok(f(&self.face(cff.as_ref(), &varied)))
+    }
+
+    /// Call `f` with the face's metrics and no outlines, for
+    /// draw_face_cell_size, which reads no glyph; this skips parsing the
+    /// CFF table.
+    pub fn with_metrics<R>(&self, f: impl FnOnce(&Face) -> R) -> Result<R, String> {
+        Ok(f(&self.face(None, &varied(&self.data, self.start, &self.coords)?)))
+    }
+
+    fn face<'a>(&'a self, cff: Option<&'a cff::Font>, varied: &'a Varied) -> Face<'a> {
+        let [ascent, descent, line_gap] = varied.vertical.unwrap_or_default();
+        Face {
             ttf: self.data.as_ptr(),
             start: self.start as c_int,
-            outline,
-            cff,
+            outline: if cff.is_some() { Some(outline) } else { None },
+            cff: cff.map_or(std::ptr::null(), |cff| cff as *const cff::Font as *const c_void),
+            advance: if varied.advances.is_some() { Some(advance) } else { None },
+            advances: varied.advances.as_ref().map_or(std::ptr::null(), |a| a as *const metrics::Advances as *const c_void),
+            varied: varied.vertical.is_some() as c_int,
+            ascent,
+            descent,
+            line_gap,
             font: PhantomData,
-        };
-        Ok(match cff_outlines(&self.data, self.start, &self.coords)? {
-            None => f(&face(None, std::ptr::null())),
-            Some(cff) => f(&face(Some(outline), &cff as *const cff::Font as *const c_void)),
-        })
+        }
     }
+}
+
+/// Face.advance: the advance of `glyph` at the instance, given its hmtx
+/// advance.
+unsafe extern "C" fn advance(advances: *const c_void, glyph: c_int, hmtx: c_int) -> c_int {
+    // A panic must not unwind into C.
+    std::panic::catch_unwind(|| (*(advances as *const metrics::Advances)).advance(glyph as u32, hmtx)).unwrap_or(hmtx)
 }
 
 /// Face.outline: the outline of `glyph` into out[..capacity] as
@@ -337,9 +398,11 @@ fn vary(font: &mut Font, axes: &str, path: &str) -> Result<(), String> {
         None => Vec::new(),
     };
     font.coords = variations::coords(&all, &maps, &settings).map_err(|reason| format!("{path}: {reason}"))?;
-    // The store is checked against fvar only at an instance, so check it
-    // again now, at load, rather than when drawing.
-    cff_outlines(&font.data, font.start, &font.coords).map_err(|reason| format!("{path}: not a usable font: {reason}"))?;
+    // The CFF2 store is checked against fvar, and HVAR and MVAR read, only
+    // at an instance, so check them now, at load, rather than when drawing.
+    let broken = |reason: String| format!("{path}: not a usable font: {reason}");
+    cff_outlines(&font.data, font.start, &font.coords).map_err(broken)?;
+    varied(&font.data, font.start, &font.coords).map_err(broken)?;
     font.instance = Some(variations::instance(&all, &settings));
     Ok(())
 }
@@ -535,6 +598,11 @@ fn check_at(d: &[u8], start: usize) -> Result<(), String> {
         return Err("maxp says the font has no glyphs".into());
     }
     u16_at(head, 52)?;
+    // stb_glue.c scales a face by its height, ascender to descender.
+    let (ascender, descender) = (u16_at(hhea, 4)? as i16, u16_at(hhea, 6)? as i16);
+    if ascender <= descender {
+        return Err(format!("hhea's ascender {ascender} is not above its descender {descender}"));
+    }
     let long_metrics = u16_at(hhea, 34)? as usize;
     if long_metrics == 0 {
         return Err("hhea has no horizontal metrics".into());
@@ -957,6 +1025,19 @@ pub mod tests {
         assert!(choose(ttc.clone(), Some("0"), "c.ttc").is_ok());
         let error = choose(ttc, Some("Broken"), "c.ttc").err().unwrap();
         assert!(error.contains("c.ttc: not a usable font: unknown loca format"), "{error}");
+    }
+
+    /// A face is scaled by its height, so one of no height is refused as
+    /// either font, rather than drawn at an infinite scale as the fallback.
+    #[test]
+    fn a_face_of_no_height_is_refused() {
+        let font = fs::read(FONT).unwrap();
+        let flat = |descender: i16| edit_table(&font, b"hhea", |hhea| hhea[6..8].copy_from_slice(&descender.to_be_bytes()));
+        let ascender = i16::from_be_bytes(table(&font, 0, b"hhea").unwrap().unwrap().data[4..6].try_into().unwrap());
+        let error = choose(flat(ascender), None, "f.ttf").err().unwrap();
+        assert_eq!(error, format!("f.ttf: not a usable font: hhea's ascender {ascender} is not above its descender {ascender}"));
+        assert!(choose(flat(ascender + 1), None, "f.ttf").is_err());
+        assert!(choose(flat(ascender - 1), None, "f.ttf").is_ok());
     }
 
     #[test]

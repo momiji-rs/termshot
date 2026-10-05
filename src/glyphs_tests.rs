@@ -189,10 +189,21 @@ fn cff(font: &Fake, face: &Face, scale: f32) -> GlyphFace {
     }
 }
 
-const TT_FACE: Face = Face { ttf: std::ptr::null(), start: 0, outline: None, cff: std::ptr::null() };
+const TT_FACE: Face = Face {
+    ttf: std::ptr::null(),
+    start: 0,
+    outline: None,
+    cff: std::ptr::null(),
+    advance: None,
+    advances: std::ptr::null(),
+    varied: 0,
+    ascent: 0,
+    descent: 0,
+    line_gap: 0,
+};
 
 fn cff_face(font: &Fake) -> Face {
-    Face { ttf: std::ptr::null(), start: 0, outline: Some(cff_outline), cff: font as *const Fake as *const c_void }
+    Face { outline: Some(cff_outline), cff: font as *const Fake as *const c_void, ..TT_FACE }
 }
 
 fn no_face() -> GlyphFace {

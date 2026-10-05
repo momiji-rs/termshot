@@ -91,17 +91,30 @@ pub struct FontInfo {
 /// vertex count, over capacity when it needs more room (src/font.rs).
 pub type OutlineFn = unsafe extern "C" fn(*const c_void, c_int, *mut Vertex, c_int, *mut c_int) -> c_int;
 
-/// stb_glue.c's Face, as src/font.rs makes it: a checked font, and for a CFF
-/// face the callback that gives its outlines. Read here only for those.
+/// Face.advance: a glyph's advance at the instance from its hmtx advance
+/// (src/font.rs).
+pub type AdvanceFn = unsafe extern "C" fn(*const c_void, c_int, c_int) -> c_int;
+
+/// stb_glue.c's Face, as src/font.rs makes it: a checked font, for a CFF face
+/// the callback that gives its outlines, and at an instance of a variable
+/// face the one that gives its advances (HVAR) and its vertical metrics
+/// (MVAR). Read here only for the two callbacks; stb_glue.c scales each
+/// face by its vertical metrics.
 #[repr(C)]
 pub struct Face {
     pub ttf: *const u8,
     pub start: c_int,
     pub outline: Option<OutlineFn>,
     pub cff: *const c_void,
+    pub advance: Option<AdvanceFn>,
+    pub advances: *const c_void,
+    pub varied: c_int,
+    pub ascent: c_int,
+    pub descent: c_int,
+    pub line_gap: c_int,
 }
 
-const _: () = assert!(std::mem::size_of::<Face>() == 32);
+const _: () = assert!(std::mem::size_of::<Face>() == 64);
 
 /// stbtt__bitmap, what stbtt_Rasterize paints.
 #[repr(C)]
@@ -820,6 +833,11 @@ impl Glyphs {
         // places it).
         let (mut glyph_adv, mut glyph_lsb) = (0, 0);
         (self.get_glyph_h_metrics)(source.info, glyph, &mut glyph_adv, &mut glyph_lsb);
+        // At an instance, as HVAR varies it.
+        let face = &*source.face;
+        if let Some(advance) = face.advance {
+            glyph_adv = advance(face.advances, glyph, glyph_adv);
+        }
         let mut advance = glyph_adv as f32 * s;
         if !mark && from_fallback && advance > span as f32 {
             s *= span as f32 / advance;

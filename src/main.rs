@@ -22,6 +22,7 @@ mod font;
 mod geometry;
 mod glyphs;
 mod graphics;
+mod metrics;
 mod render;
 #[rustfmt::skip]
 mod rowcolumn_diacritics;
@@ -36,6 +37,8 @@ mod cast_tests;
 mod cff_tests;
 #[cfg(test)]
 mod draw_tests;
+#[cfg(test)]
+mod metrics_tests;
 #[cfg(test)]
 mod prescan_tests;
 #[cfg(test)]
@@ -145,7 +148,7 @@ impl Cell {
 }
 
 extern "C" {
-    fn draw_cell_size(font: *const u8, font_start: i32, px: f64, w: *mut i32, h: *mut i32) -> i32;
+    fn draw_face_cell_size(font: *const font::Face, px: f64, w: *mut i32, h: *mut i32) -> i32;
 }
 
 /// What a bare LF does.
@@ -2399,8 +2402,11 @@ fn main() -> ExitCode {
     let parse_started = Instant::now();
     let (mut cell_w, mut cell_h) = (1, 1);
     if let Some((font, _)) = &fonts {
-        if unsafe { draw_cell_size(font.data.as_ptr(), font.start as i32, options.px, &mut cell_w, &mut cell_h) } == 0 {
-            return cleanup(1, "font metrics unusable".into());
+        let sized = font.with_metrics(|face| unsafe { draw_face_cell_size(face, options.px, &mut cell_w, &mut cell_h) });
+        match sized {
+            Ok(1) => {}
+            Ok(_) => return cleanup(1, "font metrics unusable".into()),
+            Err(message) => return cleanup(1, message),
         }
     }
     let Grid { mut cells, marks, cursor, cursor_shape, images } =

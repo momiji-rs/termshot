@@ -58,6 +58,10 @@ fn cases() -> Vec<(&'static [u8; 4], f64, f64, f64, Vec<(f64, f64)>, &'static st
         // before it divides, and the mapped value is rounded, not cut.
         (b"ordr", -1.0, 0.0, 1.0, vec![(-1.0, -1.0), (0.0, 0.0), (14833.0 / 16384.0, 13829.0 / 16384.0), (1.0, 1.0)], "0.8829"),
         (b"rond", -1.0, 0.0, 1.0, vec![(-1.0, -1.0), (0.0, 0.0), (151.0 / 16384.0, 15388.0 / 16384.0), (1.0, 1.0)], "0.006"),
+        // HarfBuzz's roundf is floorf(v + 0.5f), so -2.5 in 16.16 rounds to
+        // -2 (and 2.14 0), not -3 (-1): as set, and as avar maps it.
+        (b"hlf-", -1.0, 0.0, 1.0, vec![], "-0.00003814697265625"),
+        (b"hlfm", -1.0, 0.0, 1.0, vec![(-1.0, -0.5), (0.0, 0.0), (1.0, 1.0)], "-0.0000762939453125"),
     ]
 }
 
@@ -67,9 +71,9 @@ fn cases() -> Vec<(&'static [u8; 4], f64, f64, f64, Vec<(f64, f64)>, &'static st
 /// moves to x = the coordinate, as cff2_coordinates draws it, with SETTINGS
 /// from target/test/variations.txt. hb_font_get_var_coords_normalized gives
 /// the same.
-const HARFBUZZ: [i32; 27] = [
+const HARFBUZZ: [i32; 29] = [
     8192, -8192, 16384, -16384, -14565, 0, 0, -1, 4915, 8192, 6554, -9830, -3277, 4915, 1638, -1638, -3277, 6554, -11469,
-    -12288, 12288, 4096, 8192, 8192, 10240, 13486, 10013,
+    -12288, 12288, 4096, 8192, 8192, 10240, 13486, 10013, 0, 0,
 ];
 
 /// The test font of cases(), and its settings.

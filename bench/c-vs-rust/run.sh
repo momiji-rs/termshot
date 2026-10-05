@@ -127,6 +127,9 @@ if [ "$mode" = glyphs ] || [ "$mode" = full ]; then
     vf=third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf
     marks=third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf
     "$work/glyphs" logs "$work/logs" "$jb" "$cff" "$vf" "$marks"
+    # The CFF2 font without HVAR, for its instances (glyphs unvaried).
+    vf_unvaried="$work/vf-unvaried.otf"
+    "$work/glyphs" unvaried "$vf" "$vf_unvaried"
     # tests/glyphs.c writes the built-in font with no outline for 'A' (an
     # empty glyph, as color bitmap fonts have), running its checks against
     # the Rust on the way.
@@ -146,12 +149,14 @@ if [ "$mode" = glyphs ] || [ "$mode" = full ]; then
         # empty-glyph warning included) must be the same bytes. The fonts:
         # the built-in TrueType alone and as a file, with CFF, CFF2 and the
         # marks font as fallback and as primary, the hollow font, which
-        # sends 'A' to the fallback, CFF2 instances, and the system Noto CJK
+        # sends 'A' to the fallback, CFF2 instances (of the font without
+        # HVAR, whose advances the C did not vary), and the system Noto CJK
         # when there is one (starship; CJK_FONT names another copy).
         set -- "" "--font $jb --fallback-font $cff" "--font $cff --fallback-font $jb" "--font $vf" \
             "--fallback-font $vf" "--fallback-font $marks" "--font $marks --fallback-font $cff" \
             "--fallback-font $jb" "--font $hollow --fallback-font $jb" "--font $hollow --fallback-font $vf" \
-            "--font $vf#wght=900 --fallback-font $marks" "--font $jb --fallback-font $vf#wght=350.5"
+            "--font $vf_unvaried#wght=900 --fallback-font $marks" \
+            "--font $jb --fallback-font $vf_unvaried#wght=350.5"
         system_cjk=${CJK_FONT:-/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc}
         [ -e "$system_cjk" ] && set -- "$@" "--fallback-font $system_cjk#3"
         n=0
@@ -197,8 +202,9 @@ if [ "$mode" = glyphs ] || [ "$mode" = full ]; then
             done
             [ "$mode" = full ] || continue
             # The driver's own output: the cell and image size, and the
-            # images it refuses (over 2^27 pixels: exit 2, no PNG).
-            for fonts in "" "--font $cff --fallback-font $jb" "--font $vf#wght=900"; do
+            # images it refuses (over 2^27 pixels: exit 2, no PNG). CFF2 at an
+            # instance without HVAR, as the C before it has none.
+            for fonts in "" "--font $cff --fallback-font $jb" "--font $vf_unvaried#wght=900"; do
                 # shellcheck disable=SC2086
                 compare "$log" $fonts -v --px 47.5
                 # shellcheck disable=SC2086

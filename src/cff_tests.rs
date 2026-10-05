@@ -1122,6 +1122,11 @@ pub(crate) mod craft {
         sfnt_with(&Cff2 { vstore, ..Cff2::new(vec![square2(), glyph]) }.build(), 2, b"CFF2", &[(b"fvar", fvar)])
     }
 
+    /// A CFF2 font of `glyphs` squares, with the `extra` tables.
+    pub fn cff2_squares_with(glyphs: u16, extra: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        sfnt_with(&Cff2::new(vec![square2(); glyphs as usize]).build(), glyphs, b"CFF2", extra)
+    }
+
     /// An fvar of `axes`, each a tag and its minimum, default and maximum.
     pub fn fvar(axes: &[(&[u8; 4], f64, f64, f64)]) -> Vec<u8> {
         let be16 = |v: &[u16]| v.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>();

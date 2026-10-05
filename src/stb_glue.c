@@ -11,7 +11,7 @@
      read outlines for a TrueType face only;
    - termshot_png_encode: the PNG of the canvas's filtered scanlines, with
      Rust's compressor (src/deflate.rs) behind STBIW_ZLIB_COMPRESS.
-   main.rs asks draw_cell_size for the cell before replaying the log.
+   main.rs asks draw_face_cell_size for the cell before replaying the log.
    Everything here exists because it touches stb's internals or its types. */
 
 #include <limits.h>
@@ -62,16 +62,23 @@ _Static_assert(sizeof(stbtt_fontinfo) == 160 && _Alignof(stbtt_fontinfo) == 8,
    fills out[0..capacity) as stbtt_GetGlyphShape would and box as
    stbtt_GetGlyphBox would, and returns the vertex count, which may be over
    capacity (call again with room for that many); 0 is no outline, or one that
-   can't be drawn. NULL for a TrueType face. */
+   can't be drawn. NULL for a TrueType face.
+
+   At an instance of a variable face, advance gives the advance of glyph, in
+   font units, from its hmtx advance (HVAR); NULL keeps hmtx's. When varied is
+   set, ascent, descent and line_gap replace hhea's (MVAR). */
 typedef struct {
     const unsigned char *ttf;
     int start;
     int (*outline)(const void *cff, int glyph, stbtt_vertex *out, int capacity, int box[4]);
     const void *cff;
+    int (*advance)(const void *advances, int glyph, int hmtx);
+    const void *advances;
+    int varied, ascent, descent, line_gap;
 } Face;
 
 /* As Face in src/glyphs.rs (and src/font.rs, which makes it). */
-_Static_assert(sizeof(Face) == 32, "Face ABI must match the Rust side");
+_Static_assert(sizeof(Face) == 64, "Face ABI must match the Rust side");
 _Static_assert(sizeof(stbtt_vertex) == 14, "stbtt_vertex ABI must match cff::Vertex");
 
 /* stbtt_InitFont for a CFF2 face, which stb refuses: with no glyf it wants a
@@ -114,6 +121,31 @@ static int init_font(stbtt_fontinfo *font, const unsigned char *ttf, int start) 
            !stbtt__find_table((unsigned char *)ttf, start, "CFF ") && init_cff2(font, (unsigned char *)ttf, start);
 }
 
+/* The advance of glyph, at the face's instance. */
+static int face_advance(const stbtt_fontinfo *font, const Face *face, int glyph) {
+    int adv, lsb;
+    stbtt_GetGlyphHMetrics(font, glyph, &adv, &lsb);
+    return face->advance ? face->advance(face->advances, glyph, adv) : adv;
+}
+
+/* hhea's ascent, descent and line gap, at the face's instance. */
+static void face_v_metrics(const stbtt_fontinfo *font, const Face *face, int *ascent, int *descent, int *line_gap) {
+    if (face->varied) {
+        *ascent = face->ascent;
+        *descent = face->descent;
+        *line_gap = face->line_gap;
+    } else {
+        stbtt_GetFontVMetrics(font, ascent, descent, line_gap);
+    }
+}
+
+/* stbtt_ScaleForPixelHeight, at the face's instance. */
+static float face_scale(const stbtt_fontinfo *font, const Face *face, float px) {
+    int ascent, descent, line_gap;
+    face_v_metrics(font, face, &ascent, &descent, &line_gap);
+    return px / (float)((long long)ascent - descent);
+}
+
 /* A CFF face without outlines of its own would have stb run its charstrings. */
 static int init_face(stbtt_fontinfo *font, const Face *face) {
     return init_font(font, face->ttf, face->start) && (font->glyf || face->outline);
@@ -125,37 +157,64 @@ typedef struct {
     float scale, italic_pivot;
 } CellMetrics;
 
-static int cell_metrics(const stbtt_fontinfo *font, double font_px, CellMetrics *m) {
+/* A length in pixels as an int, saturated at 2^28 either way: on its own
+   past the largest image (MAX_PIXELS in src/render.rs), which the render
+   refuses, and with room to add two. Only HVAR's and MVAR's 32-bit deltas,
+   which can take a face's metrics past the 16 bits hmtx and hhea hold,
+   reach it. */
+static int to_px(float v) {
+    const float limit = (float)(1 << 28);
+    return v >= limit ? (1 << 28) : v <= -limit ? -(1 << 28) : (int)v;
+}
+
+static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double font_px, CellMetrics *m) {
     int ascent, descent, line_gap;
-    stbtt_GetFontVMetrics(font, &ascent, &descent, &line_gap);
-    int adv = 0, lsb = 0;
-    stbtt_GetCodepointHMetrics(font, 'M', &adv, &lsb);
+    face_v_metrics(font, face, &ascent, &descent, &line_gap);
+    int adv = face_advance(font, face, stbtt_FindGlyphIndex(font, 'M'));
     if (adv <= 0 || ascent <= descent) {
         fprintf(stderr, "termshot: font metrics unusable\n");
         return 0;
     }
-    float scale = stbtt_ScaleForPixelHeight(font, (float)font_px);
-    int cell_w = (int)(adv * scale + 0.5f);
+    float scale = face_scale(font, face, (float)font_px);
+    int cell_w = to_px(adv * scale + 0.5f);
     if (cell_w < 1) cell_w = 1;
     scale = (float)cell_w / (float)adv;
-    int body = (int)((ascent - descent) * scale + 0.5f);
-    int gap = (int)(line_gap * scale + 0.5f);
+    int body = to_px((float)((long long)ascent - descent) * scale + 0.5f);
+    int gap = to_px(line_gap * scale + 0.5f);
     if (gap < 0) gap = 0;
     int cell_h = body + gap;
     if (cell_h < 1) cell_h = 1;
-    int baseline = (int)(ascent * scale + 0.5f) + (cell_h - body) / 2;
-    *m = (CellMetrics){adv, cell_w, cell_h, body, baseline, scale, (ascent + descent) * scale / 2};
+    int baseline = to_px(ascent * scale + 0.5f) + (cell_h - body) / 2;
+    *m = (CellMetrics){adv, cell_w, cell_h, body, baseline, scale, (float)((long long)ascent + descent) * scale / 2};
     return 1;
 }
 
-/* Uses the exact same metrics as the renderer, including custom fonts. */
-int draw_cell_size(const unsigned char *ttf, int ttf_start, double px, int *w, int *h) {
+/* Uses the exact same metrics as the renderer, including custom fonts and
+   their instances. Reads no glyph, so face needs no outlines. */
+int draw_face_cell_size(const Face *face, double px, int *w, int *h) {
     stbtt_fontinfo font;
     CellMetrics m;
-    if (!init_font(&font, ttf, ttf_start) || !cell_metrics(&font, px, &m)) return 0;
+    if (!init_font(&font, face->ttf, face->start) || !cell_metrics(&font, face, px, &m)) return 0;
     *w = m.cell_w;
     *h = m.cell_h;
     return 1;
+}
+
+/* The metrics the render uses, for the tests to check against HarfBuzz's:
+   the advance of glyphs 0..count-1 in font units, and the ascent, descent
+   and line gap. */
+int draw_face_metrics(const Face *face, int count, int *advances, int v[3]) {
+    stbtt_fontinfo font;
+    if (!init_font(&font, face->ttf, face->start)) return 0;
+    for (int glyph = 0; glyph < count; glyph++) advances[glyph] = face_advance(&font, face, glyph);
+    face_v_metrics(&font, face, &v[0], &v[1], &v[2]);
+    return 1;
+}
+
+/* draw_face_cell_size of a face at its default instance. */
+int draw_cell_size(const unsigned char *ttf, int ttf_start, double px, int *w, int *h) {
+    Face face = {ttf, ttf_start, NULL, NULL, NULL, NULL, 0, 0, 0, 0};
+    return draw_face_cell_size(&face, px, w, h);
 }
 
 /* What the text (src/glyphs.rs) may ask stb, as GlyphFace and TextFonts
@@ -233,10 +292,10 @@ int termshot_font_setup(const Face *font_face, const Face *fallback_face, double
     }
 
     CellMetrics metrics;
-    if (!cell_metrics(font, font_px, &metrics)) return 1;
+    if (!cell_metrics(font, font_face, font_px, &metrics)) return 1;
     /* The fallback is sized to the same ascent-to-descent height and shares
        the baseline. */
-    float fallback_scale = fallback_face ? stbtt_ScaleForPixelHeight(fallback, (float)metrics.body) : 0;
+    float fallback_scale = fallback_face ? face_scale(fallback, fallback_face, (float)metrics.body) : 0;
     /* Italic slants around the middle of the body, in pixels above the
        baseline, for both fonts. */
     s->text = (TextFonts){glyph_face(font, font_face, metrics.scale),

@@ -135,7 +135,7 @@ This builds termshot, runs the parser unit tests, checks box drawing (`tests/box
 
 When a change is meant to move pixels, look at the renders in `target/test/`, then run `./test.sh --update-goldens`. `SANITIZE=1 ./test.sh` builds the C (the stb glue and the PNG decoder) with ASan and UBSan; this works on macOS only.
 
-A test for a known bug describes the correct behaviour and is marked `#[ignore = "#N: ..."]` with its issue. None are open now. Run them with `./target/test/unit --ignored`. Two other tests are ignored. `poc_workloads` writes inputs for `bench/c-vs-rust/` and checks nothing. `any_cff2_font_matches_harfbuzz` checks a CFF2 font of your own, at any instance, against the outlines `tools/cff2-outlines.sh` recorded from HarfBuzz; its doc comment gives the commands.
+A test for a known bug describes the correct behaviour and is marked `#[ignore = "#N: ..."]` with its issue. None are open now. Run them with `./target/test/unit --ignored`. Three other tests are ignored. `poc_workloads` writes inputs for `bench/c-vs-rust/` and checks nothing. `any_cff2_font_matches_harfbuzz` checks a CFF2 font of your own, at any instance, against the outlines `tools/cff2-outlines.sh` recorded from HarfBuzz, and `any_cff2_font_s_metrics_match_harfbuzz` its advances and extents against what `tools/cff2-metrics.py` recorded; their doc comments give the commands.
 
 ## Run
 
@@ -267,8 +267,9 @@ last `#` part, `TAG=VALUE` separated by commas, as in `NotoSansCJKtc-VF.otf#wght
 FILE` lists them), clamped to its range, and the outlines match HarfBuzz's (`hb-view
 --variations`). An axis left out stays at its default, and `-v` prints the instance. Bad syntax
 exits 2. An axis the font doesn't have exits 1 and lists those it has; a TrueType or CFF
-font, whose outlines don't vary here, exits 1 with that reason. Glyph metrics stay the default
-instance's: `HVAR` and `MVAR` are not applied yet (#77).
+font, whose outlines don't vary here, exits 1 with that reason. The metrics vary with the
+instance too, as in HarfBuzz: each glyph's advance by `HVAR`, so a heavy weight gets wider
+cells, and the ascender, descender and line gap by `MVAR`.
 
 ## Images in PTY logs
 
