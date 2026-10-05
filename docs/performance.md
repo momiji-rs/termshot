@@ -138,7 +138,7 @@ How to read it:
 - **The archive is noisier than the binary** by about 20 bytes: tar records
   the files' times. `base`, built twice on macOS, gave 1,229,004 and
   1,229,023.
-- **`-C strip=symbols` changes nothing on Linux** (the same binary bytes),
+- **`-C strip=symbols` changes nothing on Linux** (the same binary bytes).
   On macOS universal it saves 3.0% without LTO, but only 1,088 bytes
   (0.05%) with fat LTO. Not adopted; the external `strip` stays.
 - The same flags built on starship (Debian bookworm's musl-gcc over GCC
