@@ -127,6 +127,7 @@ fn main() {
     sixel(&bin);
     relative(&bin);
     placeholders(&bin);
+    animation(&bin);
     println!("ok, {checked} kitty RGB/RGBA/PNG pixel checks over 5 sizes, plain and zlib-compressed; native clipping, text layering, transparency and deletion");
 }
 
@@ -747,4 +748,81 @@ fn placeholders(bin: &str) {
         }
     }
     println!("ok, {checked} Unicode placeholder pixel checks at 3 sizes, still and scrolled: inherited rows, a partial box, a placement named by the underline colour");
+}
+
+// Animation frames, pixel by pixel at three sizes. A 2x1 image, red and
+// green, fitted to 2x1 cells; each case builds frames and shows one. From
+// the spec: a frame is its data over its base frame (c) or over a
+// background colour (Y, transparent black by default), blended (X=0) or
+// overwriting (X=1); a=c copies (C=1) or blends a rectangle of frame r onto
+// frame c; termshot shows the frame a=a c= last made current, else the
+// root, whatever the gaps (z), state (s) and loops (v). The shown pixels,
+// RGBA, are then blended over the background as any image.
+fn animation(bin: &str) {
+    const R: [u8; 4] = [255, 0, 0, 255];
+    const G: [u8; 4] = [0, 255, 0, 255];
+    const W: [u8; 4] = [255, 255, 255, 255];
+    const HALF_BLUE: [u8; 4] = [0, 0, 255, 128];
+    let rgba = |p: &[[u8; 4]]| base64(&p.concat());
+    // a over b, b opaque, as the protocol's alpha blend in integers.
+    let blend = |a: [u8; 4], b: [u8; 4]| {
+        let rgb = over([a[0], a[1], a[2]], u32::from(a[3]), [b[0], b[1], b[2]]);
+        [rgb[0], rgb[1], rgb[2], 255]
+    };
+    let root = format!("\x1b_Ga=T,i=1,s=2,v=1,c=2,r=1,C=1;{}\x1b\\", rgba(&[R, G]));
+    let frame = |keys: &str, p: &[[u8; 4]]| format!("\x1b_Ga=f,i=1,{keys};{}\x1b\\", rgba(p));
+    let cmd = |keys: &str| format!("\x1b_G{keys}\x1b\\");
+    let cases: [(&str, String, [[u8; 4]; 2]); 7] = [
+        // Blended over the root, at x=1, and made current.
+        ("blend-base", frame("c=1,x=1,s=1,v=1", &[HALF_BLUE]) + &cmd("a=a,i=1,c=2"), [R, blend(HALF_BLUE, G)]),
+        // Overwriting: the frame keeps the pixel's alpha.
+        ("overwrite-base", frame("c=1,x=1,s=1,v=1,X=1", &[HALF_BLUE]) + &cmd("a=a,i=1,c=2"), [R, HALF_BLUE]),
+        // Over an opaque white background colour, Y.
+        (
+            "background",
+            frame("x=1,s=1,v=1,Y=4294967295", &[HALF_BLUE]) + &cmd("a=a,i=1,c=2"),
+            [W, blend(HALF_BLUE, W)],
+        ),
+        // a=c blending the left pixel of frame 2 onto the root, current.
+        ("compose-blend", frame("s=2,v=1", &[HALF_BLUE, W]) + &cmd("a=c,i=1,r=2,c=1,w=1,h=1"), [blend(HALF_BLUE, R), G]),
+        // a=c copying frame 2's right pixel onto the root's left.
+        (
+            "compose-copy",
+            frame("s=2,v=1", &[W, HALF_BLUE]) + &cmd("a=c,i=1,r=2,c=1,w=1,h=1,X=1,C=1"),
+            [HALF_BLUE, G],
+        ),
+        // Running, looping, with gaps: still the root.
+        ("running", frame("s=2,v=1,z=40", &[W, W]) + &cmd("a=a,i=1,s=3,v=1,r=1,z=40"), [R, G]),
+        // The current frame deleted: the one before it shows.
+        (
+            "deleted",
+            frame("s=2,v=1", &[W, W]) + &frame("s=2,v=1", &[G, R]) + &cmd("a=a,i=1,c=3") + &cmd("a=d,d=f,i=1,r=3"),
+            [W, W],
+        ),
+    ];
+    let mut checked = 0;
+    for px in ["9", "24", "47.5"] {
+        for (name, then, shown) in &cases {
+            let name = format!("animation-{name}-{px}");
+            let log = format!("{root}{then}");
+            let (w, h, pixels) = render(bin, &name, log.as_bytes(), px, 4, 2);
+            let (cw, ch) = (w / 4, h / 2);
+            // The 2:1 image fitted inside 2x1 cells, centred.
+            let (bw, bh) = (2 * cw, ch);
+            let (iw, ih) = if bw <= 2 * bh { (bw, (bw / 2).max(1)) } else { (2 * bh, bh) };
+            let (left, top) = ((bw - iw) / 2, (bh - ih) / 2);
+            for y in 0..h {
+                for x in 0..w {
+                    let mut want = BG;
+                    if (left..left + iw).contains(&x) && (top..top + ih).contains(&y) {
+                        let p = shown[(x - left) * 2 / iw];
+                        want = over([p[0], p[1], p[2]], u32::from(p[3]), BG);
+                    }
+                    assert_eq!(&pixels[(y * w + x) * 4..][..3], &want, "{name} at ({x},{y})");
+                    checked += 1;
+                }
+            }
+        }
+    }
+    println!("ok, {checked} animation pixel checks at 3 sizes: blend and overwrite over a base and a background, a=c both ways, a running animation, a deleted current frame");
 }

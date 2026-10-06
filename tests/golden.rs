@@ -25,7 +25,7 @@ const MARKS: &str = "third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf";
 // tests/fixtures/<log>.pty, or an asciinema recording tests/fixtures/<log>.cast;
 // with no font options it is drawn with FONT.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 62] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 66] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -65,6 +65,13 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 62] = [
     // its `=` padding, once with --unicode-placeholder and once direct.
     ("kitty-icat-unpadded", "24", 20, 6, &[]),
     ("kitty-icat-unpadded", "47.5", 20, 6, &[]),
+    // Animation frames shown as a still (#44): a frame over its base, one
+    // over a background colour, a=c onto the root, and a running animation
+    // showing its root; and kitten icat 0.49.2 sending a 3-frame GIF.
+    ("kitty-animation", "24", 16, 4, &[]),
+    ("kitty-animation", "47.5", 16, 4, &[]),
+    ("kitty-icat-animation", "24", 20, 6, &[]),
+    ("kitty-icat-animation", "47.5", 20, 6, &[]),
     ("blank", "24", 20, 8, &[]),
     ("geometry", "1", 12, 2, &[]),
     ("geometry", "9", 12, 2, &[]),
