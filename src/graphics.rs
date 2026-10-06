@@ -1,12 +1,16 @@
 //! Replay the self-contained subset of kitty graphics: directly transmitted
 //! images, stored (a=t) and placed (a=p, a=T), at the cursor, relative to
 //! another placement, or in Unicode placeholder cells, and deleted as kitty
-//! does. All coordinates are pixels computed from the same font metrics as
-//! the render (stb_glue.c's draw_cell_size).
+//! does, with animation frames shown as a still (src/graphics/animation.rs).
+//! All coordinates are pixels computed from the same font metrics as the
+//! render (stb_glue.c's draw_cell_size).
 
 use std::rc::Rc;
 
 pub use crate::composite::ImageView;
+
+mod animation;
+use animation::Frame;
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 /// How much larger than its decoded size a compressed RGB or RGBA payload may
@@ -71,13 +75,23 @@ pub struct Graphics {
     /// placements are laid out with, and scrolling finds the screen's bottom by.
     cell: (i32, i32),
     screen_rows: usize,
+    /// The pixels animation frames have been composed over so far, which
+    /// `animation::COMPOSE_BUDGET` bounds.
+    composed: u64,
 }
 
 struct Image {
     key: u64,
     id: u32,
     number: u32,
-    pixels: Rc<Vec<u8>>,
+    /// The animation frames, the root frame (the image's data) first, as
+    /// kitty's root_frame and extra_frames. A still image has only the root.
+    frames: Vec<Frame>,
+    /// The current frame, an index into `frames` (kitty's
+    /// current_frame_index): the one the image shows.
+    current: usize,
+    /// The last frame id handed out (kitty's frame_id_counter).
+    frame_ids: u32,
     width: u32,
     height: u32,
     atime: u64,
@@ -145,14 +159,21 @@ struct ImageSlice {
 }
 
 impl Image {
-    /// The bytes it counts for the storage quota: its pixels, or their size
-    /// once a Sixel image's placement holds them alone (`erase_sixel`). No
-    /// image has none of its own otherwise.
+    /// The bytes it counts for the storage quota: every frame's pixels, and
+    /// the composed pixels it shows unless its current frame's own are
+    /// them, or the image's size once a Sixel image's placement holds its
+    /// pixels alone (`erase_sixel`). No image has none of its own otherwise.
     fn bytes(&self) -> usize {
-        match self.pixels.len() {
-            0 => self.width as usize * self.height as usize * 4,
-            n => n,
+        let (stored, shown) = self.parts();
+        match stored {
+            0 if self.frames.len() == 1 => self.size(),
+            n => n + shown,
         }
+    }
+
+    /// The pixels the image starts with, at its full size.
+    fn size(&self) -> usize {
+        self.width as usize * self.height as usize * 4
     }
 }
 
@@ -187,9 +208,20 @@ fn append_slice(slices: &mut Vec<ImageSlice>, y: i64, top: i64, bottom: i64) {
     slices.push(ImageSlice { y, top, bottom });
 }
 
+/// A command's keys. Animation commands give some of them other meanings,
+/// as kitty's GraphicsCommand shares their fields: for a frame (a=f), r is
+/// the frame edited, c the base frame, X the composition mode, Y the
+/// background colour and z the gap; for a composition (a=c), r is the source
+/// frame, c the destination, X and Y the source's corner and C the
+/// composition mode; for animation control (a=a), s is the state, v the loop
+/// count, r the frame whose gap z sets, and c the frame made current; d=f
+/// deletes frame r.
 #[derive(Default)]
 struct Command {
     action: u8,
+    /// Whether the command named its action: a continuation chunk may only
+    /// name a=f, and only for a frame's upload.
+    explicit_action: bool,
     format: u32,
     width: u32,
     height: u32,
@@ -219,12 +251,17 @@ struct Command {
     size: u32,
     /// U=1 (any nonzero U, as kitty reads it): a virtual placement.
     virtual_put: bool,
+    /// C: 1 keeps the cursor in place for a put; any nonzero value
+    /// overwrites instead of blending for a composition (a=c).
+    compose: u32,
     no_move: bool,
     more: bool,
     delete: u8,
     continuation: bool,
     /// The key of the image this transmission replaces, kept for its order.
     reuse: Option<u64>,
+    /// The key of the image a frame's upload (a=f) adds to or edits.
+    target: u64,
 }
 
 /// A 32-bit signed integer, as kitty reads the z-index.
@@ -257,6 +294,8 @@ impl Command {
             ..Self::default()
         };
         let mut seen = [false; 128];
+        // C other than 0 or 1 is only valid as a composition mode.
+        let mut c_flag = true;
         for part in header.split(|&b| b == b',').filter(|p| !p.is_empty()) {
             if part.len() < 3 || part[1] != b'=' || part[0] >= 128 {
                 return None;
@@ -267,9 +306,12 @@ impl Command {
             }
             seen[key as usize] = true;
             let val = &part[2..];
-            cmd.continuation &= matches!(key, b'm' | b'q');
+            cmd.continuation &= matches!(key, b'm' | b'q') || (key == b'a' && val == b"f");
             match key {
-                b'a' if val.len() == 1 => cmd.action = val[0],
+                b'a' if val.len() == 1 => {
+                    cmd.action = val[0];
+                    cmd.explicit_action = true;
+                }
                 b't' if val == b"d" => {}
                 b'f' => cmd.format = number(val)?,
                 b's' => cmd.width = number(val)?,
@@ -302,7 +344,10 @@ impl Command {
                 b'V' => cmd.parent_y = signed(val)?,
                 b'o' if val == b"z" => cmd.compressed = true,
                 b'S' => cmd.size = number(val)?,
-                b'C' if val == b"0" || val == b"1" => cmd.no_move = val == b"1",
+                b'C' => {
+                    cmd.compose = number(val)?;
+                    c_flag &= val == b"0" || val == b"1";
+                }
                 b'm' if val == b"0" || val == b"1" => cmd.more = val == b"1",
                 b'q' if number(val)? <= 2 => {}
                 b'd' if val.len() == 1 => cmd.delete = val[0],
@@ -311,6 +356,10 @@ impl Command {
                 _ => return None,
             }
         }
+        if !c_flag && cmd.action != b'c' {
+            return None;
+        }
+        cmd.no_move = cmd.action != b'c' && cmd.compose == 1;
         (cmd.id == 0 || cmd.number == 0).then_some(cmd)
     }
 }
@@ -691,23 +740,49 @@ impl Graphics {
                 let index = self.find(&cmd)?;
                 return self.put(index, &cmd, col, row, cell);
             }
-            b't' | b'T' => {}
+            b'a' => {
+                self.abort();
+                self.control(&cmd);
+                return None;
+            }
+            b'c' => {
+                self.abort();
+                self.compose(&cmd);
+                return None;
+            }
+            b't' | b'T' | b'f' => {}
             _ => {
                 self.abort();
                 return None;
             }
         }
-        // Transmitting an id replaces its image and placements at once,
-        // whether or not the new data turns out to load.
-        if cmd.id != 0 {
-            if let Some(index) = self.images.iter().position(|img| img.id == cmd.id) {
-                cmd.reuse = Some(self.images[index].key);
-                self.remove_image(index);
+        // A chunk continues the upload in progress if it has only m and q
+        // keys, and a=f if a frame's upload is in progress.
+        let continues = cmd.continuation
+            && match &self.pending {
+                Some((first, _)) => !cmd.explicit_action || first.action == b'f',
+                None => false,
+            };
+        if !continues {
+            if cmd.action == b'f' {
+                // A frame needs its image, by id or number (kitty's ENOENT).
+                let Some(index) = self.find(&cmd) else {
+                    self.abort();
+                    return None;
+                };
+                cmd.target = self.images[index].key;
+            } else if cmd.id != 0 {
+                // Transmitting an id replaces its image and placements at
+                // once, whether or not the new data turns out to load.
+                if let Some(index) = self.images.iter().position(|img| img.id == cmd.id) {
+                    cmd.reuse = Some(self.images[index].key);
+                    self.remove_image(index);
+                }
             }
         }
         // Continuation chunks are bounded by the command that began the upload.
         let limit = match &self.pending {
-            Some((first, _)) if cmd.continuation => payload_limit(first),
+            Some((first, _)) if continues => payload_limit(first),
             _ => payload_limit(&cmd),
         };
         let Some(chunk) = base64(payload, limit) else {
@@ -716,7 +791,7 @@ impl Graphics {
         };
         let mut data = chunk;
         if let Some((first, mut previous)) = self.pending.take() {
-            if cmd.continuation {
+            if continues {
                 if previous.len() + data.len() > limit {
                     return None;
                 }
@@ -731,6 +806,10 @@ impl Graphics {
             self.pending = Some((cmd, data));
             return None;
         }
+        if cmd.action == b'f' {
+            self.load_frame(&cmd, data);
+            return None;
+        }
         // Nothing could ever place an image stored with neither id nor number.
         if cmd.action == b't' && cmd.id == 0 && cmd.number == 0 {
             return None;
@@ -742,8 +821,18 @@ impl Graphics {
         };
         let id = if cmd.id == 0 && cmd.number != 0 { self.free_id() } else { cmd.id };
         let atime = self.tick();
-        let pixels = Rc::new(pixels);
-        self.images.push(Image { key, id, number: cmd.number, pixels, width, height, atime });
+        let root = Frame::root(Rc::new(pixels), width, height, cmd.format == 24);
+        self.images.push(Image {
+            key,
+            id,
+            number: cmd.number,
+            frames: vec![root],
+            current: 0,
+            frame_ids: 1,
+            width,
+            height,
+            atime,
+        });
         let mut advance = None;
         if cmd.action == b'T' {
             advance = self.put(self.images.len() - 1, &cmd, col, row, cell);
@@ -795,7 +884,9 @@ impl Graphics {
     ) -> Option<(usize, usize)> {
         let image = &self.images[index];
         let (image_key, id, width, height) = (image.key, image.id, image.width, image.height);
-        let pixels = Rc::clone(&image.pixels);
+        // What the image shows, or nothing yet if that is still to be
+        // composed: `finish` gives every placement its image's pixels.
+        let pixels = image.shown().unwrap_or_default();
         // A virtual placement cannot be a relative one (kitty's EINVAL).
         if cmd.virtual_put && cmd.parent_id != 0 {
             return None;
@@ -1114,6 +1205,7 @@ impl Graphics {
             b'x' => self.delete_where(upper, in_col, |_| false),
             b'y' => self.delete_where(upper, in_row, |_| false),
             b'z' => self.delete_where(upper, |p| !p.is_virtual && p.z == cmd.z, |_| false),
+            b'f' => self.delete_frame(cmd, upper),
             _ => {}
         }
     }
@@ -1208,7 +1300,7 @@ impl Graphics {
             let (x, key) = (p.x, p.image);
             if Rc::strong_count(&p.pixels) > 1 {
                 if let Some(img) = self.images.iter_mut().find(|img| img.key == key) {
-                    img.pixels = Rc::default();
+                    img.frames[0].data = Rc::default();
                 }
             }
             let pixels = Rc::make_mut(&mut self.placements[i].pixels);
@@ -1342,7 +1434,10 @@ impl Graphics {
     /// - A relative placement under a virtual one is placed from the top
     ///   row and the leftmost column, separately, of the cells that show
     ///   part of the image. With none on the screen it is not drawn.
+    ///
+    /// Every placement shows its image's current frame (`show_frames`).
     pub fn finish(mut self, cells: &[PlaceholderCell], cell: (i32, i32), screen_rows: usize) -> Vec<Placement> {
+        self.show_frames();
         let (cw, ch) = (i64::from(cell.0), i64::from(cell.1));
         let any_virtual = self.has_virtual();
         let mut out = std::mem::take(&mut self.placements);

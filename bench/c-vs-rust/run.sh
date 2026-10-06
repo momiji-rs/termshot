@@ -70,6 +70,15 @@ geometry_rev=24d71feb5e80a0df5c079a64b1e31b8b2bc7f46b
 images_rev=431ed233a1d24cd8e7e4b471343e5dac70fc3462
 glyphs_rev=c0b7b02f41da34f687b86b911f743841422db1d7
 driver_rev=48192f68a8f3df3673fec7865efc540394c90e69
+# Fixtures of protocol features newer than every revision above, which the
+# old CLIs ignore: they change what is drawn, not how it is painted, so the
+# comparisons skip them. kitty animation frames came with #44.
+newer_feature() {
+    case $1 in
+        tests/fixtures/kitty-animation.pty) return 0 ;;
+    esac
+    return 1
+}
 
 # Workloads, parsed by the current termshot parser. build.sh leaves the
 # current C in libtermshot_c.a; link it the way test.sh does.
@@ -186,6 +195,7 @@ if [ "$mode" = glyphs ] || [ "$mode" = full ]; then
             n=$((n + 1))
         }
         for log in examples/*.pty tests/fixtures/*.pty tests/vt/real/*.log tests/perf/*.pty "$work"/logs/*.pty; do
+            newer_feature "$log" && continue
             # Every font at a common size and at 46, where FMA would show.
             for fonts in "$@"; do
                 for px in 24 46; do
@@ -277,6 +287,7 @@ if [ "$mode" = images ]; then
         ./build.sh
         n=0
         for log in tests/fixtures/kitty-*.pty tests/fixtures/sixel-*.pty tests/fixtures/cursor-*.pty; do
+            newer_feature "$log" && continue
             # Small and large cells, a fractional size, both cursor marks,
             # and rasters past 16 MiB, whose backdrop goes by rows.
             for args in '--px 1' '--px 9' '--px 24 --cursor-shape bar' '--px 47.5 --cursor-shape underline' \
