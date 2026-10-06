@@ -56,9 +56,9 @@ fi
 echo "ok, each of $((n - 1)) compressor allocation failures exits 2 and leaves no output"
 
 # Fail each of the render's own allocations in turn (src/render.rs: the
-# canvas, then the PNG's buffer, which stb_image_write asks for through
-# termshot_png_alloc): the run must exit 2, say which ran out, and leave no
-# output. The fault build says which allocation failed; when none does, all
+# canvas, the PNG's buffer, which stb_image_write asks for through
+# termshot_png_alloc, then the Vec the PNG's bytes are returned in): the run
+# must exit 2, say which ran out, and leave no output. The fault build says which allocation failed; when none does, all
 # have been.
 n=1
 while :; do
@@ -86,8 +86,8 @@ while :; do
     fi
     n=$((n + 1))
 done
-if [ "$n" -ne 3 ]; then
-    echo "FAIL $((n - 1)) render allocations failed, want the canvas and the PNG's buffer" >&2
+if [ "$n" -ne 4 ]; then
+    echo "FAIL $((n - 1)) render allocations failed, want the canvas, the PNG's buffer and its bytes" >&2
     exit 1
 fi
 echo "ok, each of $((n - 1)) render allocation failures exits 2 and leaves no output"

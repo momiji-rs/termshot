@@ -11,8 +11,10 @@
      read outlines for a TrueType face only;
    - termshot_png_encode: the PNG of the canvas's filtered scanlines, with
      Rust's compressor (src/deflate.rs) behind STBIW_ZLIB_COMPRESS.
-   main.rs asks draw_face_cell_size for the cell before replaying the log.
-   Everything here exists because it touches stb's internals or its types. */
+   The library asks draw_face_cell_size for the cell before replaying the
+   log (Font::cell_size, src/api_render.rs). Nothing here prints: failures
+   are return values, which the Rust says. Everything here exists because it
+   touches stb's internals or its types. */
 
 #include <limits.h>
 #include <math.h>
@@ -171,10 +173,7 @@ static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double fon
     int ascent, descent, line_gap;
     face_v_metrics(font, face, &ascent, &descent, &line_gap);
     int adv = face_advance(font, face, stbtt_FindGlyphIndex(font, 'M'));
-    if (adv <= 0 || ascent <= descent) {
-        fprintf(stderr, "termshot: font metrics unusable\n");
-        return 0;
-    }
+    if (adv <= 0 || ascent <= descent) return 0;
     float scale = face_scale(font, face, (float)font_px);
     int cell_w = to_px(adv * scale + 0.5f);
     if (cell_w < 1) cell_w = 1;
@@ -281,18 +280,15 @@ _Static_assert(sizeof(CellMetrics) == 28, "CellMetrics ABI must match the Rust s
 _Static_assert(sizeof(FontSetup) == 504, "FontSetup ABI must match the Rust side");
 
 /* Set up the fonts of a render in s: font_face to draw with, and
-   fallback_face, or NULL, for the characters it lacks. 1, having said why,
-   when a face can't be used or the font's metrics are unusable; 0 when
-   done. */
+   fallback_face, or NULL, for the characters it lacks. 0 when done; 1 when
+   a face can't be used, 2 when the font's metrics are unusable. It prints
+   nothing: src/render.rs says why (FontFailure there). */
 int termshot_font_setup(const Face *font_face, const Face *fallback_face, double font_px, FontSetup *s) {
     stbtt_fontinfo *font = &s->font, *fallback = &s->fallback;
-    if (!init_face(font, font_face) || (fallback_face && !init_face(fallback, fallback_face))) {
-        fprintf(stderr, "termshot: font init failed\n");
-        return 1;
-    }
+    if (!init_face(font, font_face) || (fallback_face && !init_face(fallback, fallback_face))) return 1;
 
     CellMetrics metrics;
-    if (!cell_metrics(font, font_face, font_px, &metrics)) return 1;
+    if (!cell_metrics(font, font_face, font_px, &metrics)) return 2;
     /* The fallback is sized to the same ascent-to-descent height and shares
        the baseline. */
     float fallback_scale = fallback_face ? face_scale(fallback, fallback_face, (float)metrics.body) : 0;
