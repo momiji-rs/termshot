@@ -17,6 +17,7 @@
 //! ignored: a kitty theme's other keys (cursor, selection_background,
 //! color16 and up, ...) must be taken out first.
 
+/// A colour as (red, green, blue).
 pub type Rgb = (u8, u8, u8);
 
 /// The colours a log's default and named colours stand for.

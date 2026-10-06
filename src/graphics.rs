@@ -5,7 +5,7 @@
 //! All coordinates are pixels computed from the same font metrics as the
 //! render (stb_glue.c's draw_cell_size).
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub use crate::composite::ImageView;
 
@@ -99,7 +99,7 @@ struct Image {
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Placement {
-    pub pixels: Rc<Vec<u8>>,
+    pub pixels: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
     /// The source rectangle shown, x, y, w and h: the crop, within the image.
@@ -373,7 +373,7 @@ impl Command {
 /// by any id up to that bound counts. Payloads are not decoded here: a failed
 /// transmission counts too, which only loads fonts that were not needed.
 ///
-/// `crate::needs_cell_metrics` walks the log once and hands every APC string
+/// `crate::vt::needs_cell_metrics` walks the log once and hands every APC string
 /// to [`CellMetricsScan::string`], in order.
 #[derive(Default)]
 pub struct CellMetricsScan {
@@ -385,7 +385,7 @@ pub struct CellMetricsScan {
 
 impl CellMetricsScan {
     /// Whether this APC string (its bytes after ESC _, through the terminator
-    /// `crate::skip_string` stopped after) is a kitty command that needs
+    /// `crate::vt::skip_string` stopped after) is a kitty command that needs
     /// cell metrics. Only a string that ST ends is a command.
     pub fn string(&mut self, s: &[u8]) -> bool {
         let Some(bytes) = s.strip_prefix(b"G").and_then(|s| s.strip_suffix(b"\x1b\\")) else {
@@ -415,11 +415,11 @@ impl CellMetricsScan {
     }
 }
 
-/// The kitty half of `crate::needs_cell_metrics`, for tests.
+/// The kitty half of `crate::vt::needs_cell_metrics`, for tests.
 #[cfg(test)]
 pub fn needs_cell_metrics(data: &[u8]) -> bool {
     let mut scan = CellMetricsScan::default();
-    crate::any_string(data, |kind, s| kind == b'_' && scan.string(s))
+    crate::vt::any_string(data, |kind, s| kind == b'_' && scan.string(s))
 }
 
 /// The byte-at-a-time scan `CellMetricsScan` replaced (main `a8a95e0`),
@@ -433,7 +433,7 @@ pub fn needs_cell_metrics_reference(data: &[u8]) -> bool {
     while i + 1 < data.len() {
         if data[i] == 0x1b && matches!(data[i + 1], b']' | b'P' | b'_' | b'^' | b'X') {
             let start = i + 2;
-            let end = crate::skip_string(data, start);
+            let end = crate::vt::skip_string(data, start);
             if data[i + 1] == b'_'
                 && data.get(start) == Some(&b'G')
                 && end >= start + 3
@@ -821,7 +821,7 @@ impl Graphics {
         };
         let id = if cmd.id == 0 && cmd.number != 0 { self.free_id() } else { cmd.id };
         let atime = self.tick();
-        let root = Frame::root(Rc::new(pixels), width, height, cmd.format == 24);
+        let root = Frame::root(Arc::new(pixels), width, height, cmd.format == 24);
         self.images.push(Image {
             key,
             id,
@@ -1298,12 +1298,12 @@ impl Graphics {
             // pixels are written in place, not copied, and later erases need
             // no search of the store.
             let (x, key) = (p.x, p.image);
-            if Rc::strong_count(&p.pixels) > 1 {
+            if Arc::strong_count(&p.pixels) > 1 {
                 if let Some(img) = self.images.iter_mut().find(|img| img.key == key) {
-                    img.frames[0].data = Rc::default();
+                    img.frames[0].data = Arc::default();
                 }
             }
-            let pixels = Rc::make_mut(&mut self.placements[i].pixels);
+            let pixels = Arc::make_mut(&mut self.placements[i].pixels);
             for (top, bottom, origin) in rows {
                 for y in top..bottom {
                     let start = ((y - origin) * w + left - x) as usize * 4;
@@ -1486,7 +1486,7 @@ impl Graphics {
             at.1 = at.1.min(left / cw);
             self.clock += 1;
             cell_images.push(Placement {
-                pixels: Rc::clone(&v.pixels),
+                pixels: Arc::clone(&v.pixels),
                 src: [0, 0, v.width, v.height],
                 x,
                 w,

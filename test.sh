@@ -1,6 +1,7 @@
 #!/bin/sh
-# Build, then run the parser unit tests, the CLI exit-code checks and the
-# pixel goldens. Renders land in target/test/ and are kept for inspection.
+# Build, then run the parser unit tests, the CLI exit-code checks, the
+# pixel goldens and the library test. Renders land in target/test/ and are
+# kept for inspection.
 #
 #   ./test.sh                    run everything
 #   ./test.sh --update-goldens   rewrite tests/goldens.txt from this build
@@ -487,6 +488,12 @@ if [ "$mode" = update ]; then
 else
     "$out/golden" || fail=1
 fi
+echo "== the library, linked as an embedder links it"
+# After the goldens, which check tests/grids/ against the CLI: the library
+# must write the same grids.
+# shellcheck disable=SC2086
+rustc --edition 2021 tests/library.rs -o "$out/library" --extern termshot=libtermshot.rlib ${RUSTC_LINK_ARGS:-}
+"$out/library" || fail=1
 echo "== kitty graphics pixels"
 rustc --edition 2021 tests/graphics.rs -o "$out/graphics" -L native="$out" -l static=png_read
 "$out/graphics"

@@ -3,7 +3,10 @@
 //! with the default colours afterwards.
 
 use super::*;
+use crate::cell::BOLD;
+use crate::grid::grid_json;
 use crate::palette::{parse_color, MAX_FILE_BYTES};
+use crate::vt::replay_sized;
 
 type Rgb = (u8, u8, u8);
 

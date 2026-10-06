@@ -7,6 +7,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- termshot can be used as a Rust library (parse only for now, #85).
+  `build.sh` also builds `libtermshot.rlib` from `src/lib.rs`, with no
+  dependencies; link it with `rustc --extern termshot=libtermshot.rlib`.
+  `termshot::parse` replays a log into a `Grid`, whose `to_text` and
+  `to_json` are byte for byte what `--text` and `--json` write; the grid's
+  cells, the cursor and its shape, the cell size images move the cursor
+  by, and asciicast decoding are in the API too, with errors as values
+  (`termshot::Error`). Drawing a PNG is still the CLI's only. The CLI is
+  unchanged.
 - **kitty animation, drawn as a still** (#44): frame uploads (`a=f`: new
   frames over a base frame `c` or a background colour `Y`, edits of frame
   `r`, blended or overwriting with `X`, in every format and chunked),

@@ -1,7 +1,7 @@
 use super::*;
-use crate::{replay_sized, Lf};
+use crate::{screen::Lf, vt::replay_sized};
 
-fn replay(s: &[u8]) -> crate::Grid {
+fn replay(s: &[u8]) -> crate::grid::Grid {
     replay_sized(s, 20, 10, Lf::Index, (10, 20))
 }
 const RED: &[u8] = b"\x1b_Ga=T,f=24,s=1,v=1,c=2,r=1; /wAA\x1b\\";
@@ -535,7 +535,7 @@ fn upload_and_retained_memory_are_bounded() {
     assert!(g.pending.is_none());
     assert!(g.placements.is_empty());
     g.command(b"a=T,f=24,s=1,v=1,i=1;/wAA", 0, 0, (1, 1), 10);
-    Rc::make_mut(&mut g.images[0].frames[0].data).resize(MAX_BYTES, 0);
+    Arc::make_mut(&mut g.images[0].frames[0].data).resize(MAX_BYTES, 0);
     // A new image over the quota evicts the old one, placement and all.
     g.command(b"a=T,f=24,s=1,v=1,i=2;/wAA", 0, 0, (1, 1), 10);
     assert_eq!(ids(&g), [2]);
@@ -844,7 +844,7 @@ fn transmit_stores_and_put_places_at_the_cursor() {
     assert_eq!((a.x, a.slices[0].y, a.w, a.h), (30, 40, 20, 20));
     assert_eq!((b.x, b.slices[0].y, b.w, b.h), (0, 100, 1, 1));
     // Placements share the stored pixels rather than copying them.
-    assert!(Rc::ptr_eq(&a.pixels, &b.pixels));
+    assert!(Arc::ptr_eq(&a.pixels, &b.pixels));
     assert_eq!(*a.pixels, [255, 0, 0, 255]);
 }
 
@@ -1025,7 +1025,7 @@ fn clearing_a_screen_frees_its_stored_images() {
 fn quota_frees_unplaced_images_first_then_the_least_recently_used() {
     let grow = |g: &mut Graphics, id: u32, len: usize| {
         let img = g.images.iter_mut().find(|img| img.id == id).unwrap();
-        Rc::make_mut(&mut img.frames[0].data).resize(len, 0);
+        Arc::make_mut(&mut img.frames[0].data).resize(len, 0);
     };
     let mut g = Graphics::default();
     run(&mut g, (0, 0), &format!("a=t,i=1,{PIXEL}"));
@@ -1198,10 +1198,10 @@ fn erasing_sixel_pixels_keeps_one_copy_and_the_quota() {
     let image = crate::sixel::Image { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 255, 0, 255] };
     g.sixel(&crate::sixel::kitty_command(&image), 0, 0, (1, 1), 10);
     let counted = |g: &Graphics| g.images.iter().map(Image::bytes).sum::<usize>();
-    assert_eq!((Rc::strong_count(&g.placements[0].pixels), counted(&g)), (2, 8));
+    assert_eq!((Arc::strong_count(&g.placements[0].pixels), counted(&g)), (2, 8));
     g.erase_sixel(0, 0, 1, 1);
     assert_eq!(*g.placements[0].pixels, [0, 0, 0, 0, 0, 255, 0, 255]);
-    assert_eq!((Rc::strong_count(&g.placements[0].pixels), counted(&g)), (1, 8));
+    assert_eq!((Arc::strong_count(&g.placements[0].pixels), counted(&g)), (1, 8));
     assert!(g.images[0].frames[0].data.is_empty());
     g.erase_sixel(1, 0, 2, 1);
     assert_eq!(*g.placements[0].pixels, [0; 8]);

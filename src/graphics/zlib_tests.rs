@@ -4,14 +4,14 @@
 //! with the inflater: stored blocks built here, with an Adler-32 computed
 //! here, and the renderer's own DEFLATE compressor (src/deflate.rs).
 use super::*;
-use crate::{replay_sized, Lf};
+use crate::{screen::Lf, vt::replay_sized};
 
 extern "C" {
     fn termshot_zlib_compress(data: *mut u8, len: i32, out_len: *mut i32, quality: i32) -> *mut u8;
     fn free(p: *mut std::ffi::c_void);
 }
 
-fn replay(s: &[u8]) -> crate::Grid {
+fn replay(s: &[u8]) -> crate::grid::Grid {
     replay_sized(s, 20, 10, Lf::Index, (10, 20))
 }
 
@@ -68,13 +68,13 @@ fn encode(data: &[u8]) -> String {
 }
 
 /// One a=T,o=z transmission of `stream` with the given keys, then "OK".
-fn send(keys: &str, stream: &[u8]) -> crate::Grid {
+fn send(keys: &str, stream: &[u8]) -> crate::grid::Grid {
     replay(format!("\x1b_Ga=T,o=z,C=1,{keys};{}\x1b\\OK", encode(stream)).as_bytes())
 }
 
 /// The pixels the single placement shows, or None, after checking that the
 /// payload never reaches the text.
-fn shown(g: &crate::Grid) -> Option<Vec<u8>> {
+fn shown(g: &crate::grid::Grid) -> Option<Vec<u8>> {
     assert_eq!((g.cells[0].ch, g.cells[1].ch), (b'O' as u32, b'K' as u32));
     assert!(g.images.len() <= 1);
     g.images.first().map(|p| p.pixels.to_vec())

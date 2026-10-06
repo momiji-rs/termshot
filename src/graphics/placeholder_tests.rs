@@ -7,7 +7,7 @@
 //! master), with the expected pixels worked out by hand from them.
 
 use super::*;
-use crate::{replay_sized, Lf};
+use crate::{screen::Lf, vt::replay_sized};
 
 /// A 1x1 red RGB image.
 const PIXEL: &str = "f=24,s=1,v=1;/wAA";
@@ -19,7 +19,7 @@ const P: &str = "\u{10EEEE}";
 /// The diacritics for 0 to 4, from the spec and rowcolumn-diacritics.txt.
 const D: [&str; 5] = ["\u{305}", "\u{30D}", "\u{30E}", "\u{310}", "\u{312}"];
 
-fn replay(log: &str) -> crate::Grid {
+fn replay(log: &str) -> crate::grid::Grid {
     replay_sized(log.as_bytes(), 10, 6, Lf::Index, (10, 20))
 }
 
@@ -31,7 +31,7 @@ fn apc(keys: &str) -> String {
 /// with the clip as the render applies it.
 type Drawn = (u32, i32, i64, i64, i64, i64, [i64; 4]);
 
-fn drawn(grid: &crate::Grid) -> Vec<Drawn> {
+fn drawn(grid: &crate::grid::Grid) -> Vec<Drawn> {
     let mut out = Vec::new();
     for p in &grid.images {
         for v in p.views() {
@@ -42,7 +42,7 @@ fn drawn(grid: &crate::Grid) -> Vec<Drawn> {
 }
 
 /// The cell images alone, as (image id, x, y, w, h, clip).
-fn cells(grid: &crate::Grid) -> Vec<(u32, i64, i64, i64, i64, [i64; 4])> {
+fn cells(grid: &crate::grid::Grid) -> Vec<(u32, i64, i64, i64, i64, [i64; 4])> {
     drawn(grid).into_iter().filter(|d| d.1 == -1).map(|(id, _, x, y, w, h, c)| (id, x, y, w, h, c)).collect()
 }
 
@@ -485,7 +485,7 @@ fn relative_placements_under_a_virtual_one() {
 #[test]
 fn text_and_json_keep_the_placeholders_as_code_points() {
     let grid = replay(&format!("{}{}", apc(&format!("a=T,i=42,U=1,c=2,r=2,{PIXEL}")), spec_2x2()));
-    let text = crate::grid_text(&grid.cells, &grid.marks, 10);
+    let text = crate::grid::grid_text(&grid.cells, &grid.marks, 10);
     let want = format!("{P}{}{}{P}{}{}\n{P}{}{}{P}{}{}\n", D[0], D[0], D[0], D[1], D[1], D[0], D[1], D[1]);
     assert!(text.starts_with(&want), "{text:?}");
 }
@@ -511,7 +511,7 @@ fn the_diacritics_are_kittys_and_combine_as_marks() {
     }
     let mark = |d: u32| char::from_u32(d).unwrap();
     let grid = replay(&format!("{P}{}{}{}", mark(DIACRITICS[296]), mark(DIACRITICS[0]), mark(DIACRITICS[2])));
-    assert_eq!(crate::marks_of(&grid.marks, 0), [DIACRITICS[296], DIACRITICS[0], DIACRITICS[2]]);
+    assert_eq!(crate::grid::marks_of(&grid.marks, 0), [DIACRITICS[296], DIACRITICS[0], DIACRITICS[2]]);
     // A high byte past 255 wraps, as kitty's 32-bit shift does: 297 - 1 = 296
     // is 40 in the top byte.
     let image = apc(&format!("a=T,i={},U=1,{PIXEL}", 1 + (40 << 24)));

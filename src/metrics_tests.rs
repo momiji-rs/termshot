@@ -225,7 +225,7 @@ fn one_maps_to(font: &[u8], cp: u16, glyph: u16) -> Vec<u8> {
 #[test]
 fn a_fallback_is_placed_by_its_advance_at_the_instance() {
     let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None, axes: None }).unwrap();
-    let cells = crate::parse("\u{4e00}".as_bytes(), 4, 1);
+    let cells = crate::vt::parse("\u{4e00}".as_bytes(), 4, 1);
     let hvar = crafted_hvar();
     for (glyph, advance) in [(1usize, 727u16), (3, 1600)] {
         let varied = one_maps_to(&two_axes(&[(b"HVAR", &hvar)]), 0x4e00, glyph as u16);
@@ -305,7 +305,7 @@ fn metrics_past_16_bits_size_the_cell_without_overflow() {
     fs::create_dir_all("target/test").unwrap();
     let mono = font::load(&font::Spec { path: draw_tests::FONT.into(), face: None, axes: None }).unwrap();
     let size_on = |name: &str, data: Vec<u8>, axes: &str, cols: usize, rows: usize| {
-        let cells = crate::parse(b"MM", cols, rows);
+        let cells = crate::vt::parse(b"MM", cols, rows);
         let path = format!("target/test/metrics-cell-{name}.otf");
         fs::write(&path, data).unwrap();
         let font = font::load(&font::Spec { path: path.clone(), face: None, axes: Some(axes.into()) }).unwrap();
