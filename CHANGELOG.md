@@ -5,359 +5,279 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-06
+
+termshot 0.2.0 draws images (kitty graphics and Sixel), reads asciinema
+recordings, takes OpenType fonts with CFF and CFF2 outlines, draws the
+cursor, italic and combining marks, and can write the screen as text or
+JSON. Drawing and PNG compression moved from C to Rust, release binaries
+are smaller, and most renders are faster.
+
+Some 0.1.0 renders change. Upgrading, expect:
+
+- **The cursor is drawn.** 0.1.0 never drew it; 0.2.0 draws it where the
+  log leaves it unless the log hides it (`ESC [ ? 25 l`). `--cursor none`
+  renders without it, as 0.1.0 did.
+- **Combining marks are drawn.** 0.1.0's notes say a mark with no
+  precomposed form is "otherwise dropped"; that no longer holds. It is
+  kept, drawn over its character, and written by `--text` and `--json`.
+- **Italic (SGR 3) is drawn**, slanted; 0.1.0 drew it upright.
+- **Images and their cursor movement.** 0.1.0 ignored kitty graphics and
+  Sixel. Now the images are drawn and move the cursor as kitty and xterm
+  move it, so text written after an image can land elsewhere.
+- **Glyph fixes that move pixels:** a character whose glyph has no outline
+  falls back or is drawn as a box instead of blank; U+2800, U+2028, U+2029
+  and the Hangul fillers no longer draw boxes; a glyph with a box but no
+  points no longer draws stray pixels.
+- **A log whose first line is a JSON object with a `"version"` member is
+  read as an asciinema cast.** `--raw` reads it as raw output, as 0.1.0 did.
+- **Exit codes:** running out of memory while compressing the PNG exits 2,
+  not 1, and an output that names an input or another output is refused
+  with 2 instead of overwriting it.
+
 ### Added
 
-- Read asciinema recordings (`.cast`, asciicast v2 and v3) as the log (#1).
-  The output events are replayed in order; input, markers and exit events are
-  ignored. Without `--size`, the grid takes the recording's size: its header's,
-  or its last resize event's. A first line that is a JSON object with a
-  `"version"` member marks a cast; `--cast` reads one whatever it starts
-  with, and `--raw` reads a log as raw output whatever it starts with. The JSON is read strictly; a malformed cast is refused with its line
-  (exit 1), and one larger than 500x200 needs `--size` (exit 2).
-
-- Replay kitty inline graphics (`a=T,t=d`) in RGB, RGBA and PNG formats,
-  including chunked uploads, alpha blending, cell-sized placements, native
-  pixel sizing, image-ID replacement and deletion (#41). Images track scrolling
-  and alternate screens. Unsupported graphics features, including
-  external-file transfers, remain ignored; see the README for the supported
-  subset and resource limits.
-
-- Draw Sixel images (`ESC P … q … ESC \`, #41) as xterm decodes them: HLS and
-  RGB colour registers, private to each image and starting from the VT340's
-  16 colours, repeats, `$` and `-`, raster attributes, and `P2` for an opaque
-  or transparent background. Pixels are square and native size, measured in
-  the font's cells like kitty's native sizing. The image starts at the cursor,
-  scrolls the screen when it passes the bottom margin, and leaves the cursor on
-  the last row it covers; DECSDM (`CSI ? 80 h`) draws it at the top left
-  instead. Images share the kitty image store, its layering and its limits;
-  one over 8,192 pixels on a side or 4,194,304 in all is refused, as are
-  images past a per-log budget of 16,777,216 pixel writes plus 256 per byte
-  of Sixel data, so a short log cannot demand unbounded work, overdrawing
-  included. Text and
-  JSON output load the font for a log with Sixel, since the cell height moves
-  the cursor. As in xterm, whose Sixel pixels belong to the cells, a
-  character written over the image later clears its pixels in the cells it
-  takes, and ED 0 and 1 clear them in the rows below or above the cursor's
-  (not in its own row); EL, ECH, ICH and DCH leave them, as xterm does.
-  Kitty images, a layer of their own, keep their pixels.
-
-- Kitty graphics store images apart from their placements (#44): `a=t`
-  transmits without placing, `a=p` places a stored image again, `I` names
-  images by number, and a placement id moves one placement. Deletes support
-  kitty's `a`, `i`, `n`, `r`, `c`, `p`, `q`, `x`, `y` and `z` selectors, and
-  uppercase frees the image data. Over the storage limit, images without a
-  placement and then the least recently placed are freed instead of refusing
-  the new image. Draw order now breaks z-index ties by creation, as kitty does.
-
-- Kitty graphics accept zlib-compressed payloads (`o=z`, #44) in every format.
-  As in kitty, the data must inflate to exactly its size, which a compressed
-  PNG gives in `S`. A compressed RGB or RGBA upload may be at most 1 KiB over
-  its decoded size, as in kitty, checked as each chunk arrives, and its
-  dimensions are checked before anything is inflated.
-
-- Kitty placements crop and layer as kitty does (#44): `x`, `y`, `w`, `h`
-  pick the part of the image shown, `X`, `Y` start it inside its first cell,
-  and a negative z-index draws it under the text, or with `z` below
-  -1,073,741,824 under every background that is not the default one.
-  Reverse video and the block cursor count as non-default there. A crop keeps
-  its own aspect ratio when fitted to `c` and `r`. Commands with these keys
-  were ignored before.
-
-- Kitty relative placements (#44): `P` and `Q` name a parent placement, and
-  the image starts `H`, `V` cells from its top left cell. Children move and
-  scroll with their parent and are deleted with it, by every delete
-  selector; a child's image left without placements is freed. The cursor
-  does not move after a relative put. A missing parent, a cycle, or a chain
-  of more than 8 links refuses the put, as kitty does. Commands with these
-  keys were ignored before.
-
-- Kitty Unicode placeholders (#44): `U=1` makes a virtual placement, which
-  draws nothing and moves no cursor, and each U+10EEEE cell shows the part
-  of its image under it. The foreground colour names the image (a palette
-  colour by its index, a 24-bit one as 0xRRGGBB, the third diacritic as the
-  high byte), the underline colour (SGR 58, otherwise not drawn) names the
-  placement, and the first two diacritics give the row and column, inherited
-  from the cell to the left as kitty does. The image is fitted into the
-  placement's `c` x `r` cells and letterboxed. Placeholders are text, so the
-  image scrolls, is erased and is overwritten with them; a virtual placement
-  survives full-screen erase and reset, and only `d=i`, `n` and `r` delete
-  it. A relative placement may have a virtual parent. The placeholder cells
-  are drawn blank; `--text` and `--json` keep their code points.
-  Commands with `U=1` were ignored before.
-
-- `--lf-newline` treats each bare LF as CR LF, as a terminal with `onlcr`
-  does, for logs not captured through a PTY (#28). A bare LF that ends the
-  input ends the last line instead of scrolling, so
-  `tmux capture-pane -e -p | termshot --lf-newline --size <pane size>`
-  keeps the top row; a final CR LF still scrolls, so a PTY log renders
-  the same with the flag as without.
-- A hint on stderr when a log has line feeds but no CR and `--lf-newline`
-  is not given. The image is still written and the exit status is 0.
-- A warning on stderr when a character is drawn as a box because a font maps
-  it to an empty glyph, as color bitmap fonts such as Apple Color Emoji do
-  (#38). It names the first such cell, the font (and whether it is a color
-  bitmap font), and what to pass instead. The image is still written and the
-  exit status is 0. A character no font has at all is drawn as a box
-  silently, as before.
-- The cursor is drawn where the log leaves it, as a block in reverse video
-  (#33). On a wide character it covers both cells. With a wrap pending it
-  stays on the last column, as terminals draw it.
-- The cursor takes the shape a program sets with DECSCUSR (`CSI Ps SP q`,
-  #39): an underline (3, 4) or a bar (5, 6) in the default foreground, over
-  the cell's own colours, or a block (0 to 2). As in kitty, which draws it
-  with the text, it is over images under the text and under images of
-  z-index 0 and up (Sixel images too). Blinking
-  shapes are drawn steady. Like tmux, the shape survives DECSC/DECRC, DECSTR
-  and the alternate screen; unlike tmux, and like xterm, RIS resets it.
-  `--cursor-shape block|underline|bar` overrides it, and `--json` reports it
-  as the cursor's `shape`.
-- `--cursor COL,ROW` draws the cursor there instead, counting from 0 as
-  tmux's `#{cursor_x},#{cursor_y}` do, and `--cursor none` leaves it out.
-  A tmux capture-pane has no cursor, so the README's tmux example now asks
-  tmux for it. COL may be the column count, which is how tmux reports a
-  pending wrap.
-- `--text FILE` writes the screen as text, as `tmux capture-pane -p` prints
-  it: a line per row, trailing spaces trimmed, a wide character once (#32).
-  `<out.png>` is optional with it; without a PNG nothing is drawn or
-  encoded, and no font is read unless the log has kitty graphics, whose
-  placements need the font's cell size to move the cursor. `tests/grids/` holds
-  the text of every golden fixture, and the tmux references in `tests/vt/`
-  check it too.
-- `--json FILE` writes the screen with its colours and the cursor (#32):
-  per row, runs of cells alike in colour (`#rrggbb`, as drawn) and
-  attributes, each with the column it starts at, and the cursor as
-  `{"col","row"}` or null. Like `--text`, it needs no PNG, and a font only
-  for a log with kitty graphics.
-  `tests/grids/` holds it for every golden fixture, and
-  `tests/grids/check.py` checks that it parses and agrees with `--text`.
-- A face of a font collection (`.ttc`) can be picked for `--font` and
-  `--fallback-font` (part of #25): `FILE#N` by number from 0, or
-  `FILE#NAME` by its full or family name, ignoring case. A face that
-  doesn't exist, or a name that two faces share, is refused with the list
-  of faces (exit 1). A file whose name has a `#` in it is still read as
-  that file. `-v` prints the face used.
-- A hint on stderr when a collection of several faces is given without
-  picking one: which face was used (the first, as before) and the list of
-  the others. `FILE#0` uses the first without the hint.
-- Fonts with CFF outlines, such as `.otf` files and the Noto Sans CJK
-  collections, for `--font` and `--fallback-font` (#25). termshot reads the
-  CFF table and runs its charstrings in Rust (`src/cff.rs`), limiting the
-  work one glyph may take, and stb_truetype only rasterizes the outline;
-  stb's own CFF reader hangs, asserts or reads out of bounds on damaged
-  fonts. A damaged CFF table is refused with a reason (exit 1), and a
-  glyph that can't be drawn is drawn as the box for a missing glyph.
-- Variable fonts with CFF2 outlines, such as the variable Noto Sans CJK and
-  Source Han Sans builds, are drawn at their default instance (#51), where
-  they were refused. `src/cff.rs` reads the CFF2 table with the same checks
-  and the same per-glyph limit as CFF. A damaged CFF2 table is refused with
-  a reason (exit 1).
-- Choose the instance of a CFF2 variable font after a `#` in `--font` or
-  `--fallback-font`: `NotoSansCJKtc-VF.otf#wght=700`, or
-  `FILE.ttc#1#wght=700,wdth=90` with a face (#51). Each setting is clamped to
-  its axis's range, mapped through `avar`, and its outlines blended as
-  HarfBuzz blends them; the outlines of every character of the CFF2 test
-  font match hb-vector's at three weights. `-v` prints the instance. Bad
-  syntax exits 2. An axis the font lacks exits 1 and lists those it has; a
-  font whose outlines don't vary here (TrueType or CFF) exits 1 with that
-  reason. An instance's metrics vary too, as in HarfBuzz (#77): each glyph's
-  advance by `HVAR`, so a heavy instance as the main font gets wider cells,
-  and the ascender, descender and line gap by `MVAR`. Every glyph of the
-  CFF2 test font has HarfBuzz's advance at four instances. A damaged `HVAR`
-  or `MVAR` is refused with a reason (exit 1) at an instance, and not read
-  at the default one. An advance or extent varied past the 16 bits `hmtx`
-  and `hhea` hold sizes the cell as any does; a cell past the largest
-  image exits 2, as a large `--px` does.
-- Italic (SGR 3, cleared by 23), which vim comments, `bat` and `delta` use,
-  is drawn, and `--json` reports it as `"italic": true` (#26). The glyph's
-  outline is slanted 12 degrees before it is rasterized, so it is as smooth
-  as upright text with any font. Box drawing, block elements and the box
-  for a missing glyph stay upright.
-- Combining marks with no precomposed form are kept and drawn (#14): Thai
-  vowel and tone marks, Hebrew points, stacked or uncommon Latin accents
-  (q + U+0301), and, approximately, Indic vowel signs and viramas. A cell
-  keeps up to four marks after its character, in a side table beside the
-  cells, and each is drawn over the character in its colours, from the font
-  or else `--fallback-font`, where its font puts it (there is no shaping).
-  `--text` and `--json` write a cell's marks after its character, as
-  `tmux capture-pane -p` does. Marks join the last printed character,
-  wherever the cursor has gone since, as in xterm, and go with it when the
-  line is edited or scrolled; one whose character was erased or overwritten
-  is dropped. REP repeats a character with its marks. Emoji sequences (ZWJ,
-  skin tones, VS16) are kept in the text but still drawn one code point per
-  cell. Joiners, variation selectors and the Hangul fillers (U+115F, U+3164,
-  U+FFA0) draw nothing; a filler used to be drawn as a box.
+- **Kitty graphics** (#41, #44). Images sent inline (`t=d`) in RGB
+  (`f=24`), RGBA (`f=32`) and PNG (`f=100`), in `m=1` chunks, in base64
+  with or without `=` padding (each chunk decoded on its own, as in kitty,
+  so `kitten icat` works), and zlib-compressed (`o=z`; a compressed PNG
+  gives its size in `S`). They are blended over the screen at their native
+  pixel size or fitted into `c` x `r` cells keeping the aspect ratio, with
+  deterministic nearest-neighbour scaling.
+  - `a=T` transmits and places; `a=t` stores an image under an id `i` or a
+    number `I`, and `a=p` places a stored one again. A placement id `p`
+    moves one placement. Retransmitting an id replaces the image and
+    removes its placements. Explicit ids and numbers must be nonzero.
+  - Deletes take kitty's `a`, `i`, `n`, `r`, `c`, `p`, `q`, `x`, `y` and
+    `z` selectors; uppercase also frees the data of images left without a
+    placement.
+  - `x`, `y`, `w`, `h` crop the source, and the crop's aspect ratio is the
+    one kept; `X`, `Y` offset the image inside its first cell. A negative
+    `z` draws under the text, and below -1,073,741,824 under every cell
+    background that is not the default one (reverse video and the block
+    cursor count as non-default). Ties in `z` go by creation order.
+  - Relative placements (`P`, `Q`, `H`, `V`) start from a parent
+    placement, move and scroll with it and are deleted with it. A missing
+    parent, a cycle or a chain of more than 8 links refuses the put.
+  - Unicode placeholders (`U=1`, U+10EEEE cells): the cell's foreground
+    colour names the image, its underline colour (SGR 58) the placement, and
+    its diacritics the row and column, inherited from the cell to the left
+    as in kitty. The image is fitted into the placement's cells and
+    letterboxed, and scrolls, is erased and is overwritten with the
+    placeholders. A virtual placement survives full-screen erase and reset;
+    only `d=i`, `n` and `r` delete it. A relative placement may have a
+    virtual parent. Placeholder cells are drawn blank;
+    `--text` and `--json` keep their code points.
+  - After a placement the cursor moves as kitty moves it: right by its
+    columns and down by its rows less one, to the next row's start at the
+    right edge, scrolling the region up past the bottom margin. `C=1`,
+    relative and virtual placements leave it in place. An image is not cut
+    at the screen's bottom when placed; scrolling brings the rest into view.
+  - Images track scrolling, and the main and alternate screens keep their
+    own. Only placements wholly inside a scrolling region move, clipped at
+    its edges; images that cross a margin stay put, including under IL, DL
+    and RI.
+  - Limits, per screen: 1,024 placements, and 4,096 stored images holding
+    16 MiB of RGBA pixels. Past them, an upload frees images without a
+    placement, then the least recently placed, as kitty's quota does. An
+    upload may hold 16 MiB of decoded payload, 8,192 pixels per axis and
+    4,194,304 pixels; a display rectangle at most 16,777,216 pixels per
+    axis; the PNG decoder has a 64 MiB allocation budget. As in kitty, an
+    RGB or RGBA payload may run at most 10 bytes over its size, which are
+    ignored, or 1,024 bytes if compressed, checked as each chunk arrives and
+    with the dimensions checked before anything is inflated; a compressed
+    payload must inflate to exactly its size. Over-limit and malformed
+    commands are discarded without printing their payload.
+  - Not supported: file and shared-memory transfers, and animation.
+- **Sixel images** (`ESC P … q … ESC \`, #41), decoded as xterm (patch 412)
+  decodes them: HLS and RGB colour registers, 1,024 per image starting from
+  the VT340's 16 colours, repeats, `$` and `-`, raster attributes, and `P2`
+  for an opaque or transparent background. Pixels are square and native
+  size. The image starts at the cursor, scrolls the screen when it passes
+  the bottom margin, and leaves the cursor on the last row it covers;
+  DECSDM (`CSI ? 80 h`) draws it at the top left instead. Sixel images share
+  the kitty image store, its layering and its limits. As in xterm, a
+  character written over the image clears its pixels in the cells it takes,
+  and ED 0 and 1 clear them in the rows below or above the cursor's; EL,
+  ECH, ICH and DCH leave them. An image over 8,192 pixels on a side or
+  4,194,304 in all is refused before its pixels are allocated, and a log may
+  write at most 16,777,216 Sixel pixels plus 256 per byte of Sixel data,
+  overdrawing included. Only `ESC \` commits an image. Not supported:
+  non-square pixels (`P1`, `Pan;Pad`, which xterm ignores too), DECSET 8452,
+  shared colour registers and ReGIS.
+- **asciinema recordings** (`.cast`, asciicast v2 and v3) as the log (#1).
+  Output events are replayed in order; input, marker, exit and other events
+  are ignored, and so is timing. Without `--size`, the grid takes the
+  recording's size: its last resize event's, or its header's. A log is read
+  as a cast when its first line is a JSON object with a `"version"` member;
+  `--cast` forces it, and `--raw` reads the log as raw output. The JSON is
+  read strictly (UTF-8, every escape, no duplicate keys, at most 16 deep);
+  a malformed cast is refused with its line (exit 1), and one larger than
+  500x200 needs `--size` (exit 2).
+- **Fonts with CFF outlines** (`.otf`, Noto Sans CJK) for `--font` and
+  `--fallback-font` (#25), where 0.1.0 refused them. termshot reads the CFF
+  table and runs its charstrings in Rust (`src/cff.rs`) with a limit on the
+  work one glyph may take; stb_truetype only rasterizes the outline. A
+  damaged table is refused with a reason (exit 1); a glyph that can't be
+  drawn is drawn as the box for a missing glyph.
+- **Variable fonts with CFF2 outlines** (#51, #77), such as the variable
+  Noto Sans CJK and Source Han Sans. They are drawn at their default
+  instance, or at the one chosen after a `#`: `NotoSansCJKtc-VF.otf#wght=700`,
+  or `FILE.ttc#1#wght=700,wdth=90` with a face. Each setting is clamped to
+  its axis, mapped through `avar`, and blended as HarfBuzz blends it;
+  advances vary by `HVAR` (a heavy instance as the main font gets wider
+  cells) and the ascender, descender and line gap by `MVAR`. Bad syntax
+  exits 2. An axis the font lacks exits 1 and lists those it has, and so
+  does a TrueType or CFF font, whose outlines don't vary here. A damaged
+  CFF2, `HVAR` or `MVAR` table is refused with a reason (exit 1). `-v`
+  prints the instance.
+- **A face of a font collection** (`.ttc`) for `--font` and
+  `--fallback-font` (#25): `FILE#N` by number from 0, or `FILE#NAME` by its
+  full or family name, ignoring case. A face that doesn't exist, or a name
+  two faces share, is refused with the list of faces (exit 1). Without a
+  `#`, the first face is used, as before, with a hint on stderr listing the
+  others; `FILE#0` skips the hint. A file whose own name has a `#` is still
+  read as that file. `-v` prints the face used.
+- **The cursor** (#33, #39), drawn where the log leaves it: a block in
+  reverse video, over both cells of a wide character, on the last column
+  with a wrap pending. The shape a program sets with DECSCUSR
+  (`CSI Ps SP q`) is drawn steady: an underline (3, 4) or a bar (5, 6) in
+  the default foreground, or a block (0 to 2). As in kitty, the underline
+  and bar are over images under the text and under images of z-index 0 and
+  up. The shape survives DECSC/DECRC, DECSTR and the alternate screen, as in
+  tmux; RIS resets it, as in xterm.
+  - `--cursor COL,ROW` draws it there, counting from 0 as tmux's
+    `#{cursor_x},#{cursor_y}` do (COL may be the column count, tmux's pending
+    wrap), and `--cursor none` leaves it out.
+  - `--cursor-shape block|underline|bar` overrides the shape.
+- **`--text FILE`** writes the screen as text, as `tmux capture-pane -p`
+  prints it: a line per row, trailing spaces trimmed, a wide character
+  once, each character followed by its combining marks (#32).
+- **`--json FILE`** writes the screen with its colours and the cursor
+  (#32): per row, runs of cells alike in colour (`#rrggbb`, as drawn) and
+  attributes (`bold`, `italic`, `underline`, `double_underline`,
+  `strike`), each with the column it starts at, and the cursor as
+  `{"col","row","shape"}` or null.
+  - With `--text` or `--json`, `<out.png>` is optional. Without a PNG
+    nothing is drawn or encoded, and no font is read unless the log has a
+    kitty placement or a Sixel image that can move the cursor by the font's
+    cells. `tests/grids/` holds both outputs for every golden fixture.
+- **Combining marks with no precomposed form** are kept and drawn (#14):
+  Thai vowel and tone marks, Hebrew points, stacked or uncommon Latin
+  accents, and, approximately, Indic vowel signs and viramas. A cell keeps
+  up to four, each drawn over the character in its colours, from the font
+  or else `--fallback-font`, where the font puts it (there is no shaping).
+  Marks join the last printed character, wherever the cursor has gone since,
+  as in xterm, and go with it when the line is edited or scrolled; REP
+  repeats them. Emoji sequences (ZWJ, skin tones, VS16) are kept in the text
+  but drawn one code point per cell. Joiners, variation selectors and the
+  Hangul fillers draw nothing.
+- **Italic** (SGR 3, cleared by 23), which vim comments, `bat` and `delta`
+  use (#26): the glyph's outline slanted 12 degrees before it is
+  rasterized, as smooth as upright text with any font. Box drawing, block
+  elements and the box for a missing glyph stay upright. `--json` reports
+  it as `"italic": true`.
+- **`--lf-newline`** treats each bare LF as CR LF, as a terminal with
+  `onlcr` does, for logs not captured through a PTY (#28). A bare LF that
+  ends the input ends the last line instead of scrolling, so
+  `tmux capture-pane -e -p | termshot --lf-newline --size <pane size>` keeps
+  the top row; a PTY log renders the same with the flag as without.
+- Hints and warnings on stderr, which leave the image written and the exit
+  status 0:
+  - a hint when a log has line feeds but no CR and `--lf-newline` is not
+    given;
+  - a warning when a character is drawn as a box because a font maps it to
+    an empty glyph, as color bitmap fonts such as Apple Color Emoji do
+    (#38), naming the first such cell, the font, and what to pass instead.
+    A character no font has at all is drawn as a box silently, as before.
 
 ### Changed
 
-- Release binaries are built with fat LTO (`-C lto=fat`, #83): 8.7% smaller
-  on macOS universal, 5.5% on Linux x86_64 musl and 5.0% on Linux aarch64
-  musl, and the archives 3.4-4.6% smaller. Every output is the same.
-  `reply-sent` renders at the same speed; a few cases are 1.5-3% slower
-  (`cursor-moves` on both hosts) and `thai-combining` is 2-6% faster. Other
-  size options were measured and left out (docs/performance.md). `build.sh`
-  takes extra rustc flags from `RUSTFLAGS`.
-- The PNG compressor is Rust (`src/deflate.rs`) instead of C, the first step
-  of #12; stb_image_write, still C, calls it. PNGs are byte for byte the same.
-  On x86-64 its Adler-32 uses SSE2, and the whole compressor is 4-13% faster
-  than GCC's build of the C; `reply-sent` renders 5-6% faster on Linux x86-64
-  and the same on macOS arm64, where a few glyph-heavy cases are 1-2% slower
-  (docs/performance.md).
-- Box drawing, block elements and the cache of rounded corners and diagonals
-  are Rust (`src/geometry.rs`) instead of C, step 2a of #12; draw.c calls it
-  once per cell. Every pixel is the same: `bench/c-vs-rust/run.sh geometry`
-  compares it with the C it replaced at every cell size, and CI runs that on
-  all three hosts. Geometry renders take the same time on macOS arm64 and
-  Linux x86-64 (docs/performance.md). `TERMSHOT_PROFILE`'s `geometry_cache_bytes` is
-  16 KiB higher once a stroke is kept: a cache slot is 32 bytes in Rust, 16
-  in C.
-- The image layers (kitty and Sixel images and the underline and bar
-  cursors) and the cell backgrounds under them are Rust (`src/composite.rs`)
-  instead of C, step 2b of #12; draw.c calls it per row of cells or per
-  layer. Every pixel is the same: `bench/c-vs-rust/run.sh images` compares it
-  with the C it replaced on random scenes and renders every image and cursor
-  fixture with both CLIs, and CI runs that on all three hosts. A bug in it
-  fails the render with exit 2 ("painting failed") instead of reading past an
-  image. The image cases take the same time or less on macOS arm64 and Linux
-  x86-64 (docs/performance.md).
-- The text is Rust (`src/glyphs.rs`) instead of C, step 2c of #12: the glyph
-  cache, the font and fallback lookups and the fallback's scaling, italic,
-  bold, combining marks, the box for a missing character with its
-  empty-glyph warning, and underlines and strike-through; draw.c calls it
-  once per render, and stb_truetype stays C. A CFF or CFF2 face is never
-  handed stb's outline readers. Every pixel and warning is the same, except
-  for the fix below: `bench/c-vs-rust/run.sh glyphs` renders every fixture
-  and generated logs with each kind of font at several sizes through the CLI
-  with the C and with the Rust, and CI runs that on all three hosts. Renders
-  take the same time on macOS arm64 and Linux x86-64, or less where many
-  glyphs are blended: the blend is up to 16% faster on macOS and 23% on
-  Linux (docs/performance.md). Running out of memory for a glyph
-  still exits 2 ("glyph allocation failed").
-- The render driver is Rust (`src/render.rs`) instead of C, step 2d of #12:
-  the font setup call, the raster, the order of the passes, the errors and
-  exit codes, the PNG write and the `TERMSHOT_PROFILE` record, whose keys
-  and stage boundaries are unchanged. `src/draw.c` is gone; the C left is
-  `src/stb_glue.c`, stb_truetype's font setup and metrics and the PNG
-  encoder of stb_image_write. Every PNG, warning and exit code is the same:
-  `bench/c-vs-rust/run.sh full` renders every fixture and generated logs
-  with each kind of font at several sizes, `-v`, oversized images and
-  unwritable outputs through the CLI with the C driver and with the Rust,
-  and CI runs that on all three hosts. On macOS arm64 and Linux x86-64 no
-  case is slower with confidence because of the driver; the repeatable
-  moves, of 1-2%, are in code the port did not touch: the parser on macOS
-  (slower) and on Linux (faster), and how rustc emits the unchanged
-  compressor on Linux (docs/performance.md). Running out of memory for the
-  raster or the PNG still exits 2.
-- After a kitty placement, the cursor moves as kitty moves it
-  (`handle_put_command`, `screen_handle_graphics_command`): right by the
-  placement's columns and down by its rows less one, so it ends beside the
-  image's last row, not below it. Reaching the right edge goes to the start
-  of the next row, and passing the bottom margin scrolls the region up by the
-  overshoot instead of clamping the cursor there. An image is no longer cut
-  at the screen's bottom when placed: as in kitty, scrolling without margins
-  brings the rest into view. `C=1` still leaves the cursor in place.
-- A font that can't be used is reported as "not a usable font", no longer
-  "not a usable TrueType font".
-- Renders now show the cursor unless the log hides it with `ESC [ ? 25 l`
+- Renders show the cursor unless the log hides it with `ESC [ ? 25 l`
   (DECTCEM), as full-screen programs and progress bars often do.
+  `--cursor none` renders without it, as 0.1.0 did.
+- **Faster, with the same output** (#20, #21, #22, #12, #83). Whole CLI
+  runs, median wall time of 40, on an Apple M2 Max (macOS 26.6.2) and a
+  Ryzen 7 8745HS (Arch Linux); every round is in `docs/performance.md`:
+  - PNG compression (#20): a 2200×1440 render takes 7.9 ms instead of 9.9
+    on the Ryzen, and a 5800×3840 one 27.6 instead of 40.5; up to 9% less
+    on the M2 Max, most at high resolution.
+  - Replay (#21): the 4.7 MB ANSI log renders in 18.3 ms instead of 21.9 on
+    the M2 Max and 16.1 instead of 19.2 on the Ryzen; Thai, mixed-script and
+    scrolling logs parse 1.8-2.6 times as fast.
+  - Painting (#22): 3,000 rounded corners take 10.1 ms instead of 15.3 at
+    48 px and 32.8 instead of 69.9 at 128 px on the M2 Max, and 8.7 instead
+    of 14.1 and 25.6 instead of 63.2 on the Ryzen; images are 3-9% faster,
+    and screens over 16 MiB up to 9% on the Ryzen.
+  - Text-only runs decide whether they need a font in one pass instead of
+    two: the 4.7 MB log's `--text` takes 13.6 ms instead of 18.8 on the M2
+    Max.
+  - The move to Rust (#12) slowed no case by more than 2% with confidence:
+    `reply-sent` is 5-6% faster on Linux x86-64, and the glyph blend up to
+    16% faster on macOS and 23% on Linux.
+  - Release binaries are built with fat LTO (`-C lto=fat`, #83): 8.7%
+    smaller on macOS universal, 5.5% on Linux x86_64 and 5.0% on Linux
+    aarch64, and the archives 3.4-4.6% smaller, with the same output.
+    `reply-sent` is as fast; `cursor-moves` and two other cases are 1.5-3%
+    slower and `thai-combining` 2-6% faster.
+  - With the 0.2.0 release binaries, `examples/reply-sent.pty` at
+    2200×1440 takes 8.6-8.7 ms on the M2 Max (the universal binary's arm64
+    slice) and 8.2-8.4 ms on the Ryzen (the static x86_64 musl binary).
+- **Drawing and PNG compression are Rust** (#12): the compressor
+  (`src/deflate.rs`), box drawing and blocks (`src/geometry.rs`), image
+  compositing (`src/composite.rs`), the text (`src/glyphs.rs`) and the render
+  driver (`src/render.rs`). `src/draw.c` and `src/deflate.c` are gone; the C
+  left is stb_truetype's font setup and metrics, stb_image_write's PNG
+  packaging (`src/stb_glue.c`) and the PNG decoder's wrapper. Every PNG,
+  warning and exit code is the same as the C's, but for the fixes below,
+  checked by `bench/c-vs-rust/run.sh` on every fixture on macOS and Linux. A
+  CFF or CFF2 face is never handed stb's outline readers. A bug while
+  painting fails the render with exit 2 ("painting failed") instead of
+  reading past an image; running out of memory for the raster or a glyph
+  still exits 2.
+- Running out of memory while compressing the PNG exits 2 with an "out of
+  memory" message, as other allocation failures do. It exited 1 and said the
+  PNG could not be written.
+- A font that can't be used is reported as "not a usable font", no longer
+  "not a usable TrueType font". A font with no `glyf` table is refused for
+  what it has (#38): a color bitmap font such as Noto Color Emoji (`CBDT` or
+  `sbix`, no outlines) is named as one, with a pointer to an outline font
+  such as Noto Emoji, instead of being called a CFF font.
 - `TERMSHOT_PROFILE` times the built-in font, a `--font` file and a
   `--fallback-font` on the same allocate/read/check/padding boundaries
   (`font_*_ms`, `fallback_*_ms`, with their sizes and `font_builtin`), adds
   `face_ms`, and counts glyph cache evictions, missing glyphs and fallback
   lookups and rasterizations (#19). The built-in font's `font_check_ms` no
   longer includes copying and padding it.
-- The README's Speed section quotes the latest measured round (Apple M2 Max
-  and Ryzen 7 8745HS, `721d3fe`, after #20, #21 and #22) with its
-  workloads, fonts, image sizes, revision and statistic, adds a text-only
-  run, links the versioned report, and keeps the first 2026-10-03 baseline
-  (`22b77e8`), the 2026-10-01 Apple M3 rounds and the "~20 ms" figure apart
-  as history (#23).
-- PNG compression is faster and writes the same bytes (#20). Adler-32 no
-  longer needs a 32-bit vector multiply, which baseline x86-64 lacks, and
-  the match loop inlines its per-token helpers and reverses Huffman codes
-  by table, which helps GCC builds. On a Ryzen 7 8745HS a 2200×1440 render
-  takes 7.9 ms instead of 9.9 and a 5800×3840 one 27.6 instead of 40.5; on
-  an Apple M2 Max up to 9% less, most at high resolution.
-  `docs/performance.md` has the measurements.
-- Rounded corners, diagonals, large screens and images are drawn faster, to
-  the same pixels (#22). A corner or diagonal is painted from one rasterized
-  before it when its points round the same way, which is checked exactly;
-  on rasters over 16 MiB, backgrounds are painted a row of cells ahead of the
-  text over them, while the row is in the cache; and images find their
-  source columns without a division per pixel. The 3,000-corner benchmark
-  takes 10.1 ms instead of 15.3 at 48 px and 32.8 instead of 69.9 at 128 px
-  on an Apple M2 Max, and 8.7 instead of 14.1 and 25.6 instead of 63.2 on a
-  Ryzen 7 8745HS, where 5280×3840 screens are also up to 9% faster;
-  `docs/performance.md` has the measurements.
-- Replaying a log is faster and leaves the same screen (#21). Character
-  widths come from a two-level table instead of two binary searches, marks
-  that compose with nothing skip the composition search, the pen's colours
-  are mixed once per SGR rather than once per character, erasing a row
-  copies instead of filling cell by cell, CSI digits skip the general byte
-  match, and long ASCII runs are scanned eight bytes at a time. Deciding
-  whether a log is a cast no longer searches it for its first LF unless it
-  starts with `{`; a raw log without a LF used to be searched to its end. The
-  4.7 MB ANSI replay renders in 18.3 ms instead of 21.9 on an
-  Apple M2 Max and in 16.1 instead of 19.2 on a Ryzen 7 8745HS, and Thai,
-  mixed-script and scrolling logs parse 1.8-2.6 times as fast.
-  `docs/performance.md` has the measurements.
-- `--text` and `--json` runs without a PNG decide whether they need fonts in
-  one pass over the log, sixteen bytes at a time, instead of two passes a
-  byte at a time; they read a font for exactly the same logs as before. The
-  4.7 MB ANSI replay's text takes 13.6 ms instead of 18.8 on an Apple M2 Max,
-  and the decision 0.66 ms instead of 5.9. `scripts/bench.py --suite text`
-  measures these runs; `docs/performance.md` has the measurements.
+- `build.sh` takes extra rustc flags from `RUSTFLAGS`.
+- `docs/performance.md` is a versioned report: each round keeps its raw
+  samples, binary hashes, toolchains, fonts and inputs, and the README's
+  Speed section quotes it (#23). `scripts/bench.py --suite text` times
+  text-only runs.
 
 ### Fixed
 
-- A font whose `hhea` ascender is not above its descender is refused at
-  load with that reason (exit 1). As `--fallback-font` it was scaled by a
-  height of 0 or less, and as `--font` it was refused only when drawing,
-  as "font metrics unusable". An instance whose `MVAR` takes the height to
-  0 is refused the same way.
-- A glyph with a box but no points, such as a composite of an empty glyph,
-  draws nothing. It drew whatever its bitmap's memory held, which on Linux
-  was not always zeros, so it could paint pixels that depended on what was
-  drawn before it.
-- A kitty RGB or RGBA payload up to 10 bytes longer than its pixels loads,
-  as in kitty, which ignores the excess (#55). termshot required the exact
-  length, and accepted up to 16 MiB of payload before refusing a longer one.
-- Running out of memory while compressing the PNG exits 2, as other
-  allocation failures do, with an "out of memory" message. It exited 1 and
-  said the PNG could not be written.
-- A font with no `glyf` table is refused for what it has instead (#38). A
-  color bitmap font such as Noto Color Emoji (`CBDT` or `sbix`, no outlines)
-  is named as one, with a pointer to an outline font such as Noto Emoji,
-  instead of being called a CFF font.
-- Output collision checks follow dangling symlinks and compare existing file
-  identities, rejecting hard-link aliases of outputs, logs or fonts before
-  writing (#43 review).
-
-- ASCII autowrap and skipped-row batching now scroll images alongside text;
-  whole-region skips discard contained image pixels even when row-storage rotation is
-  zero modulo the region height (#43 review).
-
-- Kitty scrolling moves only placements wholly inside the affected region,
-  clipping them at its edges. Images crossing either margin remain stationary,
-  including insert/delete line and reverse index (#43 review).
-- Explicit kitty image ID `i=0` is rejected; omitting the ID remains valid.
-
-- U+2800 BRAILLE PATTERN BLANK, which TUIs such as btop use for empty graph
-  dots, and the line and paragraph separators U+2028 and U+2029 drew as
-  boxes when the font lacked them. They are blank, like space separators.
+- An output that names the log or a font overwrote it, and two outputs that
+  name one file overwrote each other. Both are refused with exit 2, however
+  the path is spelled: `a`, `./a`, a symlink, a dangling symlink, or a hard
+  link.
 - A glyph with no outline left its cell blank (#24). Color emoji fonts such
   as Apple Color Emoji map every emoji to one, and some text fonts map a few
   characters to one (µ in iA Writer Duospace). It now counts as missing:
   the fallback font draws the character, or it is drawn as a box. Blank
   characters keep their empty glyphs.
-- An output that names the log or a font overwrote it, and two outputs
-  that name one file overwrote each other. Both are refused with exit 2,
-  however the paths are spelled (`a`, `./a`, a symlink).
-- A kitty graphics payload in base64 without its `=` padding was refused, so
-  `kitten icat` without `--place`, which sends small PNGs that way, drew
-  nothing. As in kitty, each chunk is decoded on its own and may end in a
-  partial group, padded or not; a padded chunk no longer has to be the last.
-  Invalid characters, a length of 4n+1, wrong padding and data after it are
-  still refused.
+- A glyph with a box but no points, such as a composite of an empty glyph,
+  draws nothing. It drew whatever its bitmap's memory held, which on Linux
+  was not always zeros, so its pixels could depend on what was drawn before.
+- U+2800 BRAILLE PATTERN BLANK, which TUIs such as btop use for empty graph
+  dots, and the line and paragraph separators U+2028 and U+2029 drew as
+  boxes when the font lacked them. They are blank, like space separators.
+  The Hangul fillers (U+115F, U+3164, U+FFA0) drew as boxes too; they draw
+  nothing.
+- A font whose `hhea` ascender is not above its descender is refused at load
+  with that reason (exit 1). As `--fallback-font` it was scaled by a height
+  of 0 or less, and as `--font` it was refused only when drawing, as "font
+  metrics unusable".
 
 ## [0.1.0] - 2026-10-01
 
@@ -462,5 +382,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A wide character on a one-column screen panicked (exit 101). It now
   takes the one cell as a narrow character (#18).
 
-[Unreleased]: https://github.com/momiji-rs/termshot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/momiji-rs/termshot/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/momiji-rs/termshot/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/momiji-rs/termshot/releases/tag/v0.1.0

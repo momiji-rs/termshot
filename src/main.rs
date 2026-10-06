@@ -1856,7 +1856,7 @@ fn utf8_at(data: &[u8]) -> (u32, usize) {
     (cp, need + 1)
 }
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 
 /// The default font, built in so a lone binary works.
 static EMBEDDED_FONT: &[u8] = include_bytes!("../third_party/jetbrains-mono/JetBrainsMono-Regular.ttf");
