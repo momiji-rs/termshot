@@ -57,11 +57,18 @@ pub use vt::ParseOptions;
 /// CLI allows up to 500 x 200.
 pub const MAX_CELLS: usize = 1 << 22;
 
+/// The most columns, and the most rows, a grid may have: 65,535. The parser
+/// caps a control's count there, as the CLI always has, so on a grid no wider
+/// or taller a cursor move, an erase, an insert or a delete still reaches the
+/// edge; REP repeats a character at most that many times.
+pub const MAX_SIDE: usize = u16::MAX as usize;
+
 /// Why the library could not do what it was asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// A grid size with no cells, or with more than [`MAX_CELLS`].
+    /// A grid size with no cells, a side over [`MAX_SIDE`], or more than
+    /// [`MAX_CELLS`] cells.
     GridSize {
         /// The columns asked for.
         cols: usize,
@@ -78,7 +85,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::GridSize { cols, rows } => write!(
                 f,
-                "a {cols}x{rows} grid: it needs at least 1 column and 1 row, and at most {MAX_CELLS} cells"
+                "a {cols}x{rows} grid: it needs 1 to {MAX_SIDE} columns and rows, and at most {MAX_CELLS} cells"
             ),
             Error::Cast(reason) => f.write_str(reason),
         }
@@ -91,7 +98,8 @@ impl std::error::Error for Error {}
 /// it leaves, as the CLI does without a font: cells 1 pixel square, which
 /// only matters to an image placed by pixels (see [`needs_cell_size`]).
 ///
-/// A grid of 0 cells or more than [`MAX_CELLS`] is an [`Error::GridSize`].
+/// A grid of 0 cells, wider or taller than [`MAX_SIDE`], or of more than
+/// [`MAX_CELLS`] cells is an [`Error::GridSize`].
 /// The two screens' cells are allocated up front, 24 bytes a cell; like any
 /// `Vec`, a failed allocation aborts (errors for that come with the render,
 /// #85).
@@ -110,7 +118,8 @@ pub fn parse_with_cell_size(
     options: &ParseOptions,
     cell_size: (u16, u16),
 ) -> Result<Grid, Error> {
-    if cols == 0 || rows == 0 || cols.checked_mul(rows).map_or(true, |cells| cells > MAX_CELLS) {
+    let sides = (1..=MAX_SIDE).contains(&cols) && (1..=MAX_SIDE).contains(&rows);
+    if !sides || cols.checked_mul(rows).map_or(true, |cells| cells > MAX_CELLS) {
         return Err(Error::GridSize { cols, rows });
     }
     let (w, h) = cell_size;

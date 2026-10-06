@@ -165,8 +165,9 @@ fn threads() -> Result<(), String> {
 /// The grid sizes parse refuses, as errors.
 fn sizes() -> Result<(), String> {
     let options = ParseOptions::default();
-    let max = termshot::MAX_CELLS;
-    for (cols, rows) in [(0, 30), (100, 0), (0, 0), (max + 1, 1), (1, max + 1), (2048, 2049), (usize::MAX, 2)] {
+    let (max, side) = (termshot::MAX_CELLS, termshot::MAX_SIDE);
+    let refused = [(0, 30), (100, 0), (0, 0), (side + 1, 1), (1, side + 1), (2048, 2049), (max + 1, 1), (usize::MAX, 2)];
+    for (cols, rows) in refused {
         match termshot::parse(b"x", cols, rows, &options) {
             Err(error @ termshot::Error::GridSize { .. }) if error == termshot::Error::GridSize { cols, rows } => {
                 if !error.to_string().contains(&format!("{cols}x{rows}")) {
@@ -180,6 +181,11 @@ fn sizes() -> Result<(), String> {
     let one = termshot::parse(b"x", 1, 1, &options).map_err(|error| format!("sizes: 1x1: {error}"))?;
     if one.to_text() != "x\n" {
         return Err("sizes: 1x1".into());
+    }
+    // The widest grid: a count over 65,535 still moves to its last column.
+    let wide = termshot::parse(b"\x1b[100000Cx", side, 1, &options).map_err(|error| format!("sizes: {side}x1: {error}"))?;
+    if wide.cursor() != Some((0, side - 1)) || wide.cell(0, side - 1).map(|cell| cell.ch()) != Some('x') {
+        return Err(format!("sizes: CUF 100000 on a {side}x1 grid leaves the cursor at {:?}", wide.cursor()));
     }
     Ok(())
 }
