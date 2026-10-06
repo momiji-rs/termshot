@@ -349,12 +349,19 @@ placement may name a virtual parent: it starts from the top row and the
 leftmost column the image shows in. Placeholder cells are drawn blank;
 `--text` and `--json` keep U+10EEEE and its diacritics.
 
+Animated images (`kitten icat` with a GIF, for one) are drawn as a still,
+since a log has no timeline: each image shows the frame an explicit `a=a`
+with `c` last made current, or else its first frame. Frames (`a=f`) and
+compositions (`a=c`) are built as kitty builds them; gaps, the animation
+state and loop counts change nothing. See
+[Animation](docs/kitty-graphics.md#animation).
+
 This is a subset, not full kitty emulation: file/shared-memory transfer
-and animation are not supported. Unsupported or malformed commands are ignored
+is not supported. Unsupported or malformed commands are ignored
 without printing their payload. PNG images may be compressed internally as usual.
 The log must contain the original escape sequences and image bytes; a plain
 `tmux capture-pane` text capture cannot recover them. This does not make every
-image-using TUI capture compatible automatically. Advanced kitty work is
+image-using TUI capture compatible automatically. Advanced kitty work was
 tracked in [#44](https://github.com/momiji-rs/termshot/issues/44).
 
 Sixel images (`ESC P P1;P2;P3 q … ESC \`) are drawn too, following xterm's

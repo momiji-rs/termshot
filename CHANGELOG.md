@@ -5,6 +5,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **kitty animation, drawn as a still** (#44): frame uploads (`a=f`: new
+  frames over a base frame `c` or a background colour `Y`, edits of frame
+  `r`, blended or overwriting with `X`, in every format and chunked),
+  composition between frames (`a=c`), animation control (`a=a`) and frame
+  deletion (`d=f`, `d=F`), following kitty's `graphics.c`. A log has no
+  timeline, so each image shows the frame an explicit `a=a` with `c` last
+  made current, else its root frame; gaps, the animation state and loop
+  counts are parsed and change nothing. Every placement, relative placement
+  and Unicode placeholder shows the current frame. Frames count against the
+  16 MiB image quota; an image may have 1,024 frames and a screen 16,384
+  past the roots, and composing is bounded per screen. Animated images used
+  to show only their first frame, as any image. See
+  [docs/kitty-graphics.md](docs/kitty-graphics.md#animation).
+
 ## [0.2.0] - 2026-10-06
 
 termshot 0.2.0 draws images (kitty graphics and Sixel), reads asciinema

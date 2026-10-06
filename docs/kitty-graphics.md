@@ -71,9 +71,10 @@ arm64 and macOS, and tests Rust 1.70 compatibility.
 This implements the issue's first stage, direct `a=T` transmission, with an
 independent image layer. The PNG decoder reuses vendored stb and adds no
 external library dependency. Sixel remains deferred. See the README's supported
-subset before using this to test a TUI: external-file transfers and
-animation remain unsupported (Unicode placeholders came with #44; see
-[Unicode placeholders](#unicode-placeholders)). Separate transmit and put came
+subset before using this to test a TUI: external-file transfers remain
+unsupported (Unicode placeholders came with #44; see
+[Unicode placeholders](#unicode-placeholders), and animation, drawn as a
+still, too; see [Animation](#animation)). Separate transmit and put came
 with #44; see [Stored images and placements](#stored-images-and-placements).
 It has not been validated against captures of AgentAmp or yazi, or compared
 pixel-for-pixel with a live kitty terminal.
@@ -494,6 +495,178 @@ Found with that client: without `--place`, kitten sends a small PNG as
 base64 without `=` padding (103 characters for a 77-byte PNG), which
 termshot's decoder used to refuse, so the image was dropped. See
 [Unpadded base64](#unpadded-base64).
+
+
+## Animation
+
+The last stage of #44. Semantics come from the
+[spec's animation section](https://sw.kovidgoyal.net/kitty/graphics-protocol/#animation)
+and kitty's `kitty/graphics.c` on master (fetched 2026-10-06):
+`handle_animation_frame_load_command`, `handle_compose_command`,
+`handle_animation_control_command`, `handle_delete_frame_command` and
+`get_coalesced_frame_data`. The code is `src/graphics/animation.rs`.
+
+### Policy: one still, the explicit current frame
+
+termshot renders one picture from an offline log, with no timeline. A
+running kitty animation (`s=3`) advances on the terminal's clock, and the
+byte stream does not say how long anything took, so "the frame at the end"
+is not in the log. The owner chose (#44, option b): each image shows
+
+- the frame an explicit `a=a` with `c` last made current, or
+- the root frame (frame 1), if nothing did.
+
+Time is ignored entirely. Gaps (`z`, on `a=f` or `a=a`), the animation
+state (`s=1/2/3`) and the loop count (`v`) are parsed and validated as
+kitty reads them, and change nothing about which frame is shown. An
+asciinema `.cast` carries timestamps that could drive a timeline; that is
+a possible future option, not used here.
+
+Every way an image is shown shows its current frame: placements, moved and
+relative placements, crops, offsets and z-indexes, and Unicode placeholders
+through virtual placements. Sixel images have no id or number, so no
+animation command can name them; they never animate.
+
+### Commands
+
+As kitty, animation commands reuse keys (they share `GraphicsCommand`'s
+fields): `r` is `frame_number`, `c` is `other_frame_number`, `X` the blend
+or source x, `Y` the background colour or source y, `C` the compose mode,
+`s` and `v` the state and loops on `a=a`. All need `i` or `I` (the newest
+image with that number); a missing image does nothing (kitty's ENOENT).
+
+- **`a=f`, a frame.** The data is sent as for an image: `f=24/32/100`,
+  `o=z`, `m=1` chunks (later chunks may carry `a=f`, as the spec requires),
+  unpadded base64. `s`, `v` (or the PNG) give its size, and `x`, `y` where it
+  goes; a frame larger than the image is refused (EINVAL), one that runs
+  past it is clipped. `r` names the frame to edit; without it, or past the
+  last frame plus one, a frame is added.
+  - A new frame with `c` is drawn over frame `c`, which must exist; without
+    `c`, over the background `Y` (0xRRGGBBAA, default transparent black).
+    `X=1` overwrites; any other value blends. A frame the image's size
+    with no base is its data alone: its background never shows.
+  - Editing frame `r` composes the data onto that frame's pixels, which
+    makes it whole: its base, background and offsets go, and `c` and `Y`
+    are ignored, as in kitty.
+  - Frames keep a base by id and are composed when needed, as kitty
+    stores them. A frame is made whole at once instead when its base is
+    built on four or more frames or on frames covering twice the image
+    (kitty's `reference_chain_too_large`). So editing a base later changes
+    the frames drawn over it, until one is made whole.
+- **`a=c`, compose.** A `w` by `h` rectangle (default: the whole image) at
+  `X`, `Y` of frame `r` is copied (`C` nonzero) or blended (`C=0`) onto
+  `x`, `y` of frame `c`, which becomes whole. Missing frames (ENOENT),
+  rectangles not inside the image, and overlapping rectangles within one
+  frame (EINVAL) are refused.
+- **`a=a`, control.** `c` makes that frame current if it exists; `c=0` or
+  a frame past the last does nothing. `r` with `z` sets a gap, `s` and `v`
+  the state and loops: all accepted, none visible.
+- **`d=f`, `d=F`.** Delete frame `r` of the image `i` or `I` names: `r=0`
+  is the root, `r` past the last frame is the last. The frame after a
+  deleted root becomes the root. With only its root left, `d=f` does
+  nothing and `d=F` deletes the image and its placements, as kitty does.
+
+Opacity follows kitty, which keeps RGB frames 3 bytes a pixel: what is
+composed onto an opaque frame stays opaque (an overwrite takes the colour,
+not the alpha), and an opaque frame without a base is drawn over an opaque
+background, black by default, with `Y`'s alpha dropped.
+
+### Pixels
+
+All composition is integer arithmetic, the same on every platform:
+
+- Blending onto an opaque pixel is the renderer's blend in
+  `src/composite.rs`, `(s * a + d * (255 - a) + 127) / 255`, alpha 255.
+- Blending onto a translucent pixel is the straight-alpha over operator,
+  kitty's `blend_pixel_over_straight`: alpha `a*255 + da*(255 - a)` divided
+  by 255, rounded to nearest; each colour the alpha-weighted mean, rounded
+  half up in integers. kitty divides that colour in single-precision float
+  (`lrintf`), so it can differ by one level where the float rounds the
+  other way; over an opaque pixel the two formulas agree exactly.
+
+### Edge cases: which frame is current
+
+kitty's `current_frame_index` rules, which termshot follows:
+
+- Adding frames never changes the current frame: a log that only sends
+  frames shows the root.
+- Deleting a frame before the current one keeps the same frame current.
+  Deleting the current frame makes the one before it current, or, if it
+  was the root, the new root (the old frame 2).
+- Retransmitting an image (`a=t`/`a=T` with its id) replaces it: its frames
+  go and the root is current again. A new image with the same number is
+  another image; `I` names the newest.
+- A frame that cannot be composed, because a base was deleted (deleting the
+  root strands a frame drawn over it) or because it has more than 32 bases,
+  has no pixels: its image's placements are not drawn.
+- The main and alternate screens keep separate images, so separate frames.
+  Full-screen erase, reset (RIS) and leaving the alternate screen free
+  images without placements as before, frames and all.
+
+Two differences from kitty, which updates its GPU texture only at certain
+points: after the current frame is deleted (unless it was the last or the
+root), and after a base of the current frame is edited, kitty keeps
+showing the old pixels until the frame next changes. termshot shows the
+current frame's pixels as they are at the end of the log. Where kitty has
+no data for the current frame, it keeps its previous texture; termshot
+draws nothing, having no earlier picture.
+
+### Limits
+
+- **Storage.** Every frame's pixels count against the per-screen 16 MiB
+  image quota, and so do an image's shown pixels when they are composed
+  apart from its frames (its current frame is not whole). A new image over
+  the quota evicts as before (unplaced images first, then the least
+  recently used), counting each image with all its frames. A frame, an
+  edit, a composition or a frame change that would go over the quota frees
+  the other images without a placement, then is refused if still over: as
+  kitty does for a new frame, it never evicts a placed image. (kitty keeps
+  frames on disk under a separate quota five times its 320 MB one.)
+- **Frames.** At most 1,024 frames an image, its root included, and 16,384
+  frames past the roots on a screen; more are refused. kitty sets no limit;
+  these keep the bookkeeping (about 100 bytes a frame) small, since a frame
+  can be one pixel.
+- **Composition work.** A few bytes (`a=c`, an edit) can ask for a whole
+  image to be composed, over a chain of bases. Each screen may compose 2^28
+  pixels in all (a copy of shared pixels counts too); past that, commands
+  that need composing are refused. The final screen's frames are composed
+  regardless: the storage quota bounds that work.
+- Over-limit and malformed commands are discarded quietly, as before.
+  Offsets near 2^32 do not wrap around (kitty's 32-bit row arithmetic can); `N`
+  (usage hints) is still refused, as it was: `kitten icat` does not send it.
+
+### Evidence
+
+- `src/graphics/animation_tests.rs` (24 tests): every key and its parsing,
+  frames over a base and a background colour in each mode, opaque frames,
+  edits of the root and of frames, PNG, compressed and chunked frames, the
+  key-frame rule, the 32-base limit, `a=c` both ways and every refusal,
+  frame deletion for each position of the current frame, a stranded frame,
+  retransmission, image numbers, every kind of placement, Sixel, both
+  screens with reset and erase, quota eviction and refusal with frames, the
+  frame limits and the composition budget, and the integer blend against
+  the over operator in floating point.
+- `tests/graphics.rs` checks seven scenes pixel by pixel at `--px` 9, 24
+  and 47.5 (75,936 checks) against rasters it computes: blend and
+  overwrite over a base, a background colour, `a=c` blending and copying,
+  a running animation, a deleted current frame.
+- `tests/fixtures/kitty-animation.pty` (goldens at 24 and 47.5), checked by
+  eye in `target/test/`: a blended frame over its base, current; a frame
+  over an orange background beside an overwritten hole; `a=c` onto the
+  root; an RGB image running with gaps and loops, a frame edited and
+  deleted, showing its root.
+- `tests/fixtures/kitty-icat-animation.pty` is real client output:
+  `kitten icat` 0.49.2 (the standalone `kitten-linux-amd64` release
+  binary) on starship under util-linux `script`, with `--stdin=no
+  --transfer-mode=stream --use-window-size 20,6,200,120 --scale-up --place
+  4x2@1x1` and a 3-frame 4x2 GIF from ImageMagick 7.1.2-31 (`-layers
+  Optimize`, so frame 2 is one pixel). kitten scales it to 40x20 and sends
+  `a=T` with `I`, then `a=a,v=1,r=1,z=100`, a partial frame with `c=1,x=10`,
+  `a=a,s=2`, a full frame with `c=2`, and `a=a,s=3`. Nothing makes another
+  frame current, so termshot shows the root, red. Two goldens render it at
+  20x6. Neither fixture was compared with a kitty window: no kitty terminal
+  was run.
+- The existing goldens are unchanged.
 
 
 ## Unpadded base64
