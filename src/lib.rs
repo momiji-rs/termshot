@@ -4,9 +4,12 @@
 //! byte what the CLI's `--text` and `--json` write.
 //!
 //! ```no_run
-//! let log = std::fs::read("session.pty").unwrap();
-//! let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default()).unwrap();
-//! print!("{}", grid.to_text());
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let log = std::fs::read("session.pty")?;
+//!     let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default())?;
+//!     print!("{}", grid.to_text());
+//!     Ok(())
+//! }
 //! ```
 //!
 //! Drawing the grid as a PNG is the CLI's only, for now (#85).

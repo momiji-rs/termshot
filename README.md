@@ -150,8 +150,13 @@ log into a `Grid` (or a `termshot::Error` for a grid size it can't hold), which 
 cells, the cursor, and the same text and JSON as `--text` and `--json`:
 
 ```rust
-let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default())?;
-print!("{}", grid.to_text());
+// app.rs
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let log = std::fs::read("session.pty")?;
+    let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default())?;
+    print!("{}", grid.to_text());
+    Ok(())
+}
 ```
 
 ```sh
