@@ -315,7 +315,8 @@ Each line is a key and a `#rrggbb` colour: `foreground`, `background`, or `color
 (SGR 30–37 and 40–47 are 0 to 7, 90–97 and 100–107 are 8 to 15, and so are `38;5;N` and
 `48;5;N` for N below 16). Blank lines and lines starting with `#` are skipped. Any other line,
 a key given twice, or a key termshot doesn't apply (`cursor`, `color16`, ...) is refused with
-its line number (exit 2), so a typo isn't ignored; a file that can't be read exits 1. To take
+its line number (exit 2), so a typo isn't ignored, as is text that isn't UTF-8; so is a file
+over 64 KiB, which no palette needs. A file that can't be read exits 1. To take
 a whole kitty theme, keep those keys only:
 
 ```sh

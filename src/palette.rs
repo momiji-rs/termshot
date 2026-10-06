@@ -73,7 +73,11 @@ impl Palette {
         if file.len() > MAX_FILE_BYTES {
             return Err(format!("over {MAX_FILE_BYTES} bytes, which no palette needs"));
         }
-        let text = std::str::from_utf8(file).map_err(|e| format!("not UTF-8 text (at byte {})", e.valid_up_to()))?;
+        let text = std::str::from_utf8(file).map_err(|e| {
+            let at = e.valid_up_to();
+            let line = 1 + file[..at].iter().filter(|&&b| b == b'\n').count();
+            format!("line {line}: not UTF-8 text (at byte {at} of the file)")
+        })?;
         // foreground, background, then color0 to color15.
         let mut seen = [0usize; 18];
         for (n, line) in text.split('\n').enumerate() {

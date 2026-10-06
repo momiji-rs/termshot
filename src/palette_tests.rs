@@ -67,7 +67,8 @@ fn a_malformed_file_says_which_line_and_why() {
         (b"background #gggggg", "not \"#gggggg\""),
         (b"background red", "not \"red\""),
         (b"color2 #000000\ncolor2 #ffffff", "line 2: color2 is already set, on line 1"),
-        (b"background #000000\xff", "not UTF-8 text (at byte 18)"),
+        (b"background #000000\xff", "line 1: not UTF-8 text (at byte 18 of the file)"),
+        (b"# caf\xc3\xa9\n\ncolor1 #00\xe9000", "line 3: not UTF-8 text (at byte 19 of the file)"),
         // Only spaces and tabs separate or trim; a no-break space is a key.
         (b"color1 #000000\n\xc2\xa0", "line 2: \"\\u{a0}\" has no colour"),
     ] {
