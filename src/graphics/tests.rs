@@ -166,7 +166,7 @@ fn chunked(data: &[u8], cuts: &[usize], pad: bool) -> Option<Vec<u8>> {
         let head = if i == 0 { "a=t,i=1,f=24,s=2,v=1," } else { "" };
         run(&mut g, (0, 0), &format!("{head}m={more};{text}"));
     }
-    g.images.first().map(|img| img.pixels.to_vec())
+    g.images.first().map(|img| img.frames[0].data.to_vec())
 }
 
 #[test]
@@ -195,7 +195,7 @@ fn every_chunk_is_decoded_on_its_own_padded_or_not() {
     let mut g = Graphics::default();
     run(&mut g, (0, 0), "a=t,i=1,f=24,s=2,v=1,m=1;/w");
     run(&mut g, (0, 0), "m=0;AAAA/wA");
-    assert_eq!(g.images[0].pixels.to_vec(), pixels.clone().unwrap());
+    assert_eq!(g.images[0].frames[0].data.to_vec(), pixels.clone().unwrap());
     // And "/w" + "AAAP8A" is 255 then 0, 0, 15, 240: 5 bytes, too few, though
     // joined, "/wAAAP8A" would be the same 6 bytes.
     assert_eq!(base64(b"/wAAAP8A", MAX_BYTES), Some(data.to_vec()));
@@ -259,7 +259,7 @@ const PNG_PIXELS: [u8; 16] = [255, 0, 0, 128, 0, 255, 0, 128, 0, 0, 255, 128, 25
 fn transmitted(cmd: &str) -> Option<Vec<u8>> {
     let mut g = Graphics::default();
     run(&mut g, (0, 0), cmd);
-    g.images.first().map(|img| img.pixels.to_vec())
+    g.images.first().map(|img| img.frames[0].data.to_vec())
 }
 
 #[test]
@@ -535,7 +535,7 @@ fn upload_and_retained_memory_are_bounded() {
     assert!(g.pending.is_none());
     assert!(g.placements.is_empty());
     g.command(b"a=T,f=24,s=1,v=1,i=1;/wAA", 0, 0, (1, 1), 10);
-    Rc::make_mut(&mut g.images[0].pixels).resize(MAX_BYTES, 0);
+    Rc::make_mut(&mut g.images[0].frames[0].data).resize(MAX_BYTES, 0);
     // A new image over the quota evicts the old one, placement and all.
     g.command(b"a=T,f=24,s=1,v=1,i=2;/wAA", 0, 0, (1, 1), 10);
     assert_eq!(ids(&g), [2]);
@@ -1025,7 +1025,7 @@ fn clearing_a_screen_frees_its_stored_images() {
 fn quota_frees_unplaced_images_first_then_the_least_recently_used() {
     let grow = |g: &mut Graphics, id: u32, len: usize| {
         let img = g.images.iter_mut().find(|img| img.id == id).unwrap();
-        Rc::make_mut(&mut img.pixels).resize(len, 0);
+        Rc::make_mut(&mut img.frames[0].data).resize(len, 0);
     };
     let mut g = Graphics::default();
     run(&mut g, (0, 0), &format!("a=t,i=1,{PIXEL}"));
@@ -1202,7 +1202,7 @@ fn erasing_sixel_pixels_keeps_one_copy_and_the_quota() {
     g.erase_sixel(0, 0, 1, 1);
     assert_eq!(*g.placements[0].pixels, [0, 0, 0, 0, 0, 255, 0, 255]);
     assert_eq!((Rc::strong_count(&g.placements[0].pixels), counted(&g)), (1, 8));
-    assert!(g.images[0].pixels.is_empty());
+    assert!(g.images[0].frames[0].data.is_empty());
     g.erase_sixel(1, 0, 2, 1);
     assert_eq!(*g.placements[0].pixels, [0; 8]);
     assert_eq!(counted(&g), 8);
