@@ -288,7 +288,10 @@ unsafe fn backdrop_through(cv: &Canvas, bd: &mut Backdrop, y: i64) {
 /// Paints the backgrounds of a row of cells, whose pixels start at row
 /// `top`: the first scanline a cell at a time, clipped to the canvas, then
 /// that scanline, its filter byte (0, PNG's None) included, copied to the
-/// others. Through `filtered`, which holds whole scanlines.
+/// others. Through `filtered`, which holds whole scanlines; of each it
+/// writes the byte before `px` and the `w` pixels only, so that a canvas
+/// cut from a wider one (a padded render, src/render.rs) is painted inside
+/// its own pixels and that byte.
 ///
 /// # Safety
 /// As termshot_backdrop_through says of `cv`.
@@ -296,10 +299,10 @@ unsafe fn backgrounds(cv: &Canvas, row: &[Cell], top: i32, cell_w: i32, cell_h: 
     if cv.filtered.is_null() || cv.w <= 0 || cv.h <= 0 || top < 0 || top >= cv.h {
         return;
     }
-    let stride = cv.stride;
-    let filtered = std::slice::from_raw_parts_mut(cv.filtered, stride * cv.h as usize);
+    let (stride, line) = (cv.stride, 1 + cv.w as usize * BPP);
+    let filtered = std::slice::from_raw_parts_mut(cv.filtered, (cv.h as usize - 1) * stride + line);
     let first = top as usize * stride;
-    let scanline = &mut filtered[first..first + stride];
+    let scanline = &mut filtered[first..first + line];
     scanline[0] = 0;
     for (c, cell) in row.iter().enumerate() {
         // As termshot_fill_rect clips [c * cell_w, (c + 1) * cell_w).
@@ -314,8 +317,8 @@ unsafe fn backgrounds(cv: &Canvas, row: &[Cell], top: i32, cell_w: i32, cell_h: 
         }
     }
     let end = (top as usize + cell_h.max(0) as usize).min(cv.h as usize);
-    for line in top as usize + 1..end {
-        filtered.copy_within(first..first + stride, line * stride);
+    for y in top as usize + 1..end {
+        filtered.copy_within(first..first + line, y * stride);
     }
 }
 

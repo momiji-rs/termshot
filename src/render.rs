@@ -14,7 +14,15 @@
 //!    underlines and strike-through;
 //! 3. the images over the text, in their order: main.rs puts the underline
 //!    or bar cursor first among them (the block cursor is reverse video in
-//!    the cells).
+//!    the cells);
+//! 4. with padding (RenderOptions), the margin around the cells.
+//!
+//! Padding is a frame around the render it would make without: the passes
+//! paint a canvas cut from the padded raster (the cells' pixels, a stride
+//! as wide as the PNG's rows), so every glyph, image, clip and cursor mark
+//! lands where it would, moved by the margin, and nothing reaches into the
+//! margin, as nothing reaches past the cells without one. The cell metrics,
+//! and so where native-pixel images move the cursor, don't change.
 //!
 //! This was C in draw.c (draw_png_images, draw_png) until #12 step 2d, and
 //! it makes the same PNGs, messages and results. It does no float
@@ -152,6 +160,23 @@ impl Drop for Raster {
     }
 }
 
+/// The largest padding on a side, in pixels.
+pub const MAX_PADDING: u32 = 1024;
+
+/// What the render adds that the cells don't say (#87): a margin of
+/// `padding.0` pixels left and right of the cells and `padding.1` above and
+/// below them, in `background` (the palette's default background).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderOptions {
+    pub padding: (u32, u32),
+    pub background: (u8, u8, u8),
+}
+
+impl RenderOptions {
+    /// No margin: the PNG is the cells.
+    pub const NONE: RenderOptions = RenderOptions { padding: (0, 0), background: (0, 0, 0) };
+}
+
 /// What a render ends with, as main.rs passes it on: 0 done; 1 a face or
 /// its metrics can't be used; 2 the image is over MAX_PIXELS, memory ran
 /// out, or a painter failed (a bug); 3 the PNG could not be written. Each
@@ -173,7 +198,22 @@ pub type Code = i32;
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize, font: &Face,
                               fallback: Option<&Face>, font_px: f64, out_path: &str, verbose: bool,
-                              images: &[ImageView], mut empty: Option<&mut EmptyGlyphs>) -> Code {
+                              images: &[ImageView], empty: Option<&mut EmptyGlyphs>) -> Code {
+    draw_png_with(cells, marks, cols, rows, font, fallback, font_px, out_path, verbose, images, empty,
+                  &RenderOptions::NONE)
+}
+
+/// draw_png_images, with `options`' padding around the cells. Its margin
+/// counts towards MAX_PIXELS; with `verbose`, the image size printed is the
+/// padded one.
+///
+/// # Safety
+/// As draw_png_images.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_png_with(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize, font: &Face,
+                            fallback: Option<&Face>, font_px: f64, out_path: &str, verbose: bool,
+                            images: &[ImageView], mut empty: Option<&mut EmptyGlyphs>,
+                            options: &RenderOptions) -> Code {
     assert!(cells.len() >= cols * rows, "{} cells for {cols}x{rows}", cells.len());
     if let Some(empty) = empty.as_deref_mut() {
         *empty = EmptyGlyphs::default();
@@ -192,8 +232,10 @@ pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, 
     }
     let m = setup.metrics;
     let (cell_w, cell_h) = (m.cell_w, m.cell_h);
-    let width = cols as i64 * i64::from(cell_w);
-    let height = rows as i64 * i64::from(cell_h);
+    // The cells' pixels, and the PNG's: the cells and the margin.
+    let (grid_w, grid_h) = (cols as i64 * i64::from(cell_w), rows as i64 * i64::from(cell_h));
+    let (pad_x, pad_y) = (i64::from(options.padding.0), i64::from(options.padding.1));
+    let (width, height) = (grid_w + 2 * pad_x, grid_h + 2 * pad_y);
     if verbose {
         eprintln!(
             "advance {} units scale {:.5} cell {}x{} baseline {} image {}x{}",
@@ -210,7 +252,8 @@ pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, 
     // Each side first, as a cell can be 2^28 pixels each way (stb_glue.c's
     // to_px) and their product overflow; a side past it is past it in pixels too.
     if width > MAX_PIXELS || height > MAX_PIXELS || width * height > MAX_PIXELS {
-        eprintln!("termshot: image {width}x{height} is over {MAX_PIXELS} pixels; lower px, cols or rows");
+        let padding = if pad_x != 0 || pad_y != 0 { ", rows or padding" } else { " or rows" };
+        eprintln!("termshot: image {width}x{height} is over {MAX_PIXELS} pixels; lower px, cols{padding}");
         return 2;
     }
 
@@ -222,11 +265,16 @@ pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, 
         eprintln!("termshot: out of memory for a {width}x{height} image");
         return 2;
     };
+    // The cells' canvas, inside the margin: its `filtered` is the byte
+    // before its first pixel, which is the scanline's filter byte only
+    // without a left margin. The backdrop writes that byte as one; the margin
+    // is painted last, over it.
+    let inside = pad_y as usize * stride + pad_x as usize * BPP;
     let mut cv = Canvas {
-        px: raster.data.add(1),
-        filtered: raster.data,
-        w: width as i32,
-        h: height as i32,
+        px: raster.data.add(inside + 1),
+        filtered: raster.data.add(inside),
+        w: grid_w as i32,
+        h: grid_h as i32,
         stride,
         // Null only means nothing is cached; the pixels are the same. It
         // also begins the render for termshot_paint_failed.
@@ -270,11 +318,16 @@ pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, 
     let mut stamps = GeometryStats::default();
     geometry::termshot_geometry_stats(cv.geometry, &mut stamps);
     geometry::termshot_geometry_free(cv.geometry);
-    cv.geometry = std::ptr::null_mut();
+    if pad_x != 0 || pad_y != 0 {
+        let filtered = std::slice::from_raw_parts_mut(raster.data, stride * height as usize);
+        paint_margin(filtered, stride, (grid_w as usize, grid_h as usize), (pad_x as usize, pad_y as usize),
+                     options.background);
+    }
     let foreground = clock.now();
     let mut png_len: c_int = 0;
     let mut png_marks = [0.0f64; 4];
-    let png = termshot_png_encode(cv.filtered, cv.w, cv.h, c_int::from(profiling), &mut png_marks, &mut png_len);
+    let png = termshot_png_encode(raster.data, width as c_int, height as c_int, c_int::from(profiling),
+                                  &mut png_marks, &mut png_len);
     let encoded = clock.now();
     let mut ok = false;
     // stb returns null only when an allocation failed, its own or the compressor's.
@@ -317,6 +370,26 @@ pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, 
         return 3;
     }
     0
+}
+
+/// Paints the margin of a padded raster, `filtered` (scanlines `stride`
+/// bytes apart, each a filter byte then its pixels): `pad_y` whole rows
+/// above and below the cells' `grid` pixels, and `pad_x` pixels left and
+/// right of them, in `rgb`, with every filter byte 0 (PNG's None).
+fn paint_margin(filtered: &mut [u8], stride: usize, (grid_w, grid_h): (usize, usize), (pad_x, pad_y): (usize, usize),
+                (r, g, b): (u8, u8, u8)) {
+    let rgb = [r, g, b];
+    let fill = |pixels: &mut [u8]| pixels.chunks_exact_mut(BPP).for_each(|p| p.copy_from_slice(&rgb));
+    for (y, scanline) in filtered.chunks_exact_mut(stride).enumerate() {
+        scanline[0] = 0;
+        let pixels = &mut scanline[1..];
+        if y < pad_y || y >= pad_y + grid_h {
+            fill(pixels);
+        } else {
+            fill(&mut pixels[..pad_x * BPP]);
+            fill(&mut pixels[(pad_x + grid_w) * BPP..]);
+        }
+    }
 }
 
 /// The cell-only entry point for the C harnesses (tests/draw.c,
