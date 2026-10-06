@@ -804,7 +804,9 @@ fn main() -> ExitCode {
     if let Err(message) = written {
         return cleanup(1, message);
     }
-    let Grid { mut cells, marks, cursor, cursor_shape, .. } = grid;
+    // image_views points into the placements' pixels, so they stay bound to
+    // the end of main.
+    let Grid { mut cells, marks, cursor, cursor_shape, images: _placements, .. } = grid;
     let mut empty = EmptyGlyphs::default();
     // The underline or bar cursor's colour; its view borrows it.
     let mark_pixel;
