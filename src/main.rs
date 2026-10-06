@@ -1,5 +1,6 @@
-//! Replay a PTY log into a cell grid and paint it.
-//! No crates. The render is render.rs, with box drawing and blocks in
+//! Replay a PTY log into a cell grid and paint it: the CLI.
+//! No crates. The parser is vt.rs and screen.rs, and the grid it leaves
+//! grid.rs, the modules src/lib.rs makes a library of. The render is render.rs, with box drawing and blocks in
 //! geometry.rs, the images in composite.rs, the text in glyphs.rs and the
 //! compressor in deflate.rs; vendored stb (no window, no system font) does the
 //! font tables, the rasterizing and the PNG, through stb_glue.c.

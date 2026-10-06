@@ -144,6 +144,22 @@ A C compiler and rustc 1.70 or newer are enough.
 
 The binary links libc and libm.
 
+`build.sh` also builds `libtermshot.rlib`, the parser as a Rust library with no
+dependencies (#85; drawing PNGs is the CLI's only, for now). `termshot::parse` replays a
+log into a `Grid`, which gives its cells, the cursor, and the same text and JSON as
+`--text` and `--json`:
+
+```rust
+let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default());
+print!("{}", grid.to_text());
+```
+
+```sh
+rustc --edition 2021 app.rs --extern termshot=libtermshot.rlib
+```
+
+Its documentation: `rustdoc --edition 2021 --crate-name termshot src/lib.rs -o target/doc`.
+
 ## Test
 
 ```sh
