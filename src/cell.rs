@@ -33,8 +33,8 @@ pub const ITALIC: u8 = 64;
 /// The background hides an image placed below the cell backgrounds
 /// (z < -2^30). Reverse video and the block cursor set it as kitty treats
 /// those cells, even in the default colour; before drawing,
-/// `opaque_backgrounds` sets it on every other colour, so painting needs no
-/// copy of DEFAULT_BG.
+/// `opaque_backgrounds` sets it on every colour but the palette's default
+/// background, so painting needs no copy of the palette.
 pub const OPAQUE: u8 = 128;
 
 /// The most combining marks a cell keeps after its character (#14). A cell

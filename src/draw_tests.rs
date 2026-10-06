@@ -35,9 +35,24 @@ pub(crate) fn render_marked(
     px: f64,
     out: &str,
 ) -> i32 {
+    render_framed(cells, marks, cols, rows, (font, fallback), px, out, &render::RenderOptions::NONE)
+}
+
+/// render_marked, with padding.
+#[allow(clippy::too_many_arguments)]
+fn render_framed(
+    cells: &[Cell],
+    marks: &[CellMarks],
+    cols: usize,
+    rows: usize,
+    (font, fallback): (&font::Font, Option<&font::Font>),
+    px: f64,
+    out: &str,
+    options: &render::RenderOptions,
+) -> i32 {
     let draw = |font: &font::Face, fallback: Option<&font::Face>| unsafe {
-        render::draw_png_images(cells, marks, cols, rows, font.ffi(), fallback.map(font::Face::ffi), px, out, false,
-            &[], None)
+        render::draw_png_with(cells, marks, cols, rows, font.ffi(), fallback.map(font::Face::ffi), px, out, false,
+            &[], None, options)
     };
     font.with_face(|font| match fallback {
         None => draw(font, None),
@@ -275,9 +290,10 @@ const CJK_VF_FONT: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.
 /// Renders on several threads at once are independent (#8 was a glyph cache
 /// shared between them): each thread draws one of four different screens,
 /// with different fonts (TrueType, a CFF fallback, CFF2) and sizes, three
-/// times over, and each PNG is the one drawn alone. The glyph cache, the
-/// outline scratch, the box-drawing cache, the backdrop and the fault
-/// counters are all the render's or the thread's own.
+/// times over, and each PNG is the one drawn alone. Two of them have a
+/// palette and padding of their own (#87). The glyph cache, the outline
+/// scratch, the box-drawing cache, the backdrop, the palette, the padding
+/// and the fault counters are all the render's or the thread's own.
 #[test]
 fn draw_png_is_reentrant() {
     let font = load(FONT);
@@ -286,8 +302,13 @@ fn draw_png_is_reentrant() {
                 "\x1b[3mitalic\x1b[23m q\u{301}x \u{e31}\u{e49} \x1b[9m\u{1F600}\x1b[0m",
                 "中文 \x1b[3m界\x1b[1m面\x1b[0m ab\u{16910}",
                 "\x1b[1;3m中文 Ag\x1b[0m ╰─╯ 界"];
-    let screens: Vec<(Vec<Cell>, Vec<CellMarks>)> = logs.iter().map(|log| {
-        let g = replay(log.as_bytes(), 20, 2, Lf::Index);
+    let mut themed = Palette::DEFAULT;
+    (themed.foreground, themed.background, themed.named[1]) = ((10, 20, 30), (240, 230, 220), (0, 128, 255));
+    let palettes = [Palette::DEFAULT, themed, Palette::DEFAULT, Palette { background: (0, 64, 0), ..themed }];
+    let paddings = [(0, 0), (7, 3), (0, 0), (1, 12)];
+    let screens: Vec<(Vec<Cell>, Vec<CellMarks>)> = logs.iter().zip(palettes).map(|(log, palette)| {
+        let log = format!("\x1b[41m \x1b[49m{log}");
+        let g = replay_with(log.as_bytes(), 20, 2, &ParseOptions { lf: Lf::Index, palette }, (1, 1));
         (g.cells, g.marks)
     }).collect();
     let draw = |k: usize, out: &str| {
@@ -298,7 +319,8 @@ fn draw_png_is_reentrant() {
             _ => ((&vf, Some(&font)), 47.5),
         };
         let (cells, marks) = &screens[k];
-        assert_eq!(render_marked(cells, marks, 20, 2, fonts.0, fonts.1, px, out), 0);
+        let options = render::RenderOptions { padding: paddings[k], background: palettes[k].background };
+        assert_eq!(render_framed(cells, marks, 20, 2, fonts, px, out, &options), 0);
         fs::read(out).unwrap()
     };
     let alone: Vec<Vec<u8>> = (0..4).map(|k| draw(k, &format!("target/test/thread-alone-{k}.png"))).collect();

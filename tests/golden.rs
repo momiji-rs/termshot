@@ -21,11 +21,11 @@ const HEADER: &str = "# sha256 of decoded RGBA pixels, size, log, px. Rewrite wi
 const CJK: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";
 const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf";
 const MARKS: &str = "third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf";
-// (log, px, cols, rows, font options). A log is examples/<log>.pty,
+// (log, px, cols, rows, options). A log is examples/<log>.pty,
 // tests/fixtures/<log>.pty, or an asciinema recording tests/fixtures/<log>.cast;
-// with no font options it is drawn with FONT.
+// with no options it is drawn with FONT, in the original form.
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-const CASES: [(&str, &str, u32, u32, &[&str]); 66] = [
+const CASES: [(&str, &str, u32, u32, &[&str]); 68] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -122,6 +122,13 @@ const CASES: [(&str, &str, u32, u32, &[&str]); 66] = [
     // events, so the same pixels (test.sh compares them with the raw log).
     ("asciicast-v2", "24", 24, 6, &[]),
     ("asciicast-v3", "24", 24, 6, &[]),
+    // A palette (#87): Solarized Dark in kitty's keys, over the 16 colours as
+    // foregrounds, backgrounds and 38;5;n / 48;5;n, the cube and 24-bit
+    // colours it leaves alone, attributes, box drawing and the bar cursor.
+    ("palette", "24", 72, 5, &["--palette", "tests/fixtures/solarized-dark.conf"]),
+    // Padding (#87): the kitty layers in a margin of the default background
+    // (a size of their own, so the PNG is not kitty-layers-24's).
+    ("kitty-layers", "33", 8, 4, &["--padding", "12,6"]),
 ];
 
 extern "C" {
