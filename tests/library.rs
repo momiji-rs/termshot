@@ -63,6 +63,7 @@ fn check(log: &str) -> Result<bool, String> {
         true => termshot::parse_with_cell_size(&data, cols, rows, &options(log)?, CELL_24PX),
         false => termshot::parse(&data, cols, rows, &options(log)?),
     };
+    let grid = grid.map_err(|error| format!("{log}: {error}"))?;
     if (grid.cols(), grid.rows()) != (cols, rows) {
         return Err(format!("{log}: a {}x{} grid, not {cols}x{rows}", grid.cols(), grid.rows()));
     }
@@ -80,7 +81,10 @@ fn accessors() -> Result<(), String> {
     // Bold red "a", e and a combining acute, a wide character, then the
     // cursor shown as a bar at row 1, column 2.
     let log = "\x1b[1;31ma\x1b[me\u{301}\u{4e00}\r\n\x1b[4:2mxy\x1b[m\x1b[5 q".as_bytes();
-    let grid = termshot::parse(log, 6, 3, &ParseOptions::default());
+    let parse = |log: &[u8], cols, rows, options: &ParseOptions| {
+        termshot::parse(log, cols, rows, options).map_err(|error| format!("accessors: {error}"))
+    };
+    let grid = parse(log, 6, 3, &ParseOptions::default())?;
     let Some(a) = grid.cell(0, 0) else { return fail("no cell (0, 0)") };
     let named = Palette::DEFAULT.named;
     if a.ch() != 'a' || !a.is_bold() || a.fg() != named[1] || a.bg() != Palette::DEFAULT.background {
@@ -92,7 +96,7 @@ fn accessors() -> Result<(), String> {
         return fail("cell (0, 1) is not a plain é");
     }
     let (wide, tail) = (grid.cell(0, 2).ok_or("no (0, 2)")?, grid.cell(0, 3).ok_or("no (0, 3)")?);
-    if wide.ch() != '\u{4e00}' || !wide.is_wide() || !tail.is_wide_tail() {
+    if wide.ch() != '\u{4e00}' || !wide.is_wide() || !tail.is_wide_tail() || tail.ch() != ' ' || tail.is_wide() {
         return fail("cells (0, 2) and (0, 3) are not a wide character");
     }
     let x = grid.cell(1, 0).ok_or("no (1, 0)")?;
@@ -106,14 +110,14 @@ fn accessors() -> Result<(), String> {
         return fail("the cursor is not a bar at (1, 2)");
     }
     // A combining mark with no precomposed form stays a mark.
-    let grid = termshot::parse("q\u{301}\x1b[?25l".as_bytes(), 2, 1, &ParseOptions::default());
+    let grid = parse("q\u{301}\x1b[?25l".as_bytes(), 2, 1, &ParseOptions::default())?;
     let q = grid.cell(0, 0).ok_or("no (0, 0)")?;
     if q.ch() != 'q' || q.marks().collect::<String>() != "\u{301}" || grid.cursor().is_some() {
         return fail("q with a combining acute, cursor hidden");
     }
     // A bare LF: down a row, and back to column 0 only with Lf::Newline.
-    let text = |lf| termshot::parse(b"ab\ncd\n", 4, 3, &ParseOptions { lf, ..ParseOptions::default() }).to_text();
-    if text(Lf::Index) != "ab\n  cd\n\n" || text(Lf::Newline) != "ab\ncd\n\n" {
+    let text = |lf| parse(b"ab\ncd\n", 4, 3, &ParseOptions { lf, ..ParseOptions::default() }).map(|grid| grid.to_text());
+    if text(Lf::Index)? != "ab\n  cd\n\n" || text(Lf::Newline)? != "ab\ncd\n\n" {
         return fail("bare LF");
     }
     if !termshot::lacks_cr(b"ab\ncd\n") || termshot::lacks_cr(b"ab\r\ncd\r\n") {
@@ -127,14 +131,38 @@ fn accessors() -> Result<(), String> {
         return fail("needs_cell_size");
     }
     let options = ParseOptions::default();
-    let sized = termshot::parse_with_cell_size(image.as_bytes(), 10, 4, &options, (10, 20));
-    if sized.cursor() != Some((1, 3)) {
-        return fail(&format!("the cursor after an image in 10x20 cells is at {:?}", sized.cursor()));
+    let sized = |cell| {
+        termshot::parse_with_cell_size(image.as_bytes(), 10, 4, &options, cell).map_err(|error| format!("accessors: {error}"))
+    };
+    let cursor = sized((10, 20))?.cursor();
+    if cursor != Some((1, 3)) {
+        return fail(&format!("the cursor after an image in 10x20 cells is at {cursor:?}"));
     }
     // A cell size of 0 counts as 1, as parse's cells are.
-    let zero = termshot::parse_with_cell_size(image.as_bytes(), 10, 4, &options, (0, 0));
-    if zero.cursor() != termshot::parse(image.as_bytes(), 10, 4, &options).cursor() {
+    if sized((0, 0))?.cursor() != parse(image.as_bytes(), 10, 4, &options)?.cursor() {
         return fail("a cell size of 0 is not 1");
+    }
+    Ok(())
+}
+
+/// The grid sizes parse refuses, as errors.
+fn sizes() -> Result<(), String> {
+    let options = ParseOptions::default();
+    let max = termshot::MAX_CELLS;
+    for (cols, rows) in [(0, 30), (100, 0), (0, 0), (max + 1, 1), (1, max + 1), (2048, 2049), (usize::MAX, 2)] {
+        match termshot::parse(b"x", cols, rows, &options) {
+            Err(error @ termshot::Error::GridSize { .. }) if error == termshot::Error::GridSize { cols, rows } => {
+                if !error.to_string().contains(&format!("{cols}x{rows}")) {
+                    return Err(format!("sizes: {cols}x{rows} reads {error}"));
+                }
+            }
+            Err(error) => return Err(format!("sizes: {cols}x{rows} is {error:?}")),
+            Ok(_) => return Err(format!("sizes: a {cols}x{rows} grid parses")),
+        }
+    }
+    let one = termshot::parse(b"x", 1, 1, &options).map_err(|error| format!("sizes: 1x1: {error}"))?;
+    if one.to_text() != "x\n" {
+        return Err("sizes: 1x1".into());
     }
     Ok(())
 }
@@ -150,8 +178,8 @@ fn cast() -> Result<(), String> {
     if cast.version != 3 || cast.output.is_empty() {
         return Err(format!("{path}: version {}, {} bytes of output", cast.version, cast.output.len()));
     }
-    let Err(reason) = termshot::decode_cast(b"{\"version\": 2}\n".to_vec()) else {
-        return Err("a header without a size decodes".into());
+    let Err(termshot::Error::Cast(reason)) = termshot::decode_cast(b"{\"version\": 2}\n".to_vec()) else {
+        return Err("a header without a size is not an Error::Cast".into());
     };
     if reason.is_empty() {
         return Err("no reason for a bad header".into());
@@ -181,7 +209,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    for test in [accessors, cast] {
+    for test in [accessors, sizes, cast] {
         if let Err(error) = test() {
             println!("FAIL {error}");
             return ExitCode::FAILURE;

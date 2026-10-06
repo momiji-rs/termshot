@@ -5,7 +5,7 @@
 //!
 //! ```no_run
 //! let log = std::fs::read("session.pty").unwrap();
-//! let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default());
+//! let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default()).unwrap();
 //! print!("{}", grid.to_text());
 //! ```
 //!
@@ -53,39 +53,76 @@ pub use palette::{Palette, Rgb};
 pub use screen::{CursorShape, Lf};
 pub use vt::ParseOptions;
 
+/// The most cells a grid may have, `cols * rows`: 4,194,304, 2048 x 2048. The
+/// CLI allows up to 500 x 200.
+pub const MAX_CELLS: usize = 1 << 22;
+
+/// Why the library could not do what it was asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Error {
+    /// A grid size with no cells, or with more than [`MAX_CELLS`].
+    GridSize {
+        /// The columns asked for.
+        cols: usize,
+        /// The rows asked for.
+        rows: usize,
+    },
+    /// A recording that is not a readable asciicast: which line is
+    /// malformed, and how, as the CLI reports it.
+    Cast(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::GridSize { cols, rows } => write!(
+                f,
+                "a {cols}x{rows} grid: it needs at least 1 column and 1 row, and at most {MAX_CELLS} cells"
+            ),
+            Error::Cast(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 /// Replay `log` on a terminal of `cols` x `rows` cells and return the screen
 /// it leaves, as the CLI does without a font: cells 1 pixel square, which
 /// only matters to an image placed by pixels (see [`needs_cell_size`]).
 ///
-/// # Panics
-///
-/// If `cols` or `rows` is 0. The CLI allows up to 500 x 200.
-pub fn parse(log: &[u8], cols: usize, rows: usize, options: &ParseOptions) -> Grid {
-    vt::replay_with(log, cols, rows, options, (1, 1))
+/// A grid of 0 cells or more than [`MAX_CELLS`] is an [`Error::GridSize`].
+/// The two screens' cells are allocated up front, 24 bytes a cell; like any
+/// `Vec`, a failed allocation aborts (errors for that come with the render,
+/// #85).
+pub fn parse(log: &[u8], cols: usize, rows: usize, options: &ParseOptions) -> Result<Grid, Error> {
+    parse_with_cell_size(log, cols, rows, options, (1, 1))
 }
 
 /// [`parse`] with cells of `cell_size` (width, height) pixels, the font's,
 /// as the CLI does when it reads one. A kitty image sized in pixels, or a
 /// Sixel image, moves the text cursor by the cells it covers, so the cursor
 /// and the cells written after it depend on this. A size of 0 counts as 1.
-///
-/// # Panics
-///
-/// If `cols` or `rows` is 0.
 pub fn parse_with_cell_size(
     log: &[u8],
     cols: usize,
     rows: usize,
     options: &ParseOptions,
     cell_size: (u16, u16),
-) -> Grid {
+) -> Result<Grid, Error> {
+    if cols == 0 || rows == 0 || cols.checked_mul(rows).map_or(true, |cells| cells > MAX_CELLS) {
+        return Err(Error::GridSize { cols, rows });
+    }
     let (w, h) = cell_size;
-    vt::replay_with(log, cols, rows, options, (i32::from(w.max(1)), i32::from(h.max(1))))
+    Ok(vt::replay_with(log, cols, rows, options, (i32::from(w.max(1)), i32::from(h.max(1)))))
 }
 
-/// Whether the screen `log` leaves depends on the cell size: it has a kitty
-/// command or a Sixel image that can move the text cursor by cells of the
-/// font's size. The CLI reads a font for `--text` and `--json` only then.
+/// Whether the screen `log` leaves may depend on the cell size: it has a
+/// kitty command or a Sixel image that may move the text cursor by cells of
+/// the font's size. False means the cell size cannot matter. The scan does
+/// not decode images, so true does not promise a difference: a transmission
+/// that fails, or a malformed image, still counts. The CLI reads a font for
+/// `--text` and `--json` only when this is true.
 pub fn needs_cell_size(log: &[u8]) -> bool {
     vt::needs_cell_metrics(log)
 }
@@ -106,10 +143,10 @@ pub fn is_cast(log: &[u8]) -> bool {
 }
 
 /// Decode an asciinema v2 or v3 recording: its output events, in order,
-/// which [`parse`] replays, and the terminal size it ends at. The error says
-/// which line is malformed, and how, as the CLI reports it.
-pub fn decode_cast(log: Vec<u8>) -> Result<Cast, String> {
-    cast::decode(log)
+/// which [`parse`] replays, and the terminal size it ends at. A malformed
+/// recording is an [`Error::Cast`].
+pub fn decode_cast(log: Vec<u8>) -> Result<Cast, Error> {
+    cast::decode(log).map_err(Error::Cast)
 }
 
 impl Grid {
@@ -157,6 +194,10 @@ impl<'a> GridCell<'a> {
     /// wide character ([`GridCell::is_wide_tail`]). A kitty Unicode
     /// placeholder cell holds U+10EEEE, as `--text` shows it.
     pub fn ch(&self) -> char {
+        // The screen keeps a tail's character as 0.
+        if self.is_wide_tail() {
+            return ' ';
+        }
         grid::to_char(self.cell.ch)
     }
 
