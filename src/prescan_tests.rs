@@ -3,6 +3,7 @@
 //! in graphics.rs and sixel.rs.
 
 use super::*;
+use crate::vt::bytes_equal;
 use std::fs;
 
 /// Every way of deciding, new and old, agrees on `log`; returns the old

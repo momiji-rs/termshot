@@ -1,7 +1,7 @@
 use super::*;
-use crate::{replay_sized, Lf};
+use crate::{screen::Lf, vt::replay_sized};
 
-fn replay(s: &[u8]) -> crate::Grid {
+fn replay(s: &[u8]) -> crate::grid::Grid {
     replay_sized(s, 20, 10, Lf::Index, (10, 20))
 }
 const RED: &[u8] = b"\x1b_Ga=T,f=24,s=1,v=1,c=2,r=1; /wAA\x1b\\";

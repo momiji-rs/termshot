@@ -4,6 +4,7 @@
 //! Paths are relative to the repo root, where test.sh runs.
 
 use super::*;
+use crate::vt::{parse, replay};
 
 pub(crate) const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
 

@@ -3,12 +3,12 @@
 //! signed z-index. Cells are 10x20 pixels, as in the other graphics tests.
 
 use super::*;
-use crate::{replay_sized, Lf};
+use crate::{screen::Lf, vt::replay_sized};
 
 /// A 4x2 RGB image: red, green, blue, yellow over cyan, magenta, white, black.
 const IMAGE: &str = "f=24,s=4,v=2;/wAAAP8AAAD///8AAP///wD/////AAAA";
 
-fn replay(s: &[u8]) -> crate::Grid {
+fn replay(s: &[u8]) -> crate::grid::Grid {
     replay_sized(s, 20, 10, Lf::Index, (10, 20))
 }
 

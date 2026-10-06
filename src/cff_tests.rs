@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::draw_tests::{mutate, render, render_with};
+use crate::vt::parse;
 use std::ffi::c_int;
 
 const CJK: &str = "third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf";

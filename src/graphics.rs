@@ -373,7 +373,7 @@ impl Command {
 /// by any id up to that bound counts. Payloads are not decoded here: a failed
 /// transmission counts too, which only loads fonts that were not needed.
 ///
-/// `crate::needs_cell_metrics` walks the log once and hands every APC string
+/// `crate::vt::needs_cell_metrics` walks the log once and hands every APC string
 /// to [`CellMetricsScan::string`], in order.
 #[derive(Default)]
 pub struct CellMetricsScan {
@@ -385,7 +385,7 @@ pub struct CellMetricsScan {
 
 impl CellMetricsScan {
     /// Whether this APC string (its bytes after ESC _, through the terminator
-    /// `crate::skip_string` stopped after) is a kitty command that needs
+    /// `crate::vt::skip_string` stopped after) is a kitty command that needs
     /// cell metrics. Only a string that ST ends is a command.
     pub fn string(&mut self, s: &[u8]) -> bool {
         let Some(bytes) = s.strip_prefix(b"G").and_then(|s| s.strip_suffix(b"\x1b\\")) else {
@@ -415,11 +415,11 @@ impl CellMetricsScan {
     }
 }
 
-/// The kitty half of `crate::needs_cell_metrics`, for tests.
+/// The kitty half of `crate::vt::needs_cell_metrics`, for tests.
 #[cfg(test)]
 pub fn needs_cell_metrics(data: &[u8]) -> bool {
     let mut scan = CellMetricsScan::default();
-    crate::any_string(data, |kind, s| kind == b'_' && scan.string(s))
+    crate::vt::any_string(data, |kind, s| kind == b'_' && scan.string(s))
 }
 
 /// The byte-at-a-time scan `CellMetricsScan` replaced (main `a8a95e0`),
@@ -433,7 +433,7 @@ pub fn needs_cell_metrics_reference(data: &[u8]) -> bool {
     while i + 1 < data.len() {
         if data[i] == 0x1b && matches!(data[i + 1], b']' | b'P' | b'_' | b'^' | b'X') {
             let start = i + 2;
-            let end = crate::skip_string(data, start);
+            let end = crate::vt::skip_string(data, start);
             if data[i + 1] == b'_'
                 && data.get(start) == Some(&b'G')
                 && end >= start + 3

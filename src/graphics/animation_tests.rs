@@ -1,7 +1,7 @@
 //! Animation frames (#44): a=f, a=c, a=a and d=f/F, checked against pixels
 //! worked out here from the protocol's rules, and the limits on frames.
 use super::*;
-use crate::{replay_sized, Lf};
+use crate::{screen::Lf, vt::replay_sized};
 
 const R: [u8; 4] = [255, 0, 0, 255];
 const G: [u8; 4] = [0, 255, 0, 255];

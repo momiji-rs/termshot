@@ -1,5 +1,5 @@
 use super::*;
-use crate::{replay_sized, Lf};
+use crate::{screen::Lf, vt::replay_sized};
 
 /// The pixels of a decoded image, one [r, g, b, a] each.
 fn pixels(body: &[u8]) -> (u32, u32, Vec<[u8; 4]>) {
@@ -269,11 +269,11 @@ fn kitty_command_encodes_every_length() {
     }
 }
 
-fn replay(log: &[u8]) -> crate::Grid {
+fn replay(log: &[u8]) -> crate::grid::Grid {
     replay_sized(log, 20, 10, Lf::Index, (10, 20))
 }
 
-fn text(g: &crate::Grid, row: usize) -> String {
+fn text(g: &crate::grid::Grid, row: usize) -> String {
     g.cells[row * 20..(row + 1) * 20].iter().map(|c| char::from_u32(c.ch).unwrap()).collect::<String>().trim_end().to_string()
 }
 

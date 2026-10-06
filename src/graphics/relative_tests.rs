@@ -4,7 +4,7 @@
 //! other graphics tests; semantics are kitty's (graphics.c, master).
 
 use super::*;
-use crate::{replay_sized, Lf};
+use crate::{screen::Lf, vt::replay_sized};
 
 const PIXEL: &str = "f=24,s=1,v=1;/wAA";
 
