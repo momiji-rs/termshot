@@ -78,14 +78,14 @@ impl Palette {
         let mut seen = [0usize; 18];
         for (n, line) in text.split('\n').enumerate() {
             let n = n + 1;
-            let line = line.strip_suffix('\r').unwrap_or(line).trim_matches([' ', '\t']);
+            let line = line.strip_suffix('\r').unwrap_or(line).trim_matches(is_blank);
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((key, value)) = line.split_once([' ', '\t']) else {
+            let Some((key, value)) = line.split_once(is_blank) else {
                 return Err(format!("line {n}: {line:?} has no colour; write a key and #rrggbb, as in \"color1 #cd0000\""));
             };
-            let value = value.trim_start_matches([' ', '\t']);
+            let value = value.trim_start_matches(is_blank);
             let slot = match key {
                 "foreground" => 0,
                 "background" => 1,
@@ -128,6 +128,11 @@ impl Palette {
         }
         file
     }
+}
+
+/// What separates a file's keys from their colours, and is trimmed.
+fn is_blank(c: char) -> bool {
+    c == ' ' || c == '\t'
 }
 
 /// A colour written #rrggbb (either case), as --fg, --bg and the file take it.
