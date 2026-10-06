@@ -145,6 +145,23 @@ fn accessors() -> Result<(), String> {
     Ok(())
 }
 
+/// A grid, its images included, can be parsed on one thread and read on
+/// another: this fails to compile otherwise.
+fn threads() -> Result<(), String> {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<termshot::Grid>();
+    send_sync::<termshot::Error>();
+    let log = format!("\x1b_Ga=T,f=24,s=30,v=40,q=2;{}\x1b\\text", "A".repeat(4800));
+    let grid = std::thread::spawn(move || termshot::parse(log.as_bytes(), 10, 4, &ParseOptions::default()))
+        .join()
+        .map_err(|_| "threads: the parse panicked".to_string())?
+        .map_err(|error| format!("threads: {error}"))?;
+    match grid.to_text() {
+        text if text.contains("text") => Ok(()),
+        text => Err(format!("threads: {text:?}")),
+    }
+}
+
 /// The grid sizes parse refuses, as errors.
 fn sizes() -> Result<(), String> {
     let options = ParseOptions::default();
@@ -209,7 +226,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    for test in [accessors, sizes, cast] {
+    for test in [accessors, sizes, threads, cast] {
         if let Err(error) = test() {
             println!("FAIL {error}");
             return ExitCode::FAILURE;

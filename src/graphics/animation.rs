@@ -14,7 +14,7 @@
 //! makes it whole. All of it is integer arithmetic, the same on every
 //! platform.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::{decode, Command, Graphics, Image, MAX_BYTES};
 
@@ -39,7 +39,7 @@ const MAX_CHAIN: usize = 33;
 pub(super) struct Frame {
     pub id: u32,
     /// The pixels sent, RGBA, `w` by `h`. An opaque frame's alpha is 255.
-    pub data: Rc<Vec<u8>>,
+    pub data: Arc<Vec<u8>>,
     /// Where `data` goes in the image, and its size.
     pub x: u32,
     pub y: u32,
@@ -58,7 +58,7 @@ pub(super) struct Frame {
 
 impl Frame {
     /// An image's data as its root frame, frame id 1.
-    pub fn root(data: Rc<Vec<u8>>, width: u32, height: u32, opaque: bool) -> Frame {
+    pub fn root(data: Arc<Vec<u8>>, width: u32, height: u32, opaque: bool) -> Frame {
         Frame { id: 1, data, x: 0, y: 0, w: width, h: height, opaque, blend: false, base: 0, bg: 0 }
     }
 
@@ -87,9 +87,9 @@ impl Image {
     }
 
     /// Its current frame's pixels, if they need no composing.
-    pub(super) fn shown(&self) -> Option<Rc<Vec<u8>>> {
+    pub(super) fn shown(&self) -> Option<Arc<Vec<u8>>> {
         let f = &self.frames[self.current];
-        f.whole(self.width, self.height).then(|| Rc::clone(&f.data))
+        f.whole(self.width, self.height).then(|| Arc::clone(&f.data))
     }
 
     /// The frame with a 1-based number, kitty's frame_for_number.
@@ -111,7 +111,7 @@ fn spend(budget: &mut u64, n: u64) -> Option<()> {
 /// without alpha if the frame is opaque); one with a base is its data over
 /// the base's pixels, which keep their opacity. A missing base, or more than
 /// 32 of them, leaves the frame without pixels.
-fn coalesce(img: &Image, k: usize, budget: &mut u64) -> Option<(Rc<Vec<u8>>, bool)> {
+fn coalesce(img: &Image, k: usize, budget: &mut u64) -> Option<(Arc<Vec<u8>>, bool)> {
     let (width, height) = (img.width, img.height);
     let mut chain = vec![k];
     loop {
@@ -127,7 +127,7 @@ fn coalesce(img: &Image, k: usize, budget: &mut u64) -> Option<(Rc<Vec<u8>>, boo
     let size = u64::from(width) * u64::from(height);
     let first = &img.frames[chain.pop()?];
     let (mut pixels, opaque) = if first.whole(width, height) {
-        (Rc::clone(&first.data), first.opaque)
+        (Arc::clone(&first.data), first.opaque)
     } else {
         spend(budget, size)?;
         let mut bg = first.bg.to_be_bytes();
@@ -136,13 +136,13 @@ fn coalesce(img: &Image, k: usize, budget: &mut u64) -> Option<(Rc<Vec<u8>>, boo
         }
         let mut canvas = bg.repeat(size as usize);
         draw(&mut canvas, width, height, first.opaque, first, budget)?;
-        (Rc::new(canvas), first.opaque)
+        (Arc::new(canvas), first.opaque)
     };
     while let Some(i) = chain.pop() {
-        if Rc::strong_count(&pixels) > 1 {
+        if Arc::strong_count(&pixels) > 1 {
             spend(budget, size)?;
         }
-        draw(Rc::make_mut(&mut pixels).as_mut_slice(), width, height, opaque, &img.frames[i], budget)?;
+        draw(Arc::make_mut(&mut pixels).as_mut_slice(), width, height, opaque, &img.frames[i], budget)?;
     }
     Some((pixels, opaque))
 }
@@ -233,7 +233,7 @@ fn chain_too_large(img: &Image, k: usize) -> bool {
 /// rectangle at sx, sy of another frame's pixels, put at dx, dy.
 enum Over {
     Frame(Frame),
-    Rect { source: Rc<Vec<u8>>, blend: bool, dx: u64, dy: u64, sx: u64, sy: u64, w: u64, h: u64 },
+    Rect { source: Arc<Vec<u8>>, blend: bool, dx: u64, dy: u64, sx: u64, sy: u64, w: u64, h: u64 },
 }
 
 impl Graphics {
@@ -242,7 +242,7 @@ impl Graphics {
     }
 
     /// `coalesce` with the budget left, charging what it used.
-    fn coalesce(&mut self, index: usize, k: usize) -> Option<(Rc<Vec<u8>>, bool)> {
+    fn coalesce(&mut self, index: usize, k: usize) -> Option<(Arc<Vec<u8>>, bool)> {
         let mut budget = self.budget();
         let out = coalesce(&self.images[index], k, &mut budget);
         self.composed = COMPOSE_BUDGET - budget;
@@ -273,16 +273,16 @@ impl Graphics {
     /// `pixels`, its pixels as `coalesce` gave them. Those are taken from
     /// the frame rather than copied when nothing else holds them. False if
     /// the budget is spent, leaving the frame as it was.
-    fn compose_onto(&mut self, index: usize, k: usize, pixels: (Rc<Vec<u8>>, bool), over: Over) -> bool {
+    fn compose_onto(&mut self, index: usize, k: usize, pixels: (Arc<Vec<u8>>, bool), over: Over) -> bool {
         let (mut pixels, opaque) = pixels;
         self.release(self.images[index].key);
         let img = &mut self.images[index];
         let (width, height) = (img.width, img.height);
-        let mine = Rc::ptr_eq(&pixels, &img.frames[k].data);
+        let mine = Arc::ptr_eq(&pixels, &img.frames[k].data);
         if mine {
-            img.frames[k].data = Rc::default();
+            img.frames[k].data = Arc::default();
         }
-        let copy = if Rc::strong_count(&pixels) > 1 { u64::from(width) * u64::from(height) } else { 0 };
+        let copy = if Arc::strong_count(&pixels) > 1 { u64::from(width) * u64::from(height) } else { 0 };
         let work = match &over {
             Over::Frame(f) => clipped(width, height, f),
             Over::Rect { w, h, .. } => w * h,
@@ -295,7 +295,7 @@ impl Graphics {
             return false;
         }
         self.composed = COMPOSE_BUDGET - budget;
-        let out = Rc::make_mut(&mut pixels);
+        let out = Arc::make_mut(&mut pixels);
         match over {
             Over::Frame(f) => {
                 let mut unlimited = u64::MAX;
@@ -311,7 +311,7 @@ impl Graphics {
             }
         }
         let f = &mut self.images[index].frames[k];
-        *f = Frame { id: f.id, data: pixels, opaque, ..Frame::root(Rc::default(), width, height, false) };
+        *f = Frame { id: f.id, data: pixels, opaque, ..Frame::root(Arc::default(), width, height, false) };
         true
     }
 
@@ -330,7 +330,7 @@ impl Graphics {
         let opaque = cmd.format == 24;
         let mut frame = Frame {
             id: 0,
-            data: Rc::new(rgba),
+            data: Arc::new(rgba),
             x: cmd.x,
             y: cmd.y,
             w,
@@ -370,14 +370,14 @@ impl Graphics {
             if img.frames[other].base != 0 && chain_too_large(img, other) {
                 // Composed now, as kitty makes it a key frame.
                 let Some((mut pixels, under_opaque)) = self.coalesce(index, other) else { return };
-                let copy = if Rc::strong_count(&pixels) > 1 { u64::from(width) * u64::from(height) } else { 0 };
+                let copy = if Arc::strong_count(&pixels) > 1 { u64::from(width) * u64::from(height) } else { 0 };
                 let mut budget = self.budget();
                 if spend(&mut budget, copy + clipped(width, height, &frame)).is_none() {
                     return;
                 }
                 self.composed = COMPOSE_BUDGET - budget;
                 let mut unlimited = u64::MAX;
-                let _ = draw(Rc::make_mut(&mut pixels).as_mut_slice(), width, height, under_opaque, &frame, &mut unlimited);
+                let _ = draw(Arc::make_mut(&mut pixels).as_mut_slice(), width, height, under_opaque, &frame, &mut unlimited);
                 frame = Frame { data: pixels, x: 0, y: 0, w: width, h: height, opaque: under_opaque, ..frame };
             } else {
                 frame.base = img.frames[other].id;
@@ -477,7 +477,7 @@ impl Graphics {
     /// `show_frames` gives every placement its image's pixels at the end.
     fn release(&mut self, key: u64) {
         for p in self.placements.iter_mut().filter(|p| p.image == key && !p.sixel) {
-            p.pixels = Rc::default();
+            p.pixels = Arc::default();
         }
     }
 
@@ -490,7 +490,7 @@ impl Graphics {
         let mut placed: Vec<u64> = self.placements.iter().filter(|p| !p.sixel).map(|p| p.image).collect();
         placed.sort_unstable();
         placed.dedup();
-        let shown: Vec<Option<Rc<Vec<u8>>>> = placed
+        let shown: Vec<Option<Arc<Vec<u8>>>> = placed
             .iter()
             .map(|&key| {
                 let img = self.images.iter().find(|img| img.key == key)?;
@@ -506,7 +506,7 @@ impl Graphics {
             let i = placed.binary_search(&p.image).expect("listed above");
             match &shown[i] {
                 Some(pixels) => {
-                    p.pixels = Rc::clone(pixels);
+                    p.pixels = Arc::clone(pixels);
                     true
                 }
                 None => false,

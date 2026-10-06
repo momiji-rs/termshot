@@ -5,7 +5,7 @@
 //! All coordinates are pixels computed from the same font metrics as the
 //! render (stb_glue.c's draw_cell_size).
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub use crate::composite::ImageView;
 
@@ -99,7 +99,7 @@ struct Image {
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Placement {
-    pub pixels: Rc<Vec<u8>>,
+    pub pixels: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
     /// The source rectangle shown, x, y, w and h: the crop, within the image.
@@ -821,7 +821,7 @@ impl Graphics {
         };
         let id = if cmd.id == 0 && cmd.number != 0 { self.free_id() } else { cmd.id };
         let atime = self.tick();
-        let root = Frame::root(Rc::new(pixels), width, height, cmd.format == 24);
+        let root = Frame::root(Arc::new(pixels), width, height, cmd.format == 24);
         self.images.push(Image {
             key,
             id,
@@ -1298,12 +1298,12 @@ impl Graphics {
             // pixels are written in place, not copied, and later erases need
             // no search of the store.
             let (x, key) = (p.x, p.image);
-            if Rc::strong_count(&p.pixels) > 1 {
+            if Arc::strong_count(&p.pixels) > 1 {
                 if let Some(img) = self.images.iter_mut().find(|img| img.key == key) {
-                    img.frames[0].data = Rc::default();
+                    img.frames[0].data = Arc::default();
                 }
             }
-            let pixels = Rc::make_mut(&mut self.placements[i].pixels);
+            let pixels = Arc::make_mut(&mut self.placements[i].pixels);
             for (top, bottom, origin) in rows {
                 for y in top..bottom {
                     let start = ((y - origin) * w + left - x) as usize * 4;
@@ -1486,7 +1486,7 @@ impl Graphics {
             at.1 = at.1.min(left / cw);
             self.clock += 1;
             cell_images.push(Placement {
-                pixels: Rc::clone(&v.pixels),
+                pixels: Arc::clone(&v.pixels),
                 src: [0, 0, v.width, v.height],
                 x,
                 w,

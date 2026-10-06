@@ -307,7 +307,7 @@ fn composing_a_chain_stops_past_32_bases() {
     let root = img(&g, 1).frames[0].clone();
     let images = &mut g.images;
     for id in 2..=34 {
-        let f = Frame { id, base: id - 1, blend: false, data: Rc::new(G.to_vec()), ..root.clone() };
+        let f = Frame { id, base: id - 1, blend: false, data: Arc::new(G.to_vec()), ..root.clone() };
         images[0].frames.push(f);
     }
     assert_eq!(frame(&g, 1, 33).unwrap(), G);
@@ -431,12 +431,12 @@ fn relative_placements_on_a_placement_not_drawn_are_not_drawn() {
 fn placements_let_go_of_pixels_a_frame_no_longer_has() {
     let mut g = image(1, 2, 1, &[R, G]);
     run(&mut g, "a=p,i=1,p=2,C=1");
-    let root = Rc::clone(&img(&g, 1).frames[0].data);
-    assert_eq!(Rc::strong_count(&root), 4);
+    let root = Arc::clone(&img(&g, 1).frames[0].data);
+    assert_eq!(Arc::strong_count(&root), 4);
     // After an edit, the placements no longer hold the old pixels, which
     // the quota no longer counts.
     run(&mut g, &format!("a=f,i=1,r=1,s=1,v=1;{}", px(&[B])));
-    assert_eq!(Rc::strong_count(&root), 1);
+    assert_eq!(Arc::strong_count(&root), 1);
     assert!(g.placements.iter().all(|p| p.pixels.is_empty()));
     run(&mut g, &format!("a=f,i=1,s=2,v=1;{}", px(&[W, W])));
     run(&mut g, "a=a,i=1,c=2");
@@ -578,12 +578,12 @@ fn a_shown_frame_composed_apart_counts_too() {
     // A placed image fills the quota but for 4 MiB less a byte.
     run(&mut g, &format!("a=T,i=9,s=1,v=1;{}", px(&[R])));
     let filler = g.images.iter_mut().find(|img| img.id == 9).unwrap();
-    Rc::make_mut(&mut filler.frames[0].data).resize(MAX_BYTES - 2 * 4 * 1024 * 1024 - 8 + 1, 0);
+    Arc::make_mut(&mut filler.frames[0].data).resize(MAX_BYTES - 2 * 4 * 1024 * 1024 - 8 + 1, 0);
     run(&mut g, "a=a,i=1,c=2");
     assert_eq!(current(&g, 1), 1);
     // A byte less, and it fits.
     let filler = g.images.iter_mut().find(|img| img.id == 9).unwrap();
-    Rc::make_mut(&mut filler.frames[0].data).pop();
+    Arc::make_mut(&mut filler.frames[0].data).pop();
     run(&mut g, "a=a,i=1,c=2");
     assert_eq!(current(&g, 1), 2);
     assert_eq!(g.images.iter().map(Image::bytes).sum::<usize>(), MAX_BYTES);

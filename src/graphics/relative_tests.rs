@@ -330,7 +330,7 @@ fn a_parent_removed_any_other_way_takes_its_children() {
     // Evicted by the storage quota.
     let mut g = family();
     let first = g.images.iter_mut().find(|img| img.id == 1).unwrap();
-    Rc::make_mut(&mut first.frames[0].data).resize(MAX_BYTES, 0);
+    Arc::make_mut(&mut first.frames[0].data).resize(MAX_BYTES, 0);
     first.atime = 0;
     run(&mut g, (0, 0), &format!("a=T,i=9,C=1,{PIXEL}"));
     assert_eq!(placed(&g), [(9, 0)]);
