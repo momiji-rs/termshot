@@ -225,6 +225,16 @@ fn editing_a_frame_composes_onto_it_and_makes_it_whole() {
     assert_eq!(shown(&g, 1).unwrap(), [R, W].concat());
     run(&mut g, &format!("a=f,i=1,r=1,x=4294967295,y=4294967295,s=1,v=1;{}", px(&[G])));
     assert_eq!(shown(&g, 1).unwrap(), [R, W].concat());
+    // Wholly outside, past the right edge on a row inside: an edit, and a
+    // new frame over a base or a background, drawn nothing.
+    run(&mut g, &format!("a=f,i=1,r=1,x=5,s=1,v=1;{}", px(&[G])));
+    assert_eq!(shown(&g, 1).unwrap(), [R, W].concat());
+    run(&mut g, &format!("a=f,i=1,c=1,x=2,s=1,v=1;{}", px(&[G])));
+    run(&mut g, &format!("a=f,i=1,x=9,s=1,v=1,Y=4278190335;{}", px(&[G])));
+    assert_eq!(frame(&g, 1, 5).unwrap(), [R, W].concat());
+    assert_eq!(frame(&g, 1, 6).unwrap(), [[255, 0, 0, 255]; 2].concat());
+    run(&mut g, "a=a,i=1,c=6");
+    assert_eq!(drawn(g), [[[255, 0, 0, 255]; 2].concat()]);
 }
 
 #[test]

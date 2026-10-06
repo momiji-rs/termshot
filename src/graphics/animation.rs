@@ -160,6 +160,10 @@ fn draw(under: &mut [u8], width: u32, height: u32, opaque: bool, f: &Frame, budg
     spend(budget, clipped(width, height, f))?;
     let cols = u64::from(width).saturating_sub(u64::from(f.x)).min(u64::from(f.w)) as usize;
     let rows = u64::from(height).saturating_sub(u64::from(f.y)).min(u64::from(f.h)) as usize;
+    // Nothing inside the image: x may be past its right edge.
+    if cols == 0 {
+        return Some(());
+    }
     let (width, x, y, fw) = (width as usize, f.x as usize, f.y as usize, f.w as usize);
     for row in 0..rows {
         let to = ((y + row) * width + x) * 4;
