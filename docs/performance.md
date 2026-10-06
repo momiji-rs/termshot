@@ -1,6 +1,11 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[parser-as-a-library round](#the-parser-as-a-library-2026-10-06-3c69f71-85-part-1)
+(2026-10-06, `3c69f71`, #85 part 1) moved the parser and the screen model
+out of `src/main.rs` into library modules, remeasured every case against
+main `cd2b11d` on the same two machines, and measured the two-crate build
+it does not use. The
 [release size profile round](#release-size-profile-2026-10-05-66780fc-83)
 (2026-10-05, `66780fc`, #83) measured size options for the release archives
 and chose fat LTO. The
@@ -60,6 +65,175 @@ the size. `bench.py --slim FULL.json --output SLIM.json [--stage KEY]`
 slims an existing full file. Commit the slim form, with only the stages a
 section cites. The files from earlier rounds are full; slimming them is a
 possible follow-up.
+
+## The parser as a library (2026-10-06, `3c69f71`, #85 part 1)
+
+#85's first part moves the parser and the screen model out of `src/main.rs`
+into `src/vt.rs`, `src/screen.rs` and `src/grid.rs`, and adds `src/lib.rs`,
+which builds them as a library (`libtermshot.rlib`). Nothing is meant to
+change but where the code lives. Every output is the same. With fat LTO, as
+the release archives are built, no case is slower on either machine; in the
+dev build a few parser stress cases are 0.5-3% slower, from code layout once
+five calls that `replay_with` used to inline are marked `#[inline]` again
+(below). Building the binary as two crates, the CLI linking the library, was
+measured too and is not used.
+
+### Output
+
+- `./test.sh` writes 1,732 files to `target/test/` (833 PNGs, 83 `--text`
+  and 80 `--json` outputs, and the logs and fonts it generates). Every one
+  has the same sha256 as main's, on macOS (Apple clang 21) and on starship
+  (GCC 16.2.1).
+- `tests/library.rs` links `libtermshot.rlib` as an embedder does and gets
+  the 45 grids in `tests/grids/` byte for byte from `Grid::to_text` and
+  `Grid::to_json`.
+- Every case below gave the same output bytes from every binary
+  (`--verify-identical`), dev and fat LTO builds alike.
+- `bench/c-vs-rust/run.sh full 1`: 4,135 renders byte-identical to the CLI
+  at `48192f6`, with the same exit codes and stderr (macOS).
+- `scripts/release.sh macos-universal` (rustup 1.98.1): both slices,
+  x86_64 under Rosetta, render the samples like the host build.
+
+### The module boundary and inlining
+
+The first build of the move (`7c5fc89`) ran the parser stress logs slower
+in the dev build, in both batches on both machines: `cursor-moves` 0.971 /
+0.967 on macOS and 0.947 / 0.948 on Linux, `text-dense-sgr` 0.970 / 0.967
+and 0.956 / 0.937, `dense-sgr` 0.985 / 0.977 and 0.973 / 0.963 (paired
+speedup against main; below 1 is slower). rustc starts a codegen unit per
+module, and with `Screen` in `screen.rs` and `replay_with` in `vt.rs` it
+stopped inlining `Screen::print_ascii`, the call that prints every run of
+ASCII, and four calls made once per log or per Sixel image (`into_cells`,
+`screen_marks`, `placeholders`, `sixel`). `#[inline]` on those five
+(`3c69f71`) gives back main's inlining: every parser function in the binary
+is the size it is on main, within 64 bytes (macOS: `replay_with` 8,684
+bytes against 8,676, `Screen::csi` 5,608 against 5,600; Linux:
+`replay_with` 10,219 against 10,155, which stores the grid's size and
+background now, and `Screen::csi` the same). A probe of the parser and text
+suites on macOS with `print_ascii` alone marked left `cursor-moves` at
+0.989 / 0.994.
+
+What is left in the dev build is code layout. On Linux, `dense-sgr` is
+0.970 / 0.980 and `cursor-moves` 0.985 / 0.981. Built with every loop
+aligned to 64 bytes (`RUSTFLAGS='-C llvm-args=-align-loops=64'`), main
+itself moves by up to 2.5% on `cursor-moves` (0.975 / 0.996 against
+the plain build), and aligned, the branch is within 1.2% of aligned main
+on every case of the parser suite (`cursor-moves` 0.969 / 0.997 against
+aligned main's 0.975 / 0.996, `dense-sgr` 0.992 / 0.995 against 1.004 /
+0.999; all against plain main). That probe ran 30 rounds of the parser and
+text suites on starship and is not kept.
+
+### Two crates or one compilation unit
+
+#85 asks for `src/lib.rs` as the crate root of everything but the CLI, with
+`src/main.rs` a binary crate linking it, or one compilation unit if two
+crates cost speed or the link order. The two-crate build was made as a
+prototype from the same commit, for measurement only: every module public
+in an rlib (the C bundled in it, `-l static=termshot_c`), and main.rs
+linking it with `--extern`. It links on macOS and on glibc, and renders the
+same bytes. It is the `two` binary in every table here. It is not used:
+
+- With fat LTO on macOS it paints slower, in both batches: `large-color`
+  0.974 / 0.977, `color-grid` 0.983 / 0.979, `geometry-all` 0.983 / 0.984,
+  `image-under` 0.983 / 0.992, `image-below` 0.984 / 0.990, and four more.
+  In the Linux dev build it parses slower: `text-mixed-unicode` 0.925 /
+  0.940, `mixed-unicode` 0.959 / 0.947, `cursor-moves` 0.968 / 0.970. The
+  one-unit build has none of these.
+- The CLI needs the render, the fonts and the kitty image views, which are
+  not part of the library until #85's second part. Linking them from an
+  rlib would make every one of them public API first.
+
+So `src/main.rs` declares the same modules as `src/lib.rs`, plus the
+render's, and compiles them as one crate, as before; `src/lib.rs` is built
+on its own as the rlib. Once the CLI is thin (#85 part 2), the two-crate
+build is the one to measure again.
+
+### Results
+
+Paired wall speedup of each binary against main (main's wall time / the
+binary's, per interleaved round; above 1 is faster), batches A / B. "In
+both" means the bootstrap 95% interval lies past 1 in both batches. Every
+suite ran: 48 cases, the system Noto CJK collection included. "Every case"
+is the range of all 96 medians.
+
+`branch` (`3c69f71`):
+
+| case | macOS dev | macOS fat LTO | Linux dev | Linux fat LTO |
+| --- | ---: | ---: | ---: | ---: |
+| `ansi-replay` | 1.001 / 1.013 | 0.991 / 1.001 | 0.999 / 0.990 | 0.985 / 1.000 |
+| `dense-sgr` | 0.995 / 0.999 | 0.995 / 0.999 | 0.970 / 0.980 | 0.999 / 1.009 |
+| `thai-combining` | 1.013 / 1.007 | 1.019 / 1.018 | 1.004 / 1.001 | 1.010 / 1.006 |
+| `ascii-overflow` | 1.004 / 1.009 | 0.996 / 0.982 | 1.007 / 0.972 | 0.985 / 1.006 |
+| `cursor-moves` | 0.987 / 0.993 | 0.994 / 0.993 | 0.985 / 0.981 | 0.988 / 0.990 |
+| `mixed-unicode` | 0.996 / 0.992 | 1.005 / 0.999 | 1.000 / 0.998 | 1.000 / 1.003 |
+| `text-dense-sgr` | 0.994 / 0.997 | 1.001 / 0.998 | 0.970 / 0.993 | 1.014 / 1.014 |
+| `text-mixed-unicode` | 0.992 / 0.991 | 1.011 / 1.010 | 0.984 / 0.994 | 1.013 / 1.013 |
+| `reply-sent` | 1.001 / 1.003 | 0.998 / 0.996 | 0.993 / 0.998 | 0.994 / 0.999 |
+| slower in both | `cursor-moves`, `text-mixed-unicode` (above) | none | `geometry-all` 0.991 / 0.986, `dense-sgr`, `cursor-moves` (above) | none |
+| faster in both | `scrolling` 1.010 / 1.013, `thai-combining`, `text-ansi-replay` 1.006 / 1.013 | `thai-combining` | none | none |
+| every case | 0.985 to 1.019 | 0.982 to 1.020 | 0.944 to 1.048 | 0.961 to 1.047 |
+
+`two` (`3c69f71` as two crates):
+
+| case | macOS dev | macOS fat LTO | Linux dev | Linux fat LTO |
+| --- | ---: | ---: | ---: | ---: |
+| `ansi-replay` | 0.992 / 0.998 | 1.000 / 1.004 | 0.984 / 0.984 | 0.978 / 0.996 |
+| `dense-sgr` | 0.994 / 0.991 | 0.988 / 0.985 | 0.987 / 0.989 | 0.997 / 1.008 |
+| `thai-combining` | 1.006 / 1.007 | 1.023 / 1.019 | 0.966 / 0.968 | 1.037 / 1.026 |
+| `ascii-overflow` | 1.004 / 1.001 | 0.999 / 0.994 | 0.964 / 0.996 | 0.972 / 1.025 |
+| `cursor-moves` | 0.980 / 0.982 | 0.988 / 0.990 | 0.968 / 0.970 | 0.995 / 0.994 |
+| `mixed-unicode` | 0.998 / 0.991 | 0.997 / 0.995 | 0.959 / 0.947 | 1.033 / 1.024 |
+| `text-dense-sgr` | 0.992 / 0.997 | 1.007 / 1.001 | 0.985 / 0.985 | 0.998 / 0.990 |
+| `text-mixed-unicode` | 0.994 / 0.984 | 1.007 / 1.003 | 0.925 / 0.940 | 1.026 / 1.028 |
+| `reply-sent` | 1.012 / 1.009 | 1.000 / 1.000 | 1.004 / 0.987 | 0.988 / 1.003 |
+| slower in both | `geometry-all` 0.988 / 0.986, `dense-sgr`, `cursor-moves` | `mixed-full` 0.990 / 0.989, `color-grid` 0.983 / 0.979, `dense` 0.989 / 0.987, `geometry-all` 0.983 / 0.984, `large-color` 0.974 / 0.977, `image-below` 0.984 / 0.990, `image-under` 0.983 / 0.992, `dense-sgr`, `cursor-moves` | `geometry-all` 0.985 / 0.985, `dense-sgr`, `cursor-moves`, `mixed-unicode`, `thai-combining`, `text-ansi-replay` 0.964 / 0.963, `text-mixed-unicode` | none |
+| faster in both | `thai-combining` | `thai-combining` | none | `geometry-all` 1.019 / 1.007, `mixed-unicode`, `thai-combining`, `text-mixed-unicode` |
+| every case | 0.980 to 1.015 | 0.974 to 1.023 | 0.925 to 1.043 | 0.943 to 1.042 |
+
+### What was measured
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, Apple M2 Max, macOS 26.6.2 | `starship`, Ryzen 7 8745HS, governor `performance` |
+| built with | rustc 1.98.1 (Homebrew), Apple clang 21.0.0 | rustc 1.98.1 (Arch), GCC 16.2.1 |
+| load average (1 min), start → end | dev: A 4.09 → 4.72, B 4.72 → 3.33; fat: A 3.33 → 3.95, B 3.95 → 4.04 | dev: A 1.75 → 1.62, B 1.62 → 1.50; fat: A 1.46 → 1.98, B 1.98 → 2.07 |
+
+The binaries: `main` is main `cd2b11d`, `branch` is `3c69f71`, `two` is
+`3c69f71` as two crates, each with `build.sh`'s flags (dev) and with
+`RUSTFLAGS='-C lto=fat'` added, as `scripts/release.sh` builds them (fat
+LTO). Their sha256 values are in each file's `binary_sha256`.
+`scripts/bench.py` ran 40 rounds and 5 warmups per batch, and 5 peak-RSS
+runs, with seeds 53 (A) and 67 (B). A first Linux run of this round
+overlapped other jobs on starship (load 3.7, then 19) and was run again;
+it is not kept.
+
+The files are slim, with no profile stage kept: dev
+[A](performance-2026-10-06-lib-parse-dev-macos-a.json) and
+[B](performance-2026-10-06-lib-parse-dev-macos-b.json), fat
+[A](performance-2026-10-06-lib-parse-fat-macos-a.json) and
+[B](performance-2026-10-06-lib-parse-fat-macos-b.json) on macOS; dev
+[A](performance-2026-10-06-lib-parse-dev-linux-a.json) and
+[B](performance-2026-10-06-lib-parse-dev-linux-b.json), fat
+[A](performance-2026-10-06-lib-parse-fat-linux-a.json) and
+[B](performance-2026-10-06-lib-parse-fat-linux-b.json) on Linux. The first
+round (`7c5fc89`) and the probes are quoted above and not kept.
+
+### Reproduce
+
+```sh
+# Each binary as build.sh builds it, and with fat LTO (in a checkout of main
+# for main-dev and main-fat):
+./build.sh && cp termshot /tmp/branch-dev
+RUSTFLAGS='-C lto=fat' ./build.sh && cp termshot /tmp/branch-fat
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
+for flavor in dev fat; do
+  for batch in a:53 b:67; do
+    python3 scripts/bench.py --binary main=/tmp/main-$flavor --binary branch=/tmp/branch-$flavor \
+      --reference main --runs 40 --warmups 5 --memory-runs 5 --verify-identical --cjk-font "$cjk" \
+      --seed "${batch#*:}" --output "/tmp/lib-parse-$flavor-${batch%%:*}.json"
+  done
+done
+```
 
 ## Release size profile (2026-10-05, `66780fc`, #83)
 
