@@ -239,8 +239,8 @@ that look alike, with the column each starts at (a wide character takes two):
 `cursor` is null when the log hides it; its `shape` is `block`, `underline` or `bar`. `bold`, `italic`, `underline`, `double_underline` and `strike`
 appear only when set. Blank cells that end a row are left out unless their background or a line
 shows. A run's `text` has each character followed by its combining marks, as in `--text`,
-so a mark takes no column of its own. Colours are as drawn: reverse video and dim are already applied, and concealed text has
-`fg` equal to `bg`.
+so a mark takes no column of its own. Colours are as drawn: under the palette (see Colours and
+padding), with reverse video and dim already applied, and concealed text has `fg` equal to `bg`.
 
 | option | |
 |---|---|
@@ -255,6 +255,9 @@ so a mark takes no column of its own. Colours are as drawn: reverse video and di
 | `--cursor-shape block`, `underline` or `bar` | draw the cursor as that shape (default: the one the log sets with DECSCUSR, or a block) |
 | `--text FILE` | write the screen as text, a line per row with trailing spaces trimmed; the PNG is then optional |
 | `--json FILE` | write the screen as JSON: the cursor and its shape, and per row the runs of cells alike in colour and attributes; the PNG is then optional |
+| `--palette FILE` | the default colours and the 16 named ones, in kitty's colour keys (see Colours and padding) |
+| `--fg #RRGGBB`, `--bg #RRGGBB` | the default foreground or background, over the palette's |
+| `--padding N` or `X,Y` | a margin of N pixels around the cells, or X left and right and Y above and below, 0 to 1024, in the default background (default 0) |
 | `-v`, `--verbose` | print the cell and image size, the face of each collection and the instance of each variable font to stderr |
 | `-h`, `--help`, `-V`, `--version` | |
 
@@ -262,14 +265,15 @@ It prints nothing on success, except a hint on stderr when the log (for a cast, 
 which means it was probably not captured through a PTY and needs `--lf-newline`, and a warning
 when a font maps a character to an empty glyph, so it was drawn as a box. The warning names the
 first such cell, the font, and what to pass instead. Exit status is 0 when done; 1 when a file can't be read or written,
-a `.cast` is malformed, or the font is unusable; and 2 for bad arguments, including an image
-over 2^27 pixels and a cast larger than 500×200 without `--size`. termshot
+a `.cast` is malformed, or the font is unusable; and 2 for bad arguments, including a malformed
+`--palette` file, an image over 2^27 pixels (its padding included) and a cast larger than
+500×200 without `--size`. termshot
 won't write a PNG to a terminal, and only one output can be `-`. A failed run removes the output
 files it created.
 
 The original form, `termshot <log> <out.png> <font.ttf> [px] [cols] [rows]`, still works.
 
-`M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces, the line and paragraph separators, and the blank Braille pattern U+2800. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both (on a one-column screen, where no row can hold two, they take the one cell); a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é); otherwise the cell keeps up to four marks, and each is drawn over the character in its colours, from the font or else `--fallback-font` (a mark neither has is left out, not boxed). Without shaping (no GPOS anchors), a mark its font draws left of its origin, as most fonts do, is drawn from where the character ends; one drawn right of its origin, as in right-to-left fonts, is centered over the character. Joiners, variation selectors, Hangul fillers and the other default-ignorable characters are kept in `--text` and `--json` but draw nothing. An SGR reset uses foreground `#dbe7f7` on background `#111823`.
+`M` is snapped to a whole number of pixels so box-drawing joints meet. All box drawing and block elements (U+2500–U+259F: light, heavy, double and dashed lines, corners, tees, arcs, diagonals, eighths, shades and quadrants) are painted as geometry inside their cell, so lines join with any neighbour at any size; `tests/boxes.c` checks every one against its Unicode name. Other characters come from the font, then from `--fallback-font`, which is sized to the same height and centered in the cell; a character neither has is drawn as an outlined box, except for spaces, the line and paragraph separators, and the blank Braille pattern U+2800. Wide characters (CJK, fullwidth forms, emoji, by Unicode 17 widths) take two cells and are centered over both (on a one-column screen, where no row can hold two, they take the one cell); a combining mark merges into the character before it when Unicode has the precomposed form (e + U+0301 is é); otherwise the cell keeps up to four marks, and each is drawn over the character in its colours, from the font or else `--fallback-font` (a mark neither has is left out, not boxed). Without shaping (no GPOS anchors), a mark its font draws left of its origin, as most fonts do, is drawn from where the character ends; one drawn right of its origin, as in right-to-left fonts, is centered over the character. Joiners, variation selectors, Hangul fillers and the other default-ignorable characters are kept in `--text` and `--json` but draw nothing. An SGR reset uses foreground `#dbe7f7` on background `#111823` unless a palette says otherwise.
 
 The font may have TrueType (`glyf`), CFF or CFF2 outlines, so `.ttf`, `.otf` and collections such as Noto Sans CJK's `.ttc` all work. A variable font with CFF2 outlines (such as `NotoSansCJKtc-VF.otf`) is drawn at its default instance, which for Noto Sans CJK is the Thin weight, unless you choose another after a `#` (see below). Color emoji fonts are bitmaps, not outlines, so emoji need a monochrome outline font such as Noto Emoji. A glyph with no outline counts as missing, so the emoji of a color font that has `glyf` (Apple Color Emoji) go on to `--fallback-font` or are drawn as boxes rather than left blank, with a warning. stb_truetype trusts the file it reads, so termshot first checks every structure stb will use (`src/font.rs`), and runs CFF and CFF2 charstrings itself (`src/cff.rs`), with a limit on the work a glyph may take; stb only rasterizes the outline. A damaged or hostile font is refused with a reason, and the run exits 1.
 
@@ -290,6 +294,55 @@ exits 2. An axis the font doesn't have exits 1 and lists those it has; a TrueTyp
 font, whose outlines don't vary here, exits 1 with that reason. The metrics vary with the
 instance too, as in HarfBuzz: each glyph's advance by `HVAR`, so a heavy weight gets wider
 cells, and the ascender, descender and line gap by `MVAR`.
+
+### Colours and padding
+
+termshot draws with its own default colours, foreground `#dbe7f7` on background `#111823`, and
+xterm's 16 named colours. `--palette FILE` replaces any of them. It takes kitty's colour keys,
+so these lines of a kitty theme work as they are:
+
+```
+# Solarized Dark
+foreground #839496
+background #002b36
+color0  #073642
+color1  #dc322f
+...
+color15 #fdf6e3
+```
+
+Each line is a key and a `#rrggbb` colour: `foreground`, `background`, or `color0` to `color15`
+(SGR 30–37 and 40–47 are 0 to 7, 90–97 and 100–107 are 8 to 15, and so are `38;5;N` and
+`48;5;N` for N below 16). Blank lines and lines starting with `#` are skipped. Any other line,
+a key given twice, or a key termshot doesn't apply (`cursor`, `color16`, ...) is refused with
+its line number (exit 2), so a typo isn't ignored; a file that can't be read exits 1. To take
+a whole kitty theme, keep those keys only:
+
+```sh
+grep -E '^(foreground|background|color([0-9]|1[0-5]))[[:space:]]' theme.conf > palette.conf
+./termshot --palette palette.conf session.pty session.png
+./termshot --bg '#000000' --fg '#ffffff' session.pty session.png   # just the defaults
+```
+
+`--fg` and `--bg` set the default colours on their own, over the file's. Colours 16 to 255
+(the 6×6×6 cube and the greys) and 24-bit colours keep their values, as in terminals.
+
+The palette applies as the log is replayed, as a terminal applies its own: a cell keeps the
+colour its character was printed in, so `--json` reports the colours under the palette. What
+depends on the default colours follows it. The block cursor is the cell in reverse video; the
+underline and bar cursors are the default foreground, or the default background on a cell
+whose background is the default foreground; dim and concealed text mix the palette's colours;
+and kitty images below the cell backgrounds (`z` under −2^30) show only through cells whose
+background is the palette's default, compared by value as kitty does. Bold doesn't brighten a
+named colour, as before. kitty's Unicode placeholders name their image by colour numbers, not
+values, so a palette never changes which image a cell shows.
+
+`--padding N` draws a margin of N pixels around the cells, and `--padding X,Y` one of X pixels
+left and right and Y above and below, each from 0 to 1024, in the default background. It is a
+frame around the image termshot draws without it: the cells, glyphs, images and cursor move by
+the margin and are cut at the cells' edges as before, and the cell size, so where an image
+moves the cursor, doesn't change. The margin counts towards the 2^27-pixel limit, and `-v`
+prints the padded size. `--text` and `--json` don't change.
 
 ## Images in PTY logs
 

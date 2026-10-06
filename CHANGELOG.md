@@ -5,6 +5,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `--palette FILE` sets the default foreground and background and the 16
+  named colours, in kitty's colour keys (`foreground`, `background`,
+  `color0` to `color15`, each with `#rrggbb`); `--fg` and `--bg` set the
+  default colours on their own. Colours 16 to 255 and 24-bit colours keep
+  their values. The palette applies as the log is replayed, so `--json`
+  reports the colours it resolves to, and the cursor, dim, conceal and
+  kitty's images below the cell backgrounds follow its default colours. A
+  malformed file exits 2 with its line; one that can't be read exits 1
+  (#87).
+- `--padding N` or `--padding X,Y` draws a margin of pixels around the
+  cells in the default background. Everything drawn moves by it, cut at the
+  cells' edges as before; the cell size, `--text` and `--json` don't
+  change, and the margin counts towards the 2^27-pixel limit (#87).
+
 ## [0.2.0] - 2026-10-06
 
 termshot 0.2.0 draws images (kitty graphics and Sixel), reads asciinema
