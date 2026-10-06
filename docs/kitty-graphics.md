@@ -125,7 +125,7 @@ the semantics taken from kitty's `docs/graphics-protocol.rst` and
 `a=T`-only code:
 
 - `a=t` stores an image, `a=p` places a stored one at the cursor, and `a=T`
-  does both. Placements share the image's pixels (`Rc`), so putting one image
+  does both. Placements share the image's pixels (`Arc`), so putting one image
   many times costs no pixel copies. `a=t` with neither `i` nor `I` stores
   nothing, as kitty trims such an image at once.
 - `I` names the newest image with that number. Such an image gets the lowest

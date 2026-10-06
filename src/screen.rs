@@ -874,8 +874,9 @@ impl Screen {
     }
 
     pub(crate) fn csi(&mut self, final_byte: u8, p: &Params) {
-        // Counts treat a missing or zero parameter as 1. The grid is at most
-        // 500x200, so capping at u16 changes nothing and keeps sums small.
+        // Counts treat a missing or zero parameter as 1. No grid is wider or
+        // taller than u16::MAX (the CLI's 500x200, the library's MAX_SIDE), so
+        // the cap still reaches every edge, and it keeps sums small.
         let count = |index: usize| p.get(index, 1).clamp(1, u32::from(u16::MAX)) as usize;
         // Everything but SGR, REP and the cursor save/restore pair cancels a
         // pending wrap; EL and ED then erase from the last column.
