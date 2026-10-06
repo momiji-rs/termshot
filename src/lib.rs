@@ -147,9 +147,11 @@ pub fn lacks_cr(log: &[u8]) -> bool {
     vt::lacks_cr(log)
 }
 
-/// Whether `log` reads as an asciinema recording (a v2 or v3 `.cast`): its
-/// first line is a JSON object with a `"version"` member. This is how the
-/// CLI decides without `--cast` or `--raw`.
+/// Whether `log` should be read as an asciinema recording: its first line is
+/// a JSON object with a `"version"` member. This is how the CLI decides
+/// without `--cast` or `--raw`. It is not a check that the recording is
+/// valid: an unsupported version or a malformed header still reads as a
+/// cast, and [`decode_cast`] says what is wrong with it.
 pub fn is_cast(log: &[u8]) -> bool {
     cast::detect(log)
 }
