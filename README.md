@@ -57,55 +57,57 @@ whose JSON files keep every raw sample of each round with the binary hashes,
 toolchains, fonts and inputs. Older figures at the end of this section are
 history: other revisions, and one with no retained samples.
 
-Current figures: measured 2026-10-03 with `scripts/bench.py` in the
-[painting round](docs/performance.md#painting-and-geometry-2026-10-03-721d3fe-22)
-(#22), on termshot built from `721d3fe` with `build.sh`'s flags. That is
-main after the PNG compression (#20), parser (#21) and painting (#22) work;
-main `a8a95e0` has the same build inputs and builds the same macOS binary
-(sha256 `345dc4507209…`). Each figure is the median of 40 **whole CLI
+Current figures: measured 2026-10-05 with `scripts/bench.py` in the
+[release size profile round](docs/performance.md#release-size-profile-2026-10-05-66780fc-83)
+(#83), on **release binaries**: built from `66780fc` as `scripts/release.sh`
+builds them (`build.sh`'s flags plus `-C lto=fat`, then `strip`). 0.2.0's
+code differs from `66780fc` only in its version string. On macOS this is
+the arm64 slice of the universal binary; on Linux, the static x86_64 musl
+binary, run on the host. Each figure is the median of 40 **whole CLI
 runs**, wall time from spawn to exit: start-up, reading the log and the
 fonts, parsing, drawing, PNG encoding and closing the file, with a warm page
 cache and no `fsync`. They are not `TERMSHOT_PROFILE`'s internal stage
 timers, which leave out process start-up and exit. Two batches with
 different run orders are shown as A / B.
 
-| workload | grid / px | image | fonts | Apple M2 Max, macOS 26.6.2 (ms) | Ryzen 7 8745HS, Arch Linux (ms) |
+| workload | grid / px | image | fonts | Apple M2 Max, macOS 26.6.2, arm64 slice (ms) | Ryzen 7 8745HS, Arch Linux, x86_64 musl (ms) |
 | --- | --- | --- | --- | ---: | ---: |
-| `examples/reply-sent.pty` (`font-builtin`) | 100×30 / 48 | 2200×1440 | built-in JetBrains Mono | 8.90 / 8.92 | 7.49 / 7.56 |
-| same log (`reply-24px`) | 100×30 / 24 | 1100×720 | JetBrains Mono file | 5.82 / 5.79 | 5.17 / 5.15 |
-| same log (`reply-128px`) | 100×30 / 128 | 5800×3840 | JetBrains Mono file | 28.82 / 29.17 | 24.30 / 24.34 |
-| `large` (generated) | 240×80 / 48 | 5280×3840 | JetBrains Mono file | 38.14 / 38.25 | 34.26 / 34.94 |
-| `ansi-replay` (`reply-sent.pty` × 250, 4.7 MB) | 100×30 / 48 | 2200×1440 | JetBrains Mono file | 18.47 / 18.54 | 16.14 / 16.03 |
-| `tests/perf/cjk-dense.pty` (`cjk-full`) | 100×30 / 24 | 1100×720 | built-in + `--fallback-font NotoSansCJK-Regular.ttc#3` (19 MB) | 12.38 / 12.62 ¹ | 13.55 / 13.57 |
+| `examples/reply-sent.pty` (`font-builtin`) | 100×30 / 48 | 2200×1440 | built-in JetBrains Mono | 8.64 / 8.71 | 8.36 / 8.15 |
+| same log (`reply-24px`) | 100×30 / 24 | 1100×720 | JetBrains Mono file | 5.70 / 5.69 | 5.43 / 5.53 |
+| same log (`reply-128px`) | 100×30 / 128 | 5800×3840 | JetBrains Mono file | 28.74 / 28.64 | 23.90 / 23.65 |
+| `large` (generated) | 240×80 / 48 | 5280×3840 | JetBrains Mono file | 37.70 / 37.00 | 30.59 / 31.45 |
+| `ansi-replay` (`reply-sent.pty` × 250, 4.7 MB) | 100×30 / 48 | 2200×1440 | JetBrains Mono file | 18.57 / 18.39 | 17.23 / 17.10 |
+| `tests/perf/cjk-dense.pty` (`cjk-full`) | 100×30 / 24 | 1100×720 | built-in + `--fallback-font NotoSansCJK-Regular.ttc#3` (19 MB) | 12.63 / 12.74 | 13.67 / 13.27 |
 
-¹ The painting round's macOS batches had no full Noto CJK collection; this
-is the [parser round](docs/performance.md#ansi-replay-parsing-2026-10-03-10f1ea1-21)'s
-(#21, built from `10f1ea1`, the same Mac and harness), from before #22,
-whose changes are for rounded corners, diagonals, images and rasters over
-16 MiB, none of which this case has.
-
-That round covers 38 workloads on macOS and 41 on Linux; their batch-A
-medians range from 5.02 ms (`cjk-none`, macOS) and 4.07 ms (`blank`,
-Linux) to 143.91 and 136.36 ms for `large-color` (240×80 on 216 background
-colours). The report also gives p95, child CPU time, peak RSS and a
-per-stage breakdown. These are two machines with warm caches; a different
-log, font, disk or a busy machine can take longer. The release archives use
-the same compiler flags but link musl statically on Linux; they were not
-measured.
+That round covers 48 workloads on each host. Their batch-A medians with a
+PNG range from 4.96 ms (`cjk-none`, macOS) and 4.17 ms (`blank`, Linux) to
+143.90 and 127.05 ms for `large-color` (240×80 on 216 background colours).
+The report also gives p95, child CPU time and peak RSS. These are two
+machines with warm caches; a different log, font, disk or a busy machine
+can take longer. The universal binary's x86_64 slice and the aarch64 Linux
+binary were not timed.
 
 Without a PNG, `--text` and `--json` read no font unless the log has an
 image that needs cell metrics. The 4.7 MB `ansi-replay` log as text
-(`--size 100x30 --text`) takes 13.61 / 13.53 ms on the M2 Max, CLI wall
-medians of 40 runs, built from `ad35b1e`; main `a8a95e0` took 18.82 / 18.77
-([text-only pre-scan](docs/performance.md#text-only-runs-one-pre-scan-instead-of-two-2026-10-03-macos-only),
-macOS only).
+(`--size 100x30 --text`, `text-ansi-replay`) takes 13.41 / 13.47 ms on the
+M2 Max and 10.82 / 10.49 ms on the Ryzen, in the same round. Before the
+[text-only pre-scan](docs/performance.md#text-only-runs-one-pre-scan-instead-of-two-2026-10-03-macos-only)
+(main `a8a95e0`) it took 18.82 / 18.77 ms on the M2 Max.
 
-History. The first 2026-10-03 baseline, built from `22b77e8` before #20,
-#21 and #22 (the report's
+History. These rounds timed `build.sh` builds, not release binaries, and
+on Linux a glibc build. The
+[painting round](docs/performance.md#painting-and-geometry-2026-10-03-721d3fe-22)
+(2026-10-03, `721d3fe`, after #20, #21 and #22, before the move to Rust)
+measured the same six rows at 8.90, 5.82, 28.82, 38.14, 18.47 and 12.38 ms
+on the M2 Max (`cjk-full` from the
+[parser round](docs/performance.md#ansi-replay-parsing-2026-10-03-10f1ea1-21),
+`10f1ea1`) and 7.49, 5.17, 24.30, 34.26, 16.14 and 13.55 ms on the Ryzen.
+The first 2026-10-03 baseline, built from `22b77e8` before #20, #21 and #22
+(the report's
 [font-path baseline](docs/performance.md#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)),
-measured the same six rows at 9.27, 5.83, 31.56, 41.91, 20.80 and 12.67 ms
-on the M2 Max and 9.64, 5.63, 38.06, 49.24, 19.69 and 14.85 ms on the Ryzen
-(batch-A CLI wall medians). Its Linux cold-cache run, the
+measured them at 9.27, 5.83, 31.56, 41.91, 20.80 and 12.67 ms on the M2 Max
+and 9.64, 5.63, 38.06, 49.24, 19.69 and 14.85 ms on the Ryzen (batch-A CLI
+wall medians). Its Linux cold-cache run, the
 only one, found that dropping the page cache adds 6.9-8.2 ms to three
 small-font cases. Earlier rounds (2026-10-01, Apple M3, revisions up to
 `c44d83c`) used a different machine, revision and harness, so their numbers
@@ -114,8 +116,25 @@ older descriptions was a 21 ms mean of 40 hyperfine runs on that M3 at
 `fb714a5`, whose samples were not kept; the report records
 [what is known about it](docs/performance.md#published-claims-and-their-evidence-checked-2026-10-03).
 
-## Build
+## Install
 
+[GitHub Releases](https://github.com/momiji-rs/termshot/releases) has a binary for each
+platform, with `SHA256SUMS`:
+
+- `termshot-0.2.0-macos-universal.tar.gz`: arm64 and x86_64, macOS 11 or newer
+- `termshot-0.2.0-linux-x86_64-musl.tar.gz` and `termshot-0.2.0-linux-aarch64-musl.tar.gz`:
+  static, no libc needed
+
+Each archive holds `termshot-0.2.0-<platform>/` with the binary, this README, the changelog
+and the licenses. The binary carries its font, so it needs no other files:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS    # or shasum -a 256 -c --ignore-missing
+tar -xzf termshot-0.2.0-linux-x86_64-musl.tar.gz
+./termshot-0.2.0-linux-x86_64-musl/termshot --version
+```
+
+## Build
 
 A C compiler and rustc 1.70 or newer are enough.
 
@@ -196,10 +215,11 @@ guessed from where the cursor went; give it with `--size`.
 
 To check what a screen shows rather than how it looks (in a test, or as an agent), write it as
 text. It is laid out as `tmux capture-pane -p` prints it: a line per row, trailing spaces
-trimmed, each character followed by its combining marks. For logs without graphics, omitting
-the PNG skips font loading, drawing and PNG encoding; how much time that saves depends on the log, and the benchmark report does not
-time text-only runs. Kitty graphics still need font metrics to replay cursor movement,
-even for text/JSON-only output; images themselves are not included in these formats:
+trimmed, each character followed by its combining marks. For logs without images, omitting
+the PNG skips font loading, drawing and PNG encoding; how much time that saves depends on the
+log (the benchmark's `text` suite times such runs, see Speed). A kitty placement or a Sixel
+image still needs font metrics to replay cursor movement, so the font is read for it even
+for text/JSON-only output; images themselves are not included in these formats:
 
 ```sh
 ./termshot --text - session.pty | grep -q 'Saved'        # text only, to stdout
