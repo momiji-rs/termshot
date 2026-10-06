@@ -428,6 +428,14 @@ check "a palette is checked before the log is read" \
 cp "$pal" "$out/clash.conf"
 expect 2 --palette "$out/clash.conf" "$log" "$out/clash.conf"
 check "a palette named as an output is kept" 'cmp -s "$out/clash.conf" "$pal"'
+# A palette or font named - is that file, not stdin, so an output naming it clashes too.
+cp "$pal" "$out/-"
+check "a palette named - is a file an output may not overwrite" \
+    '(cd "$out" && ../../termshot --palette - "../../$log" ./- 2>&1 | grep -q "<out.png> ./- is the --palette file") && cmp -s "$out/-" "$pal"'
+cp "$font" "$out/-"
+check "a font named - is a file an output may not overwrite" \
+    '(cd "$out" && ../../termshot --font - --text ./- "../../$log" 2>&1 | grep -q "is the --font file") && cmp -s "$out/-" "$font"'
+rm -f "$out/-"
 check "a palette and padding are quiet" '[ -z "$(./termshot --palette "$pal" --fg "#ffffff" --padding 8,4 "$log" "$out/q.png" 2>&1)" ]'
 check "-v prints the padded image size" \
     './termshot -v --padding 16,10 "$log" "$out/q.png" 2>&1 | grep -q "image 2232x1460"'

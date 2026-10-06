@@ -2316,8 +2316,11 @@ fn output_clash(options: &Options) -> Option<String> {
     fn font_file(spec: &Option<font::Spec>) -> Option<&String> {
         spec.as_ref().map(|spec| &spec.path)
     }
-    let inputs = named([("<log>", Some(&options.log)), ("--font", font_file(&options.font)),
-                        ("--fallback-font", font_file(&options.fallback_font)), ("--palette", options.palette.as_ref())]);
+    // Only the log reads - as stdin; a font or palette named - is that file.
+    let mut inputs = named([("<log>", Some(&options.log))]);
+    let files = [("--font", font_file(&options.font)), ("--fallback-font", font_file(&options.fallback_font)),
+                 ("--palette", options.palette.as_ref())];
+    inputs.extend(files.into_iter().filter_map(|(name, path)| Some((name, path?))));
     for (i, (name, path)) in outputs.iter().enumerate() {
         if let Some((other, ..)) = outputs[..i].iter().find(|(_, earlier)| same_file(path, earlier)) {
             return Some(format!("{name} and {other} name the same file, {path}; give each output its own"));
