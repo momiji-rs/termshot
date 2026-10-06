@@ -2,6 +2,7 @@
 
 use crate::cell::{Cell, CellMarks, BOLD, DOUBLE_UNDERLINE, ITALIC, STRIKE, TAIL, UNDERLINE};
 use crate::graphics;
+use crate::palette::Rgb;
 use crate::screen::CursorShape;
 
 /// The marks of the cell at index (row * cols + col) in a sorted list, or none.
@@ -16,14 +17,36 @@ pub(crate) fn marks_of(marks: &[CellMarks], cell: usize) -> &[u32] {
 }
 
 /// The screen a log leaves: its cells in screen order, the cursor as
-/// (row, col) unless the log hid it, and its shape.
-pub(crate) struct Grid {
+/// (row, col) unless the log hid it, its shape, and the images placed on it.
+pub struct Grid {
+    /// For the render, which the library (src/lib.rs) does not have yet.
+    #[allow(dead_code)]
     pub(crate) images: Vec<graphics::Placement>,
     pub(crate) cells: Vec<Cell>,
     /// The cells' combining marks, sorted by cell.
     pub(crate) marks: Vec<CellMarks>,
     pub(crate) cursor: Option<(usize, usize)>,
     pub(crate) cursor_shape: CursorShape,
+    pub(crate) cols: usize,
+    pub(crate) rows: usize,
+    /// The palette's default background, which the JSON compares with.
+    pub(crate) background: Rgb,
+}
+
+impl Grid {
+    /// The screen as text, byte for byte what `--text` writes: a line per
+    /// row with its trailing spaces trimmed, the way `tmux capture-pane -p`
+    /// prints it, each character followed by its combining marks.
+    pub fn to_text(&self) -> String {
+        grid_text(&self.cells, &self.marks, self.cols)
+    }
+
+    /// The screen as JSON, byte for byte what `--json` writes: the grid
+    /// size, the cursor (or null when the log hid it), and a line per row
+    /// of the runs of cells alike in colour and attributes.
+    pub fn to_json(&self) -> String {
+        grid_json(&self.cells, &self.marks, self.cols, self.rows, self.cursor, self.cursor_shape, self.background)
+    }
 }
 
 /// A code point as a char; none of the grid's are invalid.

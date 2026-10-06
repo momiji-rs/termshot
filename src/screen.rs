@@ -61,8 +61,8 @@ pub(crate) fn blank_cell(palette: &Palette) -> Cell {
 }
 
 /// What a bare LF does.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum Lf {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lf {
     /// Down a row, as on a terminal; PTY output carries its own CR.
     Index,
     /// Down a row and back to column 0, as on a terminal with `onlcr` output
@@ -109,10 +109,13 @@ impl Saved {
 /// The cursor shapes DECSCUSR (CSI Ps SP q) picks. A still image can't
 /// blink, so a blinking shape is drawn as the steady one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum CursorShape {
+pub enum CursorShape {
+    /// The whole cell, in reverse video (DECSCUSR 0, 1 and 2).
     #[default]
     Block,
+    /// A line along the bottom of the cell (DECSCUSR 3 and 4).
     Underline,
+    /// A line down the left edge of the cell (DECSCUSR 5 and 6).
     Bar,
 }
 

@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::cell::{BOLD, DOUBLE_UNDERLINE, ITALIC, STRIKE, UNDERLINE};
-use crate::grid::marks_of;
+use crate::grid::{grid_json, grid_text, marks_of};
 use crate::screen::Screen;
 use crate::vt::{parse, parse_lf, printable_end, replay, replay_sized, utf8_at};
 

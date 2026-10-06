@@ -189,10 +189,20 @@ pub(crate) fn parse_lf(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Vec<Cel
 /// What decides the cells a log replays to: how a bare LF moves, and the
 /// colours its SGR codes stand for. --text, --json and the PNG all see it;
 /// the render's own options (render::RenderOptions) only change pixels.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) struct ParseOptions {
-    pub(crate) lf: Lf,
-    pub(crate) palette: Palette,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParseOptions {
+    /// What a bare LF does: `Lf::Index` for PTY output, `Lf::Newline` for
+    /// text that never went through a PTY (`--lf-newline`).
+    pub lf: Lf,
+    /// The colours the default and the 16 named colours stand for.
+    pub palette: Palette,
+}
+
+impl Default for ParseOptions {
+    /// What the CLI uses without `--lf-newline` or a palette option.
+    fn default() -> ParseOptions {
+        ParseOptions { lf: Lf::Index, palette: Palette::DEFAULT }
+    }
 }
 
 #[cfg(test)]
@@ -336,7 +346,8 @@ pub(crate) fn replay_with(data: &[u8], cols: usize, rows: usize, options: &Parse
     let images = std::mem::take(&mut screen.graphics).finish(&placeholders, cell_size, rows);
     let cursor_shape = screen.cursor_shape;
     let marks = screen.screen_marks();
-    Grid { cells: screen.into_cells(), marks, cursor, cursor_shape, images }
+    let background = options.palette.background;
+    Grid { cells: screen.into_cells(), marks, cursor, cursor_shape, images, cols, rows, background }
 }
 
 /// Parse one CSI sequence whose parameters start at i, apply it, and return

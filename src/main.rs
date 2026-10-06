@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use cell::{Cell, CellMarks, OPAQUE, TAIL, WIDE};
 use glyphs::{EmptyGlyphs, EMPTY_IN_FALLBACK, EMPTY_IN_FONT};
-use grid::{grid_json, grid_text, Grid};
+use grid::Grid;
 use palette::Palette;
 use screen::{CursorShape, Lf};
 use vt::{lacks_cr, needs_cell_metrics, replay_with, ParseOptions};
@@ -785,30 +785,25 @@ fn main() -> ExitCode {
             Err(message) => return cleanup(1, message),
         }
     }
-    let Grid { mut cells, marks, cursor, cursor_shape, images } =
-        replay_with(&data, cols, rows, &parse_options, (cell_w, cell_h));
-    let mut image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
+    let mut grid = replay_with(&data, cols, rows, &parse_options, (cell_w, cell_h));
+    let mut image_views: Vec<_> = grid.images.iter().flat_map(graphics::Placement::views).collect();
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
-    let cursor = cursor_option.unwrap_or(cursor);
-    let cursor_shape = options.cursor_shape.unwrap_or(cursor_shape);
+    grid.cursor = cursor_option.unwrap_or(grid.cursor);
+    grid.cursor_shape = options.cursor_shape.unwrap_or(grid.cursor_shape);
     let write = |path: &String, output: String| {
         write_output(path, output.as_bytes())
             .map_err(|error| format!("{}: {error}", if path == "-" { "stdout" } else { path }))
     };
     let written = (options.text.as_ref())
-        .map_or(Ok(()), |path| write(path, grid_text(&cells, &marks, cols)))
-        .and_then(|()| {
-            (options.json.as_ref())
-                .map_or(Ok(()), |path| {
-                    write(path, grid_json(&cells, &marks, cols, rows, cursor, cursor_shape, palette.background))
-                })
-        });
+        .map_or(Ok(()), |path| write(path, grid.to_text()))
+        .and_then(|()| (options.json.as_ref()).map_or(Ok(()), |path| write(path, grid.to_json())));
     if let Err(message) = written {
         return cleanup(1, message);
     }
+    let Grid { mut cells, marks, cursor, cursor_shape, .. } = grid;
     let mut empty = EmptyGlyphs::default();
     // The underline or bar cursor's colour; its view borrows it.
     let mark_pixel;
