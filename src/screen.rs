@@ -330,6 +330,7 @@ impl Screen {
     }
 
     /// The cells in screen order.
+    #[inline]
     pub(crate) fn into_cells(self) -> Vec<Cell> {
         if self.map.iter().enumerate().all(|(r, &stored)| r == stored) {
             return self.cells;
@@ -338,6 +339,7 @@ impl Screen {
     }
 
     /// The cells that have marks, in screen order, as CellMarks.
+    #[inline]
     pub(crate) fn screen_marks(&self) -> Vec<CellMarks> {
         if self.marks.is_empty() {
             return Vec::new();
@@ -362,6 +364,7 @@ impl Screen {
     }
 
     /// The placeholder cells on the screen, in screen order.
+    #[inline]
     pub(crate) fn placeholders(&self) -> Vec<graphics::PlaceholderCell> {
         let mut found = Vec::new();
         for r in 0..self.rows {
@@ -543,6 +546,7 @@ impl Screen {
     /// the cursor goes to the last text row the image covers, in the same
     /// column, and the scrolling region scrolls up for an image that would
     /// pass its bottom margin. Rows scrolled above the top margin are cut off.
+    #[inline]
     pub(crate) fn sixel(&mut self, mut image: sixel::Image) {
         if self.sixel_display {
             self.graphics.sixel(&sixel::kitty_command(&image), 0, 0, self.cell_size, self.rows);
@@ -775,6 +779,7 @@ impl Screen {
 
     /// Batch a printable ASCII run within each physical row, preserving pending
     /// wraps, scroll regions, alternate-screen row maps, and REP's last glyph.
+    #[inline]
     pub(crate) fn print_ascii(&mut self, mut text: &[u8]) {
         if self.charsets[usize::from(self.shifted)] == Charset::DecGraphics {
             for byte in text {
