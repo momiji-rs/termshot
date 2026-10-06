@@ -637,12 +637,13 @@ draws nothing, having no earlier picture.
 
 ### Evidence
 
-- `src/graphics/animation_tests.rs` (24 tests): every key and its parsing,
+- `src/graphics/animation_tests.rs` (26 tests): every key and its parsing,
   frames over a base and a background colour in each mode, opaque frames,
-  edits of the root and of frames, PNG, compressed and chunked frames, the
-  key-frame rule, the 32-base limit, `a=c` both ways and every refusal,
-  frame deletion for each position of the current frame, a stranded frame,
-  retransmission, image numbers, every kind of placement, Sixel, both
+  edits of the root and of frames, frames outside the image, PNG,
+  compressed and chunked frames, the key-frame rule, the 32-base limit,
+  `a=c` both ways and every refusal, frame deletion for each position of
+  the current frame, a stranded frame and the relative placements on it,
+  placements letting go of pixels a frame no longer has, retransmission, image numbers, every kind of placement, Sixel, both
   screens with reset and erase, quota eviction and refusal with frames, the
   frame limits and the composition budget, and the integer blend against
   the over operator in floating point.

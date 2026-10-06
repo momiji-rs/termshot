@@ -275,6 +275,7 @@ impl Graphics {
     /// the budget is spent, leaving the frame as it was.
     fn compose_onto(&mut self, index: usize, k: usize, pixels: (Rc<Vec<u8>>, bool), over: Over) -> bool {
         let (mut pixels, opaque) = pixels;
+        self.release(self.images[index].key);
         let img = &mut self.images[index];
         let (width, height) = (img.width, img.height);
         let mine = Rc::ptr_eq(&pixels, &img.frames[k].data);
@@ -466,13 +467,25 @@ impl Graphics {
         }
         // Its current frame may now need pixels of its own.
         let key = img.key;
+        self.release(key);
         self.enforce_quota(key);
+    }
+
+    /// Drop the pixels the placements of image `key` were given when put:
+    /// once a frame's pixels change or go, those are no longer the image's,
+    /// and holding them would keep memory the quota no longer counts.
+    /// `show_frames` gives every placement its image's pixels at the end.
+    fn release(&mut self, key: u64) {
+        for p in self.placements.iter_mut().filter(|p| p.image == key && !p.sixel) {
+            p.pixels = Rc::default();
+        }
     }
 
     /// Give every placement its image's current frame, composed. A frame
     /// that cannot be composed (a base was deleted) shows nothing: its
-    /// placements are not drawn. Sixel images never animate, and their
-    /// placements may hold pixels erased since.
+    /// placements are not drawn, nor the relative placements put on them.
+    /// Sixel images never animate, and their placements may hold pixels
+    /// erased since.
     pub(super) fn show_frames(&mut self) {
         let mut placed: Vec<u64> = self.placements.iter().filter(|p| !p.sixel).map(|p| p.image).collect();
         placed.sort_unstable();
@@ -485,6 +498,7 @@ impl Graphics {
                 img.shown().or_else(|| Some(coalesce(img, img.current, &mut unlimited)?.0))
             })
             .collect();
+        let before = self.placements.len();
         self.placements.retain_mut(|p| {
             if p.sixel {
                 return true;
@@ -498,6 +512,9 @@ impl Graphics {
                 None => false,
             }
         });
+        if self.placements.len() < before {
+            self.relayout();
+        }
     }
 }
 

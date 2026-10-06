@@ -415,6 +415,40 @@ fn a_frame_whose_base_is_deleted_shows_nothing() {
 }
 
 #[test]
+fn relative_placements_on_a_placement_not_drawn_are_not_drawn() {
+    let mut g = image(1, 2, 1, &[R, G]);
+    run(&mut g, "a=p,i=1,p=1,C=1");
+    run(&mut g, &format!("a=T,i=2,P=1,Q=1,H=1,s=1,v=1;{}", px(&[B])));
+    run(&mut g, &format!("a=f,i=1,c=1,s=1,v=1;{}", px(&[W])));
+    run(&mut g, "a=a,i=1,c=2");
+    assert_eq!(g.placements.len(), 3);
+    // Its current frame stranded, image 1 is not drawn, nor its child.
+    run(&mut g, "a=d,d=f,i=1,r=1");
+    assert!(drawn(g).is_empty());
+}
+
+#[test]
+fn placements_let_go_of_pixels_a_frame_no_longer_has() {
+    let mut g = image(1, 2, 1, &[R, G]);
+    run(&mut g, "a=p,i=1,p=2,C=1");
+    let root = Rc::clone(&img(&g, 1).frames[0].data);
+    assert_eq!(Rc::strong_count(&root), 4);
+    // After an edit, the placements no longer hold the old pixels, which
+    // the quota no longer counts.
+    run(&mut g, &format!("a=f,i=1,r=1,s=1,v=1;{}", px(&[B])));
+    assert_eq!(Rc::strong_count(&root), 1);
+    assert!(g.placements.iter().all(|p| p.pixels.is_empty()));
+    run(&mut g, &format!("a=f,i=1,s=2,v=1;{}", px(&[W, W])));
+    run(&mut g, "a=a,i=1,c=2");
+    run(&mut g, "a=p,i=1,p=3,C=1");
+    run(&mut g, "a=c,i=1,r=2,c=2,w=1,h=1,x=1,C=1");
+    run(&mut g, "a=d,d=f,i=1,r=2");
+    assert!(g.placements.iter().all(|p| p.pixels.is_empty()));
+    // The end gives them the current frame's: the edited root.
+    assert_eq!(drawn(g), vec![[B, G].concat(); 3]);
+}
+
+#[test]
 fn retransmitting_an_image_resets_its_frames() {
     let mut g = image(1, 1, 1, &[R]);
     run(&mut g, &format!("a=f,i=1,s=1,v=1;{}", px(&[G])));
