@@ -6,7 +6,7 @@ use crate::{cast, grid, vt};
 
 pub use crate::cast::Cast;
 pub use crate::grid::Grid;
-pub use crate::palette::{Palette, Rgb};
+pub use crate::palette::{parse_color, Palette, Rgb};
 pub use crate::screen::{CursorShape, Lf};
 pub use crate::vt::ParseOptions;
 
@@ -20,12 +20,21 @@ pub const MAX_CELLS: usize = 1 << 22;
 /// edge; REP repeats a character at most that many times.
 pub const MAX_SIDE: usize = u16::MAX as usize;
 
-/// Why the library could not do what it was asked.
+/// The largest palette file [`Palette::with_file`] reads: 64 KiB.
+pub const MAX_PALETTE_BYTES: usize = crate::palette::MAX_FILE_BYTES;
+
+/// The most pixels an image may have, its padding included: 134,217,728
+/// (2^27), as the CLI allows. A larger one is an [`Error::ImageTooLarge`].
+pub const MAX_PIXELS: u64 = 1 << 27;
+
+/// Why the library could not do what it was asked. Each message is the one
+/// the CLI prints after `termshot: `; the CLI's exit status for each is in
+/// the variant's docs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
     /// A grid size with no cells, a side over [`MAX_SIDE`], or more than
-    /// [`MAX_CELLS`] cells.
+    /// [`MAX_CELLS`] cells. The CLI's own limits are smaller (exit 2).
     GridSize {
         /// The columns asked for.
         cols: usize,
@@ -33,8 +42,30 @@ pub enum Error {
         rows: usize,
     },
     /// A recording that is not a readable asciicast: which line is
-    /// malformed, and how, as the CLI reports it.
+    /// malformed, and how, as the CLI reports it (exit 1).
     Cast(String),
+    /// A font that can't be read or used, or can't draw at the size asked:
+    /// why, with the file's name, as the CLI reports it (exit 1).
+    Font(String),
+    /// An option out of its range: a pixel size, a padding or a cursor
+    /// position (exit 2, as a bad argument is).
+    Options(String),
+    /// The image, its padding included, would be more than [`MAX_PIXELS`]
+    /// pixels (exit 2).
+    ImageTooLarge {
+        /// Its width in pixels.
+        width: u64,
+        /// Its height in pixels.
+        height: u64,
+        /// Whether it has padding, which the message suggests lowering.
+        padded: bool,
+    },
+    /// Memory ran out: for what (exit 2). The library returns this rather
+    /// than aborting where an allocation's size comes from the input; the
+    /// crate docs say what is left.
+    OutOfMemory(String),
+    /// A bug: a painter failed or panicked (exit 2).
+    Internal(String),
 }
 
 impl std::fmt::Display for Error {
@@ -44,7 +75,15 @@ impl std::fmt::Display for Error {
                 f,
                 "a {cols}x{rows} grid: it needs 1 to {MAX_SIDE} columns and rows, and at most {MAX_CELLS} cells"
             ),
-            Error::Cast(reason) => f.write_str(reason),
+            Error::ImageTooLarge { width, height, padded } => {
+                let padding = if *padded { ", rows or padding" } else { " or rows" };
+                write!(f, "image {width}x{height} is over {MAX_PIXELS} pixels; lower px, cols{padding}")
+            }
+            Error::Cast(reason)
+            | Error::Font(reason)
+            | Error::Options(reason)
+            | Error::OutOfMemory(reason)
+            | Error::Internal(reason) => f.write_str(reason),
         }
     }
 }
@@ -68,19 +107,20 @@ pub fn parse(log: &[u8], cols: usize, rows: usize, options: &ParseOptions) -> Re
 /// as the CLI does when it reads one. A kitty image sized in pixels, or a
 /// Sixel image, moves the text cursor by the cells it covers, so the cursor
 /// and the cells written after it depend on this. A size of 0 counts as 1.
+/// [`Font::cell_size`](crate::Font::cell_size) gives a font's.
 pub fn parse_with_cell_size(
     log: &[u8],
     cols: usize,
     rows: usize,
     options: &ParseOptions,
-    cell_size: (u16, u16),
+    cell_size: (u32, u32),
 ) -> Result<Grid, Error> {
     let sides = (1..=MAX_SIDE).contains(&cols) && (1..=MAX_SIDE).contains(&rows);
     if !sides || cols.checked_mul(rows).map_or(true, |cells| cells > MAX_CELLS) {
         return Err(Error::GridSize { cols, rows });
     }
-    let (w, h) = cell_size;
-    Ok(vt::replay_with(log, cols, rows, options, (i32::from(w.max(1)), i32::from(h.max(1)))))
+    let side = |n: u32| i32::try_from(n.max(1)).unwrap_or(i32::MAX);
+    Ok(vt::replay_with(log, cols, rows, options, (side(cell_size.0), side(cell_size.1))))
 }
 
 /// Whether the screen `log` leaves may depend on the cell size: it has a
@@ -134,9 +174,27 @@ impl Grid {
         self.cursor
     }
 
-    /// The cursor's shape, as the log last set it (DECSCUSR).
+    /// The cursor's shape, as the log last set it (DECSCUSR), or
+    /// [`Grid::set_cursor_shape`] since.
     pub fn cursor_shape(&self) -> CursorShape {
         self.cursor_shape
+    }
+
+    /// Put the cursor at (row, col), from 0, or hide it with None, as the
+    /// CLI's `--cursor` does: [`Grid::cursor`], [`Grid::to_json`] and the
+    /// render then show it there. A position off the grid is an
+    /// [`Error::Options`], and changes nothing.
+    pub fn set_cursor(&mut self, cursor: Option<(usize, usize)>) -> Result<(), Error> {
+        if let Some((row, col)) = cursor {
+            check_cursor(row, col, self.cols, self.rows)?;
+        }
+        self.cursor = cursor;
+        Ok(())
+    }
+
+    /// Set the cursor's shape, as the CLI's `--cursor-shape` does.
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) {
+        self.cursor_shape = shape;
     }
 
     /// The cell at (row, col), from 0, or None outside the grid.
@@ -146,6 +204,24 @@ impl Grid {
         }
         let at = row * self.cols + col;
         Some(GridCell { cell: &self.cells[at], marks: grid::marks_of(&self.marks, at) })
+    }
+}
+
+/// An [`Error::Options`] unless (row, col) is on a `cols` x `rows` grid.
+pub(crate) fn check_cursor(row: usize, col: usize, cols: usize, rows: usize) -> Result<(), Error> {
+    if row < rows && col < cols {
+        return Ok(());
+    }
+    Err(Error::Options(format!("the cursor at row {row}, column {col} (from 0) is off the {cols}x{rows} grid")))
+}
+
+impl std::str::FromStr for CursorShape {
+    type Err = Error;
+
+    /// `block`, `underline` or `bar`, as `--cursor-shape` takes them; any
+    /// other is an [`Error::Options`].
+    fn from_str(value: &str) -> Result<CursorShape, Error> {
+        CursorShape::parse(value).map_err(Error::Options)
     }
 }
 

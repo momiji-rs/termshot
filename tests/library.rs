@@ -45,7 +45,7 @@ fn options(log: &str) -> Result<ParseOptions, String> {
 /// the render's, and the CLI's), so a log whose grid depends on the cell
 /// size is parsed with this one. tests/golden.rs draws every such log at
 /// 24 px, among others, and checks that its grids agree at every size.
-const CELL_24PX: (u16, u16) = (11, 24);
+const CELL_24PX: (u32, u32) = (11, 24);
 
 /// One log against its grids. Ok(true) when the log needs a cell size.
 fn check(log: &str) -> Result<bool, String> {

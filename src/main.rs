@@ -415,10 +415,11 @@ fn load_fonts(
 ) -> Result<(font::Font, Option<font::Font>), String> {
     let [font_timings, fallback_timings] = timings;
     let font = match &options.font {
-        Some(path) => font::load_timed(path, font_timings)?,
-        None => font::prepare_timed(EMBEDDED_FONT, font_timings).map_err(|reason| format!("built-in font: {reason}"))?,
+        Some(path) => font::load_timed(path, font_timings).map_err(|error| error.to_string())?,
+        None => font::prepare_timed(EMBEDDED_FONT, "built-in font", font_timings).map_err(|error| error.to_string())?,
     };
-    let fallback = options.fallback_font.as_ref().map(|path| font::load_timed(path, fallback_timings)).transpose()?;
+    let fallback = (options.fallback_font.as_ref().map(|path| font::load_timed(path, fallback_timings)).transpose())
+        .map_err(|error| error.to_string())?;
     Ok((font, fallback))
 }
 

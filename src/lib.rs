@@ -1,55 +1,90 @@
 //! termshot as a library: replay a raw PTY log (bytes with ANSI escapes)
-//! into the grid of cells a terminal would show at its end, and read that
-//! grid cell by cell, as text, or as JSON. The text and the JSON are byte for
-//! byte what the CLI's `--text` and `--json` write.
+//! into the grid of cells a terminal would show at its end, read that grid
+//! cell by cell, as text or as JSON, and draw it as a PNG. The text, the
+//! JSON and the PNG are byte for byte what the CLI's `--text`, `--json`
+//! and `<out.png>` write.
 //!
 //! ```no_run
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let log = std::fs::read("session.pty")?;
 //!     let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default())?;
 //!     print!("{}", grid.to_text());
+//!     let png = termshot::render(&grid, &termshot::RenderOptions::default())?;
+//!     std::fs::write("session.png", &png.png)?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! Drawing the grid as a PNG is the CLI's only, for now (#85).
+//! A log whose kitty or Sixel images move the cursor by pixels
+//! ([`needs_cell_size`]) parses as the CLI parses it with the font's cell:
+//!
+//! ```no_run
+//! # fn main() -> Result<(), termshot::Error> {
+//! # let log = Vec::new();
+//! let font = termshot::Font::embedded()?;
+//! let options = termshot::RenderOptions { px: 24.0, font: Some(&font), ..Default::default() };
+//! let cell = font.cell_size(options.px)?;
+//! let grid = termshot::parse_with_cell_size(&log, 80, 24, &termshot::ParseOptions::default(), cell)?;
+//! let png = termshot::render(&grid, &options)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Errors are values ([`Error`]): the library prints nothing, never exits,
+//! and returns [`Error::OutOfMemory`] instead of aborting where an
+//! allocation's size comes from its input: the render's canvas, cells,
+//! image views, glyphs, PNG encoder and the bytes it returns, and a font
+//! file's bytes. Allocations of a fixed or small bounded size (a font
+//! check's tables, the parser's screens and kitty image buffers, which
+//! [`MAX_CELLS`] and kitty's quotas bound) still abort, as any `Vec`'s do.
+//! A panic in a render is caught and returned as [`Error::Internal`].
 //!
 //! The crate has no dependencies and builds with plain rustc (1.70 or
 //! later), after `./build.sh`, which makes `libtermshot.rlib` with the C it
-//! links (the PNG decoder kitty images use) inside it:
+//! links (stb_truetype, the PNG writer, the PNG decoder kitty images use)
+//! inside it:
 //!
 //! ```text
 //! rustc --edition 2021 app.rs --extern termshot=path/to/libtermshot.rlib
 //! ```
 //!
 //! The binary (src/main.rs) does not link this library: it compiles the same
-//! modules itself, with the render, which is not part of the library yet.
+//! modules itself, as one crate, which is as fast as main was
+//! (docs/performance.md, "Two crates or one compilation unit").
 
-// The modules the parser needs. A few of their items are only the binary's
-// (the render's, and --cursor-shape's parsing): allowed dead here.
+mod api;
+mod api_render;
 mod cast;
 mod cell;
-// The image layers: the parser keeps kitty images as composite::ImageView
-// and composes animation frames with its blending.
-#[allow(dead_code)]
+mod cff;
 mod composite;
+mod deflate;
+mod font;
 mod geometry;
-#[allow(dead_code)]
+mod glyphs;
 mod graphics;
 mod grid;
+mod metrics;
 mod palette;
+mod prepare;
+mod render;
 #[rustfmt::skip]
 mod rowcolumn_diacritics;
-#[allow(dead_code)]
 mod screen;
 mod sixel;
 mod unicode;
 #[rustfmt::skip]
 mod unicode_tables;
+mod variations;
 mod vt;
-mod api;
 
 pub use api::{
-    decode_cast, is_cast, lacks_cr, needs_cell_size, parse, parse_with_cell_size, Cast, CursorShape, Error, Grid, GridCell,
-    Lf, Palette, ParseOptions, Rgb, MAX_CELLS, MAX_SIDE,
+    decode_cast, is_cast, lacks_cr, needs_cell_size, parse, parse_color, parse_with_cell_size, Cast, CursorShape,
+    Error, Grid, GridCell, Lf, Palette, ParseOptions, Rgb, MAX_CELLS, MAX_PALETTE_BYTES, MAX_PIXELS, MAX_SIDE,
 };
+pub use api_render::{
+    render, render_rgba, Cursor, EmptyGlyph, FaceSelector, Font, FontSpec, Rendered, RenderOptions, RgbaImage,
+    MAX_PADDING,
+};
+#[doc(hidden)]
+pub use api_render::cli;

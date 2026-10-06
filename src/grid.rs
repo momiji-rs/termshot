@@ -19,8 +19,7 @@ pub(crate) fn marks_of(marks: &[CellMarks], cell: usize) -> &[u32] {
 /// The screen a log leaves: its cells in screen order, the cursor as
 /// (row, col) unless the log hid it, its shape, and the images placed on it.
 pub struct Grid {
-    /// For the render, which the library (src/lib.rs) does not have yet.
-    #[allow(dead_code)]
+    /// The images placed, which the render draws.
     pub(crate) images: Vec<graphics::Placement>,
     pub(crate) cells: Vec<Cell>,
     /// The cells' combining marks, sorted by cell.
@@ -29,7 +28,9 @@ pub struct Grid {
     pub(crate) cursor_shape: CursorShape,
     pub(crate) cols: usize,
     pub(crate) rows: usize,
-    /// The palette's default background, which the JSON compares with.
+    /// The palette's default colours: the JSON compares with the
+    /// background, and the render draws the cursor and the padding in them.
+    pub(crate) foreground: Rgb,
     pub(crate) background: Rgb,
 }
 

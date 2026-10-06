@@ -346,8 +346,8 @@ pub(crate) fn replay_with(data: &[u8], cols: usize, rows: usize, options: &Parse
     let images = std::mem::take(&mut screen.graphics).finish(&placeholders, cell_size, rows);
     let cursor_shape = screen.cursor_shape;
     let marks = screen.screen_marks();
-    let background = options.palette.background;
-    Grid { cells: screen.into_cells(), marks, cursor, cursor_shape, images, cols, rows, background }
+    let (foreground, background) = (options.palette.foreground, options.palette.background);
+    Grid { cells: screen.into_cells(), marks, cursor, cursor_shape, images, cols, rows, foreground, background }
 }
 
 /// Parse one CSI sequence whose parameters start at i, apply it, and return
