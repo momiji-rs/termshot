@@ -193,11 +193,14 @@ fn draw_png_reports_nothing_for_glyphs_it_draws_or_lacks() {
     }
 }
 
+/// The CLI's warning for what a render reports in `empty`, None when it
+/// reports nothing.
 fn warning(args: &[&str], empty: &EmptyGlyphs, font: &[u8], fallback: Option<&[u8]>) -> Option<String> {
     let Ok(Command::Render(options)) = parse_args(args.iter().map(|a| a.to_string())) else { panic!("{args:?}") };
-    let font = font::prepare(font.to_vec()).unwrap();
-    let fallback = fallback.map(|f| font::prepare(f.to_vec()).unwrap());
-    empty_glyph_warning(empty, &options, &font, fallback.as_ref())
+    let load = |bytes: &[u8]| Font::from_bytes(bytes.to_vec(), &termshot::FaceSelector::default()).unwrap();
+    let (font, fallback) = (load(font), fallback.map(load));
+    let empty = EmptyGlyph::of(empty)?;
+    Some(empty_glyph_warning(&empty, &options, &font, fallback.as_ref()))
 }
 
 #[test]

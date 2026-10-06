@@ -41,7 +41,9 @@
 //! independent.
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
-use std::ffi::{c_char, c_int, c_void};
+#[cfg(any(test, termshot_render))]
+use std::ffi::c_char;
+use std::ffi::{c_int, c_void};
 use std::mem::MaybeUninit;
 
 use crate::cell::{Cell, CellMarks};
@@ -172,14 +174,15 @@ pub struct RenderOptions {
     pub background: (u8, u8, u8),
 }
 
+#[cfg(any(test, termshot_render))]
 impl RenderOptions {
     /// No margin: the PNG is the cells.
     pub const NONE: RenderOptions = RenderOptions { padding: (0, 0), background: (0, 0, 0) };
 }
 
 /// Why a render failed. Nothing here prints: src/api_render.rs makes each
-/// an Error, whose message is message()'s, and the CLI exits with code()'s
-/// status, as it did when the render printed them itself.
+/// an Error, whose message is message()'s, and the CLI exits with the
+/// status in each variant's docs, as it did when the render printed them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// stb could not set up a face (exit 1).
@@ -224,6 +227,7 @@ impl Failure {
         }
     }
 
+    #[cfg(any(test, termshot_render))]
     /// The status the CLI exits with: 1 for a font it can't use, 2 for the
     /// rest.
     pub fn code(&self) -> Code {
@@ -234,9 +238,11 @@ impl Failure {
     }
 }
 
-/// What a render ends with, as the CLI passes it on: 0 done; 1 a face or
-/// its metrics can't be used; 2 the image is over MAX_PIXELS, memory ran
-/// out, or a painter failed (a bug); 3 the PNG could not be written.
+/// What the wrappers below return, as the CLI did with a render's result:
+/// 0 done; 1 a face or its metrics can't be used; 2 the image is over
+/// MAX_PIXELS, memory ran out, or a painter failed (a bug); 3 the PNG could
+/// not be written.
+#[cfg(any(test, termshot_render))]
 pub type Code = i32;
 
 /// What a render returns its pixels as.
@@ -488,6 +494,7 @@ fn rgba(filtered: &[u8], stride: usize, width: usize) -> Option<Vec<u8>> {
 ///
 /// # Safety
 /// As draw.
+#[cfg(any(test, termshot_render))]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize, font: &Face,
                               fallback: Option<&Face>, font_px: f64, out_path: &str, verbose: bool,
@@ -501,6 +508,7 @@ pub unsafe fn draw_png_images(cells: &[Cell], marks: &[CellMarks], cols: usize, 
 ///
 /// # Safety
 /// As draw.
+#[cfg(any(test, termshot_render))]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_png_with(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize, font: &Face,
                             fallback: Option<&Face>, font_px: f64, out_path: &str, verbose: bool,
@@ -575,6 +583,7 @@ fn paint_margin(filtered: &mut [u8], stride: usize, (grid_w, grid_h): (usize, us
 /// # Safety
 /// `cells` must hold cols * rows cells, the fonts be checked, padded
 /// TrueType fonts (the harnesses' are vendored), and `out_path` a C string.
+#[cfg(any(test, termshot_render))]
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn draw_png(cells: *const Cell, cols: c_int, rows: c_int, ttf: *const u8, ttf_start: c_int,

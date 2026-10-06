@@ -282,7 +282,8 @@ pub struct EmptyGlyph {
 }
 
 impl EmptyGlyph {
-    fn from(empty: &EmptyGlyphs) -> Option<EmptyGlyph> {
+    /// What the render reports in `empty`, if anything.
+    pub(crate) fn of(empty: &EmptyGlyphs) -> Option<EmptyGlyph> {
         (empty.cells != 0).then(|| EmptyGlyph {
             ch: char::from_u32(empty.cp).unwrap_or(char::REPLACEMENT_CHARACTER),
             row: empty.row.max(0) as usize,
@@ -443,7 +444,7 @@ fn draw_checked(grid: &Grid, font: &Font, options: &RenderOptions, encoding: Enc
     if let Some(fields) = &mut drawn.profile {
         *fields += &format!(",\"face_ms\":{face_ms:.6}");
     }
-    Ok((drawn, EmptyGlyph::from(&empty)))
+    Ok((drawn, EmptyGlyph::of(&empty)))
 }
 
 /// The Error for a render's Failure, with the CLI's message.
