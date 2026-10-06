@@ -389,6 +389,71 @@ expect 2 --json "$out/clash-link.pty" "$out/clash.pty"
 expect 2 "$out/clash.pty" "./$out/clash.pty"
 expect 2 --font "$out/clash.pty" "$log" "$out/clash.pty"
 check "a clash leaves the input as it was" 'cmp -s "$out/clash.pty" "$log"'
+# --palette, --fg, --bg and --padding (#87). tests/palette_padding.rs checks
+# their pixels; here, their values, the file's errors and the grid outputs.
+pal=$out/cli-palette.conf
+printf '# a theme\nforeground #102030\nbackground #f0e0d0\ncolor1 #00ff00\n' > "$pal"
+for bad in -1 1025 1,2,3 1, ,1 x 1.5 '1 2' 0x10; do
+    expect 2 "$log" "$out/x.png" --padding "$bad"
+done
+expect 2 "$log" "$out/x.png" --padding
+expect 0 "$log" "$out/x.png" --padding 1024,0
+check "--padding names its range and form" \
+    './termshot --padding 2000 "$log" "$out/x.png" 2>&1 | grep -q "padding must be pixels from 0 to 1024, as 16 or 32,16"'
+for bad in red '#fff' '#12345g' 123456 '#1234567' ''; do
+    expect 2 "$log" "$out/x.png" --fg "$bad"
+    expect 2 "$log" "$out/x.png" --bg "$bad"
+done
+expect 2 "$log" "$out/x.png" --fg
+expect 2 "$log" "$out/x.png" --palette
+check "--bg names the colour form" './termshot --bg red "$log" "$out/x.png" 2>&1 | grep -q -- "--bg: a colour must look like #1e2a3b, not \"red\""'
+expect 1 "$log" "$out/x.png" --palette "$out/no-such.conf"
+expect 1 "$log" "$out/x.png" --palette "$out"
+printf 'color1 #00ff00\ncursor #ffffff\n' > "$out/bad-palette.conf"
+expect 2 "$log" "$out/x.png" --palette "$out/bad-palette.conf"
+check "a malformed palette names the file, the line and the key" \
+    './termshot --palette "$out/bad-palette.conf" "$log" "$out/x.png" 2>&1 | grep -q -- "--palette $out/bad-palette.conf: line 2: unknown key \"cursor\""'
+printf 'color16 #ffffff\n' > "$out/bad-palette.conf"
+check "a palette refuses colours past the 16" \
+    './termshot --palette "$out/bad-palette.conf" "$log" "$out/x.png" 2>&1 | grep -q "color16 is not one of the 16 named colours"'
+head -c 70000 /dev/zero | tr '\0' '#' > "$out/big-palette.conf"
+expect 2 "$log" "$out/x.png" --palette "$out/big-palette.conf"
+for bad in bad big; do
+    rm -f "$out/gone.png" "$out/gone.txt"
+    ./termshot --palette "$out/$bad-palette.conf" --text "$out/gone.txt" "$log" "$out/gone.png" 2>/dev/null || true
+    check "a refused palette ($bad) leaves no output" '[ ! -e "$out/gone.png" ] && [ ! -e "$out/gone.txt" ]'
+done
+check "a palette is checked before the log is read" \
+    'printf x | ./termshot --palette "$out/bad-palette.conf" - "$out/x.png" 2>&1 | grep -q "color16"'
+cp "$pal" "$out/clash.conf"
+expect 2 --palette "$out/clash.conf" "$log" "$out/clash.conf"
+check "a palette named as an output is kept" 'cmp -s "$out/clash.conf" "$pal"'
+# A palette or font named - is that file, not stdin, so an output naming it clashes too.
+cp "$pal" "$out/-"
+check "a palette named - is a file an output may not overwrite" \
+    '(cd "$out" && ../../termshot --palette - "../../$log" ./- 2>&1 | grep -q "<out.png> ./- is the --palette file") && cmp -s "$out/-" "$pal"'
+cp "$font" "$out/-"
+check "a font named - is a file an output may not overwrite" \
+    '(cd "$out" && ../../termshot --font - --text ./- "../../$log" 2>&1 | grep -q "is the --font file") && cmp -s "$out/-" "$font"'
+rm -f "$out/-"
+check "a palette and padding are quiet" '[ -z "$(./termshot --palette "$pal" --fg "#ffffff" --padding 8,4 "$log" "$out/q.png" 2>&1)" ]'
+check "-v prints the padded image size" \
+    './termshot -v --padding 16,10 "$log" "$out/q.png" 2>&1 | grep -q "image 2232x1460"'
+# The padding counts towards the image limit: 11000x9600 fits, with 1024 on each side it does not.
+rm -f "$out/gone.png"
+expect 2 --size 500x200 --padding 1024 "$log" "$out/gone.png"
+check "a padded image over the limit says so, and leaves no output" \
+    './termshot --size 500x200 --padding 1024 "$log" "$out/gone.png" 2>&1 | grep -q "image 13048x11648 is over 134217728 pixels; lower px, cols, rows or padding" && [ ! -e "$out/gone.png" ]'
+# --json reports the colours the palette resolves to; --fg and --bg override
+# the file's; padding changes no grid output.
+printf '\033[31ma\033[m b\033[41m \033[m\033[?25l' | ./termshot --size 6x1 --palette "$pal" --bg '#000001' --json - - > "$out/grid-palette.json"
+printf '%s\n' '{"cols":6,"rows":1,"cursor":null,"lines":[' \
+    '[{"col":0,"text":"a","fg":"#00ff00","bg":"#000001"},{"col":1,"text":" b","fg":"#102030","bg":"#000001"},{"col":3,"text":" ","fg":"#102030","bg":"#00ff00"}]' \
+    ']}' > "$out/grid-palette-want.json"
+check "--json reports the palette's colours" 'cmp -s "$out/grid-palette.json" "$out/grid-palette-want.json"'
+./termshot --text "$out/pad.txt" --json "$out/pad.json" --padding 40 "$log" "$out/pad.png"
+check "padding changes no --text or --json" 'cmp -s "$out/pad.txt" "$out/text-png.txt" && cmp -s "$out/pad.json" "$out/both.json"'
+check "--padding without a PNG needs no font" './termshot --font README.md --padding 4 --text "$out/q.txt" "$log"'
 # Every golden's JSON parses, and its runs spell the --text rows.
 if command -v python3 >/dev/null; then
     check "the golden JSON parses and agrees with --text" 'python3 tests/grids/check.py tests/grids'
@@ -425,6 +490,9 @@ fi
 echo "== kitty graphics pixels"
 rustc --edition 2021 tests/graphics.rs -o "$out/graphics" -L native="$out" -l static=png_read
 "$out/graphics"
+echo "== palette and padding pixels"
+rustc --edition 2021 tests/palette_padding.rs -o "$out/palette_padding" -L native="$out" -l static=png_read
+"$out/palette_padding"
 
 # Exercise the production PNG decoder, including allocation quota failures.
 # shellcheck disable=SC2086

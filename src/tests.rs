@@ -311,7 +311,7 @@ fn private_and_unknown_csi_are_skipped() {
 fn with_cursor(s: &[u8], cols: usize, rows: usize) -> Vec<Cell> {
     let Grid { mut cells, cursor, .. } = replay(s, cols, rows, Lf::Index);
     if let Some((row, col)) = cursor {
-        draw_cursor(&mut cells, cols, row, col);
+        draw_cursor(&mut cells, cols, row, col, &Palette::DEFAULT);
     }
     cells
 }
@@ -329,7 +329,7 @@ fn the_cursor_is_a_block_in_reverse_video() {
     let a = at(&g, 0, 0);
     assert_eq!((a.ch, a.attrs), ('a' as u32, BOLD | UNDERLINE | OPAQUE));
     assert_eq!(at(&g, 0, 1).attrs & OPAQUE, 0);
-    assert_eq!((fg(a), bg(a)), (palette(2).unwrap(), palette(1).unwrap()));
+    assert_eq!((fg(a), bg(a)), (Palette::DEFAULT.named[2], Palette::DEFAULT.named[1]));
     // Hidden: nothing drawn.
     let g = with_cursor(b"ab\x1b[?25l", C, R);
     assert_eq!(bg(at(&g, 0, 2)), DEFAULT_BG);
@@ -412,7 +412,7 @@ fn cursor_shape_option() {
 /// The underline or bar cursor's rectangle and colour, for 16x32 cells.
 fn mark(log: &str, shape: CursorShape) -> ((i64, i64, i64, i64), [u8; 4]) {
     let g = replay(log.as_bytes(), C, R, Lf::Index);
-    cursor_mark(&g.cells, C, g.cursor.unwrap(), shape, (16, 32))
+    cursor_mark(&g.cells, C, g.cursor.unwrap(), shape, (16, 32), &Palette::DEFAULT)
 }
 
 #[test]
@@ -429,11 +429,11 @@ fn underline_and_bar_cursors_cover_the_cell() {
     }
     // A wide character the last column cuts: one cell.
     let g = replay("\x1b[1;10H中".as_bytes(), 10, 1, Lf::Index);
-    let cut = cursor_mark(&g.cells, 10, (0, 9), CursorShape::Underline, (16, 32));
+    let cut = cursor_mark(&g.cells, 10, (0, 9), CursorShape::Underline, (16, 32), &Palette::DEFAULT);
     assert_eq!(cut.0, (144, 30, 16, 2));
     // Never thinner than a pixel.
     let g = replay(b"a", C, R, Lf::Index);
-    assert_eq!(cursor_mark(&g.cells, C, (0, 1), CursorShape::Bar, (7, 14)).0, (7, 0, 1, 14));
+    assert_eq!(cursor_mark(&g.cells, C, (0, 1), CursorShape::Bar, (7, 14), &Palette::DEFAULT).0, (7, 0, 1, 14));
     // On a background the default foreground colour, the default background.
     let (r, g, b) = DEFAULT_BG;
     assert_eq!(mark("\x1b[48;2;219;231;247mx\x1b[H", CursorShape::Bar).1, [r, g, b, 255]);
@@ -466,8 +466,8 @@ fn json_has_runs_of_alike_cells_and_the_cursor() {
 []
 ]}
 "##;
-    assert_eq!(grid_json(&g.cells, &g.marks, 8, 4, g.cursor, g.cursor_shape), want);
-    let bar = grid_json(&g.cells, &g.marks, 8, 4, g.cursor, CursorShape::Bar);
+    assert_eq!(grid_json(&g.cells, &g.marks, 8, 4, g.cursor, g.cursor_shape, DEFAULT_BG), want);
+    let bar = grid_json(&g.cells, &g.marks, 8, 4, g.cursor, CursorShape::Bar, DEFAULT_BG);
     assert!(bar.starts_with(r#"{"cols":8,"rows":4,"cursor":{"col":2,"row":2,"shape":"bar"},"#), "{bar}");
 }
 
@@ -477,7 +477,7 @@ fn json_escapes_controls_and_reports_a_hidden_cursor() {
     cells[1].ch = 0x1b;
     let want = "{\"cols\":3,\"rows\":1,\"cursor\":null,\"lines\":[\n\
         [{\"col\":0,\"text\":\"a\\u001b\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"italic\":true,\"double_underline\":true,\"strike\":true}]\n]}\n";
-    assert_eq!(grid_json(&cells, &[], 3, 1, None, CursorShape::Bar), want);
+    assert_eq!(grid_json(&cells, &[], 3, 1, None, CursorShape::Bar, DEFAULT_BG), want);
 }
 
 #[test]
@@ -1119,12 +1119,12 @@ fn only_default_backgrounds_stay_clear_for_draw_c() {
     // Default, red, the default colour set explicitly, reverse video, and
     // reverse video whose background is the default colour by value.
     let mut g = grid(b"a\x1b[41mb\x1b[48;2;17;24;35mc\x1b[0;7md\x1b[0;7;38;2;17;24;35me");
-    opaque_backgrounds(&mut g);
+    opaque_backgrounds(&mut g, DEFAULT_BG);
     let opaque: Vec<_> = (0..6).map(|c| at(&g, 0, c).attrs & OPAQUE != 0).collect();
     assert_eq!(opaque, [false, true, false, true, true, false]);
     // Other attributes are kept.
     let mut g = grid(b"\x1b[1;3;41mx");
-    opaque_backgrounds(&mut g);
+    opaque_backgrounds(&mut g, DEFAULT_BG);
     assert_eq!(at(&g, 0, 0).attrs, BOLD | ITALIC | OPAQUE);
 }
 
@@ -1538,7 +1538,7 @@ fn text_and_json_put_marks_after_their_character() {
         {\"col\":1,\"text\":\"x\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"bold\":true},\
         {\"col\":2,\"text\":\" \u{302}\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\"}],\n\
         [{\"col\":0,\"text\":\"界\u{e31}\u{e48}\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\"}]\n]}\n";
-    assert_eq!(grid_json(&g.cells, &g.marks, 6, 2, g.cursor, g.cursor_shape), want);
+    assert_eq!(grid_json(&g.cells, &g.marks, 6, 2, g.cursor, g.cursor_shape, DEFAULT_BG), want);
     assert_eq!(marks_of(&g.marks, 0), [0x301]);
     assert_eq!(marks_of(&g.marks, 1), []);
     assert_eq!(marks_of(&g.marks, 6), [0xe31, 0xe48]);

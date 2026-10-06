@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use cell::{Cell, CellMarks, Marks, MAX_MARKS, BOLD, DOUBLE_UNDERLINE, ITALIC, OPAQUE, STRIKE, TAIL, UNDERLINE, WIDE};
 use glyphs::{EmptyGlyphs, EMPTY_IN_FALLBACK, EMPTY_IN_FONT};
+use palette::Palette;
 
 mod cast;
 mod cell;
@@ -23,6 +24,7 @@ mod geometry;
 mod glyphs;
 mod graphics;
 mod metrics;
+mod palette;
 mod render;
 #[rustfmt::skip]
 mod rowcolumn_diacritics;
@@ -40,6 +42,8 @@ mod draw_tests;
 #[cfg(test)]
 mod metrics_tests;
 #[cfg(test)]
+mod palette_tests;
+#[cfg(test)]
 mod prescan_tests;
 #[cfg(test)]
 mod tests;
@@ -48,8 +52,11 @@ mod variations_tests;
 
 const DEFAULT_COLS: usize = 100;
 const DEFAULT_ROWS: usize = 30;
-const DEFAULT_FG: (u8, u8, u8) = (219, 231, 247);
-const DEFAULT_BG: (u8, u8, u8) = (17, 24, 35);
+/// The default palette's colours, which the tests compare with.
+#[cfg(test)]
+const DEFAULT_FG: (u8, u8, u8) = Palette::DEFAULT.foreground;
+#[cfg(test)]
+const DEFAULT_BG: (u8, u8, u8) = Palette::DEFAULT.background;
 
 
 const NO_MARKS: Marks = [0; MAX_MARKS];
@@ -89,8 +96,11 @@ struct Pen {
 type Ids = [u32; 2];
 
 impl Pen {
-    const DEFAULT: Pen =
-        Pen { fg: DEFAULT_FG, bg: DEFAULT_BG, attrs: 0, dim: false, reverse: false, conceal: false, ids: [0, 0] };
+    /// SGR 0's pen: the palette's default colours, no attributes.
+    fn reset(palette: &Palette) -> Pen {
+        let (fg, bg) = (palette.foreground, palette.background);
+        Pen { fg, bg, attrs: 0, dim: false, reverse: false, conceal: false, ids: [0, 0] }
+    }
 
     /// A blank cell in this pen's colours, ready for a character.
     fn cell(&self) -> Cell {
@@ -108,43 +118,9 @@ impl Pen {
     }
 }
 
-/// xterm's default 256-colour palette: 16 named colours, a 6x6x6 cube and
-/// 24 greys.
-fn palette(n: u32) -> Option<(u8, u8, u8)> {
-    const NAMED: [(u8, u8, u8); 16] = [
-        (0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0),
-        (0, 0, 238), (205, 0, 205), (0, 205, 205), (229, 229, 229),
-        (127, 127, 127), (255, 0, 0), (0, 255, 0), (255, 255, 0),
-        (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
-    ];
-    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
-    match n {
-        0..=15 => Some(NAMED[n as usize]),
-        16..=231 => {
-            let i = (n - 16) as usize;
-            Some((LEVELS[i / 36], LEVELS[i / 6 % 6], LEVELS[i % 6]))
-        }
-        232..=255 => {
-            let v = (8 + 10 * (n - 232)) as u8;
-            Some((v, v, v))
-        }
-        _ => None,
-    }
-}
-
-impl Cell {
-    fn blank() -> Self {
-        Self {
-            ch: ' ' as u32,
-            fr: DEFAULT_FG.0,
-            fg: DEFAULT_FG.1,
-            fb: DEFAULT_FG.2,
-            br: DEFAULT_BG.0,
-            bg: DEFAULT_BG.1,
-            bb: DEFAULT_BG.2,
-            attrs: 0,
-        }
-    }
+/// A blank cell in the palette's default colours.
+fn blank_cell(palette: &Palette) -> Cell {
+    Pen::reset(palette).cell()
 }
 
 extern "C" {
@@ -183,15 +159,18 @@ struct Saved {
 }
 
 impl Saved {
-    const HOME: Saved = Saved {
-        row: 0,
-        col: 0,
-        pending: false,
-        origin: false,
-        pen: Pen::DEFAULT,
-        charsets: [Charset::Ascii; 2],
-        shifted: false,
-    };
+    /// What DECRC restores with nothing saved.
+    fn home(palette: &Palette) -> Saved {
+        Saved {
+            row: 0,
+            col: 0,
+            pending: false,
+            origin: false,
+            pen: Pen::reset(palette),
+            charsets: [Charset::Ascii; 2],
+            shifted: false,
+        }
+    }
 }
 
 /// The cursor shapes DECSCUSR (CSI Ps SP q) picks. A still image can't
@@ -291,19 +270,28 @@ struct Screen {
     sixel_display: bool,
     /// Not terminal state: RIS keeps it, as a reset keeps the tty's settings.
     lf: Lf,
+    /// The colours SGR's default and named colours stand for. RIS keeps
+    /// it, as a terminal's reset keeps its configured colours.
+    palette: Palette,
 }
 
 impl Screen {
+    #[cfg(test)]
     fn new(cols: usize, rows: usize, lf: Lf) -> Self {
+        Self::with(cols, rows, &ParseOptions { lf, palette: Palette::DEFAULT })
+    }
+
+    fn with(cols: usize, rows: usize, options: &ParseOptions) -> Self {
+        let (lf, palette) = (options.lf, options.palette);
         Self {
             graphics: graphics::Graphics::default(),
             other_graphics: graphics::Graphics::default(),
             cell_size: (1, 1),
-            cells: vec![Cell::blank(); cols * rows],
+            cells: vec![blank_cell(&palette); cols * rows],
             map: (0..rows).collect(),
             marks: Vec::new(),
             ids: Vec::new(),
-            other: vec![Cell::blank(); cols * rows],
+            other: vec![blank_cell(&palette); cols * rows],
             other_map: (0..rows).collect(),
             other_marks: Vec::new(),
             other_ids: Vec::new(),
@@ -317,9 +305,9 @@ impl Screen {
             origin: false,
             top: 0,
             bottom: rows - 1,
-            saved: [Saved::HOME; 2],
-            pen: Pen::DEFAULT,
-            pen_cell: Pen::DEFAULT.cell(),
+            saved: [Saved::home(&palette); 2],
+            pen: Pen::reset(&palette),
+            pen_cell: Pen::reset(&palette).cell(),
             tabs: (0..cols).map(|c| c % 8 == 0).collect(),
             charsets: [Charset::Ascii; 2],
             shifted: false,
@@ -329,6 +317,7 @@ impl Screen {
             cursor_shape: CursorShape::Block,
             sixel_display: false,
             lf,
+            palette,
         }
     }
 
@@ -927,7 +916,7 @@ impl Screen {
     fn erase(&mut self, from: usize, to: usize) {
         let to = to.min(self.cells.len());
         if from < to {
-            let mut blank = Cell::blank();
+            let mut blank = blank_cell(&self.palette);
             (blank.fr, blank.fg, blank.fb) = self.pen.fg;
             (blank.br, blank.bg, blank.bb) = self.pen.bg;
             fill_cells(&mut self.cells[from..to], blank);
@@ -1126,7 +1115,7 @@ impl Screen {
                     }
                     (38 | 48 | 58, Some(5)) => {
                         let n = subs.get(1).map_or(0, |n| n.value.unwrap_or(0));
-                        if let Some(color) = palette(n) {
+                        if let Some(color) = self.palette.color(n) {
                             self.set_color(v, color, n);
                         }
                     }
@@ -1143,9 +1132,10 @@ impl Screen {
                 k = end;
                 continue;
             }
-            let pen = &mut self.pen;
+            let (pen, palette) = (&mut self.pen, &self.palette);
+            let named = |n: u32| palette.named[n as usize];
             match v {
-                0 => *pen = Pen::DEFAULT,
+                0 => *pen = Pen::reset(palette),
                 1 => pen.attrs |= BOLD,
                 2 => pen.dim = true,
                 3 => pen.attrs |= ITALIC,
@@ -1163,12 +1153,12 @@ impl Screen {
                 27 => pen.reverse = false,
                 28 => pen.conceal = false,
                 29 => pen.attrs &= !STRIKE,
-                30..=37 => (pen.fg, pen.ids[0]) = (palette(v - 30).unwrap(), v - 30),
-                40..=47 => pen.bg = palette(v - 40).unwrap(),
-                90..=97 => (pen.fg, pen.ids[0]) = (palette(v - 90 + 8).unwrap(), v - 90 + 8),
-                100..=107 => pen.bg = palette(v - 100 + 8).unwrap(),
-                39 => (pen.fg, pen.ids[0]) = (DEFAULT_FG, 0),
-                49 => pen.bg = DEFAULT_BG,
+                30..=37 => (pen.fg, pen.ids[0]) = (named(v - 30), v - 30),
+                40..=47 => pen.bg = named(v - 40),
+                90..=97 => (pen.fg, pen.ids[0]) = (named(v - 90 + 8), v - 90 + 8),
+                100..=107 => pen.bg = named(v - 100 + 8),
+                39 => (pen.fg, pen.ids[0]) = (palette.foreground, 0),
+                49 => pen.bg = palette.background,
                 59 => pen.ids[1] = 0,
                 // Blink (5, 6, 25) and the rest are not drawn.
                 38 | 48 | 58 => match p.get(k + 1, 0) {
@@ -1180,7 +1170,7 @@ impl Screen {
                     }
                     5 if k + 2 < p.len => {
                         let n = p.get(k + 2, 0);
-                        if let Some(color) = palette(n) {
+                        if let Some(color) = self.palette.color(n) {
                             self.set_color(v, color, n);
                         }
                         k += 2;
@@ -1195,7 +1185,7 @@ impl Screen {
     }
 
     fn reset_attributes(&mut self) {
-        self.pen = Pen::DEFAULT;
+        self.pen = Pen::reset(&self.palette);
     }
 
     /// SGR 38, 48 or 58 (`which`): the colour, and its kitty id (`Ids`).
@@ -1432,17 +1422,33 @@ struct Grid {
     cursor_shape: CursorShape,
 }
 
+/// What decides the cells a log replays to: how a bare LF moves, and the
+/// colours its SGR codes stand for. --text, --json and the PNG all see it;
+/// the render's own options (render::RenderOptions) only change pixels.
+#[derive(Clone, Copy, PartialEq)]
+struct ParseOptions {
+    lf: Lf,
+    palette: Palette,
+}
+
 #[cfg(test)]
 fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
     replay_sized(data, cols, rows, lf, (1, 1))
 }
 
+/// replay_with the default palette.
+#[cfg(test)]
 fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, i32)) -> Grid {
+    replay_with(data, cols, rows, &ParseOptions { lf, palette: Palette::DEFAULT }, cell_size)
+}
+
+fn replay_with(data: &[u8], cols: usize, rows: usize, options: &ParseOptions, cell_size: (i32, i32)) -> Grid {
+    let lf = options.lf;
     let data = match lf {
         Lf::Newline => strip_final_bare_lf(data),
         Lf::Index => data,
     };
-    let mut screen = Screen::new(cols, rows, lf);
+    let mut screen = Screen::with(cols, rows, options);
     screen.cell_size = cell_size;
     // Reuse the fixed parameter buffer across sequences; only len needs resetting.
     let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
@@ -1530,7 +1536,7 @@ fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, 
                         graphics.abort();
                         graphics.clear();
                     }
-                    screen = Screen::new(cols, rows, lf);
+                    screen = Screen::with(cols, rows, options);
                     screen.cell_size = cell_size;
                     [screen.graphics, screen.other_graphics] = kept;
                 },
@@ -1581,20 +1587,23 @@ fn blank_placeholders(cells: &mut [Cell], mut marks: Vec<CellMarks>) -> Vec<Cell
     marks
 }
 
-/// Mark every background that is not the default colour OPAQUE, for the render.
-/// kitty compares the colour's value, so a background set to the default
-/// colour explicitly is a default one.
-fn opaque_backgrounds(cells: &mut [Cell]) {
+/// Mark every background that is not the default colour, `background`
+/// (the palette's), OPAQUE, for the render. kitty compares the colour's
+/// value, so a background set to the default colour explicitly is a default
+/// one.
+fn opaque_backgrounds(cells: &mut [Cell], background: (u8, u8, u8)) {
     for cell in cells {
-        if (cell.br, cell.bg, cell.bb) != DEFAULT_BG {
+        if (cell.br, cell.bg, cell.bb) != background {
             cell.attrs |= OPAQUE;
         }
     }
 }
 
 /// Draw the cursor as a block in reverse video over the cell at (row, col),
-/// or over both cells of the wide character it is on.
-fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
+/// or over both cells of the wide character it is on. Over concealed text it
+/// is a block of the palette's default foreground, or of its background on
+/// a cell already that colour.
+fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize, palette: &Palette) {
     let under = cursor_cells(cells, cols, row, col);
     for cell in &mut cells[under] {
         let (fg, bg) = ((cell.fr, cell.fg, cell.fb), (cell.br, cell.bg, cell.bb));
@@ -1603,7 +1612,7 @@ fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize) {
         let (fg, bg) = if fg != bg {
             (bg, fg)
         } else {
-            let block = if bg == DEFAULT_FG { DEFAULT_BG } else { DEFAULT_FG };
+            let block = if bg == palette.foreground { palette.background } else { palette.foreground };
             (block, block)
         };
         (cell.fr, cell.fg, cell.fb) = fg;
@@ -1628,18 +1637,20 @@ fn cursor_cells(cells: &[Cell], cols: usize, row: usize, col: usize) -> std::ops
 /// cell_w x cell_h: the rectangle (x, y, w, h) and its colour. The underline
 /// runs along the bottom of the cells the cursor covers, the bar down the left
 /// edge of the first. Both are an eighth of a cell wide, at least a pixel, in
-/// the default foreground; on a cell whose background is that colour, in the
-/// default background, so the cursor still shows.
+/// the palette's default foreground; on a cell whose background is that
+/// colour, in its default background, so the cursor still shows.
 fn cursor_mark(
     cells: &[Cell],
     cols: usize,
     (row, col): (usize, usize),
     shape: CursorShape,
     (cell_w, cell_h): (i32, i32),
+    palette: &Palette,
 ) -> ((i64, i64, i64, i64), [u8; 4]) {
     let under = cursor_cells(cells, cols, row, col);
     let first = &cells[under.start];
-    let (r, g, b) = if (first.br, first.bg, first.bb) == DEFAULT_FG { DEFAULT_BG } else { DEFAULT_FG };
+    let (fg, bg) = (palette.foreground, palette.background);
+    let (r, g, b) = if (first.br, first.bg, first.bb) == fg { bg } else { fg };
     let (cell_w, cell_h) = (i64::from(cell_w), i64::from(cell_h));
     let thick = (cell_w / 8).max(1);
     let (x, y) = ((under.start - row * cols) as i64 * cell_w, row as i64 * cell_h);
@@ -1680,7 +1691,8 @@ fn grid_text(cells: &[Cell], marks: &[CellMarks], cols: usize) -> String {
 /// line per row of the runs of cells alike in colour and attributes, each with
 /// the column it starts at (a wide character takes two). A run's text has each
 /// character followed by its combining marks, as --text does. Blank cells that
-/// end a row are left out, as in --text, unless their background or a line shows.
+/// end a row are left out, as in --text, unless their background (other than
+/// `background`, the palette's default) or a line shows.
 fn grid_json(
     cells: &[Cell],
     marks: &[CellMarks],
@@ -1688,6 +1700,7 @@ fn grid_json(
     rows: usize,
     cursor: Option<(usize, usize)>,
     shape: CursorShape,
+    background: (u8, u8, u8),
 ) -> String {
     use std::fmt::Write as _;
     const LINES: u8 = UNDERLINE | DOUBLE_UNDERLINE | STRIKE;
@@ -1706,7 +1719,7 @@ fn grid_json(
         let marks_at = |c: usize| marks_of(marks, r * cols + c);
         let blank = |c: usize| {
             let cell = &row[c];
-            cell.ch == ' ' as u32 && (cell.br, cell.bg, cell.bb) == DEFAULT_BG && cell.attrs & LINES == 0
+            cell.ch == ' ' as u32 && (cell.br, cell.bg, cell.bb) == background && cell.attrs & LINES == 0
                 && marks_at(c).is_empty()
         };
         let end = (0..cols).rposition(|c| !blank(c)).map_or(0, |i| i + 1);
@@ -1895,6 +1908,16 @@ options:
       --cursor-shape block|underline|bar
                     draw the cursor as that shape (default: the one the
                     log sets with DECSCUSR, or a block)
+      --palette FILE
+                    the default colours and the 16 named ones, in kitty's
+                    keys: lines of foreground, background or color0 to
+                    color15, then #rrggbb; # starts a comment line
+      --fg #RRGGBB  the default foreground, over the palette's
+      --bg #RRGGBB  the default background, over the palette's
+      --padding N|X,Y
+                    a margin of N pixels around the cells, or X left and
+                    right and Y above and below, in the default
+                    background; 0 to 1024 (default 0)
       --text FILE   write the screen as text, a line per row with trailing
                     spaces trimmed, as tmux capture-pane -p prints it; the
                     PNG is then optional, and fonts are only read for it
@@ -1912,14 +1935,18 @@ For a font collection (.ttc), FILE#N picks face N, from 0, and FILE#NAME the
 face with that full or family name; without either, the first is used.
 For a variable font with CFF2 outlines, a last #TAG=VALUE,... picks the
 instance, as in FILE#wght=700 or FILE.ttc#1#wght=700,wdth=90.
-An SGR reset uses foreground #dbe7f7 on background #111823.
+An SGR reset uses foreground #dbe7f7 on background #111823, and the 16
+named colours are xterm's, unless --palette, --fg or --bg say otherwise;
+colours 16 to 255 and 24-bit colours are never changed. --text and --json
+see the palette (--json reports the colours it resolves to), not the padding.
 
 A cast replays its output events in order, on the grid of the size it ends
 at (its last resize event, or its header); input and markers are ignored.
 
 exit status: 0 done; 1 a file could not be read or written, a cast is
-malformed, or the font is unusable; 2 bad arguments, including an image over
-134217728 pixels, or a cast's size beyond 500x200 without --size.
+malformed, or the font is unusable; 2 bad arguments, including a malformed
+--palette file, an image over 134217728 pixels (padding included), or a
+cast's size beyond 500x200 without --size.
 ";
 
 /// A rendering request from the command line.
@@ -1944,6 +1971,13 @@ struct Options {
     cursor: Option<String>,
     /// --cursor-shape: None leaves it to the log.
     cursor_shape: Option<CursorShape>,
+    /// --palette's file, read once the outputs are known to be writable.
+    palette: Option<String>,
+    /// --fg and --bg, over the palette's.
+    fg: Option<palette::Rgb>,
+    bg: Option<palette::Rgb>,
+    /// --padding: left and right, top and bottom.
+    padding: (u32, u32),
     verbose: bool,
 }
 
@@ -1997,6 +2031,43 @@ fn parse_cursor(value: &str, cols: usize, rows: usize) -> Result<Option<(usize, 
     Ok(Some((row, col.min(cols - 1))))
 }
 
+/// --padding's value: N on every side, or X,Y (left and right, top and bottom).
+fn parse_padding(value: &str) -> Result<(u32, u32), String> {
+    let side = |v: &str| v.parse::<u32>().ok().filter(|&n| n <= render::MAX_PADDING);
+    let parsed = match value.split_once(',') {
+        Some((x, y)) => side(x).zip(side(y)),
+        None => side(value).map(|n| (n, n)),
+    };
+    parsed.ok_or_else(|| {
+        format!(
+            "padding must be pixels from 0 to {}, as 16 or 32,16 (left and right, top and bottom), not {value:?}",
+            render::MAX_PADDING
+        )
+    })
+}
+
+/// --fg's or --bg's value.
+fn parse_color_option(name: &str, value: &str) -> Result<palette::Rgb, String> {
+    palette::parse_color(value).map_err(|why| format!("{name}: {why}"))
+}
+
+/// The palette a render asks for: the default, then --palette's file, then
+/// --fg and --bg. Exit 1 when the file can't be read, 2 when it is not a palette.
+fn load_palette(options: &Options) -> Result<Palette, (u8, String)> {
+    let mut palette = Palette::DEFAULT;
+    if let Some(path) = &options.palette {
+        let mut file = Vec::new();
+        let limit = palette::MAX_FILE_BYTES as u64 + 1;
+        fs::File::open(path)
+            .and_then(|f| f.take(limit).read_to_end(&mut file))
+            .map_err(|error| (1, format!("--palette {path}: {error}")))?;
+        palette = palette.with_file(&file).map_err(|why| (2, format!("--palette {path}: {why}")))?;
+    }
+    palette.foreground = options.fg.unwrap_or(palette.foreground);
+    palette.background = options.bg.unwrap_or(palette.background);
+    Ok(palette)
+}
+
 /// The value of an option: attached (--px=48, -p48) or the next argument.
 fn option_value(
     name: &str,
@@ -2012,6 +2083,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
     let (mut lf, mut cast) = (Lf::Index, None);
     let (mut cursor, mut cursor_shape, mut text, mut json) = (None, None, None, None);
+    let (mut palette, mut fg, mut bg, mut padding) = (None, None, None, (0, 0));
     let mut options_done = false;
     while let Some(arg) = args.next() {
         if options_done || arg == "-" || !arg.starts_with('-') {
@@ -2055,6 +2127,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "--cursor-shape" => cursor_shape = Some(CursorShape::parse(&option_value(&name, attached, &mut args)?)?),
             "--text" => text = Some(option_value(&name, attached, &mut args)?),
             "--json" => json = Some(option_value(&name, attached, &mut args)?),
+            "--palette" => palette = Some(option_value(&name, attached, &mut args)?),
+            "--fg" => fg = Some(parse_color_option(&name, &option_value(&name, attached, &mut args)?)?),
+            "--bg" => bg = Some(parse_color_option(&name, &option_value(&name, attached, &mut args)?)?),
+            "--padding" => padding = parse_padding(&option_value(&name, attached, &mut args)?)?,
             _ => return Err(format!("unknown option {arg}")),
         }
     }
@@ -2118,6 +2194,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         cast,
         cursor,
         cursor_shape,
+        palette,
+        fg,
+        bg,
+        padding,
         verbose,
     }))
 }
@@ -2229,14 +2309,18 @@ fn output_clash(options: &Options) -> Option<String> {
         }
         output_target(a) == output_target(b)
     };
-    fn named<'a>(pairs: [(&'static str, Option<&'a String>); 3]) -> Vec<(&'static str, &'a String)> {
+    fn named<'a, const N: usize>(pairs: [(&'static str, Option<&'a String>); N]) -> Vec<(&'static str, &'a String)> {
         pairs.into_iter().filter_map(|(name, path)| Some((name, path.filter(|p| *p != "-")?))).collect()
     }
     let outputs = named([("<out.png>", options.out.as_ref()), ("--text", options.text.as_ref()), ("--json", options.json.as_ref())]);
     fn font_file(spec: &Option<font::Spec>) -> Option<&String> {
         spec.as_ref().map(|spec| &spec.path)
     }
-    let inputs = named([("<log>", Some(&options.log)), ("--font", font_file(&options.font)), ("--fallback-font", font_file(&options.fallback_font))]);
+    // Only the log reads - as stdin; a font or palette named - is that file.
+    let mut inputs = named([("<log>", Some(&options.log))]);
+    let files = [("--font", font_file(&options.font)), ("--fallback-font", font_file(&options.fallback_font)),
+                 ("--palette", options.palette.as_ref())];
+    inputs.extend(files.into_iter().filter_map(|(name, path)| Some((name, path?))));
     for (i, (name, path)) in outputs.iter().enumerate() {
         if let Some((other, ..)) = outputs[..i].iter().find(|(_, earlier)| same_file(path, earlier)) {
             return Some(format!("{name} and {other} name the same file, {path}; give each output its own"));
@@ -2312,6 +2396,13 @@ fn main() -> ExitCode {
         remove_created(&created);
         fail(code, message)
     };
+
+    let palette = match load_palette(&options) {
+        Ok(palette) => palette,
+        Err((code, message)) => return cleanup(code, message),
+    };
+    let parse_options = ParseOptions { lf: options.lf, palette };
+    let render_options = render::RenderOptions { padding: options.padding, background: palette.background };
 
     let read_started = Instant::now();
     let data = if options.log == "-" {
@@ -2410,7 +2501,7 @@ fn main() -> ExitCode {
         }
     }
     let Grid { mut cells, marks, cursor, cursor_shape, images } =
-        replay_sized(&data, cols, rows, options.lf, (cell_w, cell_h));
+        replay_with(&data, cols, rows, &parse_options, (cell_w, cell_h));
     let mut image_views: Vec<_> = images.iter().flat_map(graphics::Placement::views).collect();
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
@@ -2426,7 +2517,9 @@ fn main() -> ExitCode {
         .map_or(Ok(()), |path| write(path, grid_text(&cells, &marks, cols)))
         .and_then(|()| {
             (options.json.as_ref())
-                .map_or(Ok(()), |path| write(path, grid_json(&cells, &marks, cols, rows, cursor, cursor_shape)))
+                .map_or(Ok(()), |path| {
+                    write(path, grid_json(&cells, &marks, cols, rows, cursor, cursor_shape, palette.background))
+                })
         });
     if let Err(message) = written {
         return cleanup(1, message);
@@ -2440,17 +2533,17 @@ fn main() -> ExitCode {
             let marks = blank_placeholders(&mut cells, marks);
             match (cursor, cursor_shape) {
                 (None, _) => {}
-                (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, cols, row, col),
+                (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, cols, row, col, &palette),
                 // As kitty draws it, with the text: over the images under
                 // the text, under those of z-index 0 and up, so it goes first
                 // among the views drawn after the text.
                 (Some(at), shape) => {
-                    let ((x, y, w, h), pixel) = cursor_mark(&cells, cols, at, shape, (cell_w, cell_h));
+                    let ((x, y, w, h), pixel) = cursor_mark(&cells, cols, at, shape, (cell_w, cell_h), &palette);
                     mark_pixel = pixel;
                     image_views.insert(0, graphics::ImageView::solid(&mark_pixel, x, y, w, h));
                 }
             }
-            opaque_backgrounds(&mut cells);
+            opaque_backgrounds(&mut cells, palette.background);
             let out = if out == "-" { "/dev/stdout" } else { out };
             if out.contains('\0') {
                 return cleanup(2, "output path contains a nul byte".into());
@@ -2459,7 +2552,7 @@ fn main() -> ExitCode {
             let face_started = Instant::now();
             let mut draw = |font: &font::Face, fallback: Option<&font::Face>| unsafe {
                 face_ms = face_started.elapsed().as_secs_f64() * 1000.0;
-                render::draw_png_images(
+                render::draw_png_with(
                     &cells,
                     &marks,
                     cols,
@@ -2471,6 +2564,7 @@ fn main() -> ExitCode {
                     options.verbose,
                     &image_views,
                     Some(&mut empty),
+                    &render_options,
                 )
             };
             let drawn = font.with_face(|font| match &fallback {
