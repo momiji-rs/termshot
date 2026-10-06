@@ -123,6 +123,17 @@ aligned main's 0.975 / 0.996, `dense-sgr` 0.992 / 0.995 against 1.004 /
 0.999; all against plain main). That probe ran 30 rounds of the parser and
 text suites on starship and is not kept.
 
+### After review: `Arc` for image pixels
+
+Review asked for a `Grid` that can cross threads, so `5f4a63e` shares image
+pixels with `Arc` instead of `Rc` (`src/graphics.rs`,
+`src/graphics/animation.rs`). Against `3c69f71`, on macOS, 30 rounds, two
+batches: in the dev build the draw, text and parser suites are within noise
+(`image-*` 0.989 to 1.006 against main, `3c69f71` 0.988 to 1.006), and with
+fat LTO the draw and text suites too (`image-*` 0.996 to 1.006,
+`text-kitty` 1.003 / 1.008). `./test.sh`'s outputs are unchanged. Those
+probes are not kept.
+
 ### Two crates or one compilation unit
 
 #85 asks for `src/lib.rs` as the crate root of everything but the CLI, with
