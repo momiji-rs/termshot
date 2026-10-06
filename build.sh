@@ -24,3 +24,10 @@ ar rcs libtermshot_c.a stb_glue.o image.o
 # shellcheck disable=SC2086
 rustc --edition 2021 src/main.rs -o termshot -C opt-level=2 $target \
   ${RUSTFLAGS:-} -L native="$PWD" -l static=termshot_c ${RUSTC_LINK_ARGS:-}
+# The library (src/lib.rs: the parser, for embedders; see its docs), from the
+# same modules main.rs compiles. The static library goes inside the rlib, so
+# an embedder's link needs only --extern termshot=libtermshot.rlib, and the C
+# still comes before libc and libm.
+# shellcheck disable=SC2086
+rustc --edition 2021 --crate-type rlib --crate-name termshot src/lib.rs -o libtermshot.rlib \
+  -C opt-level=2 $target ${RUSTFLAGS:-} -L native="$PWD" -l static=termshot_c

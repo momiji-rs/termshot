@@ -342,6 +342,7 @@ pub fn parse(text: &str) -> Result<Value<'_>, JsonError> {
 /// What a cast holds for termshot.
 #[derive(Debug, PartialEq)]
 pub struct Cast {
+    /// The asciicast format version: 2 or 3.
     pub version: u8,
     /// The header's terminal size, as (cols, rows).
     pub size: (u64, u64),
