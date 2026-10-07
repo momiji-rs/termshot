@@ -7,6 +7,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The tests and the development tools no longer use Python.** The
+  `--json` check is a unit test (`src/grid_json_tests.rs`), now run
+  everywhere: test.sh used to skip it without python3. It also checks 2000
+  random grids, and is stricter. The generators are Rust or shell, and write
+  what the Python wrote, byte for byte: `tools/crc32-table.sh`,
+  `tools/cff2-metrics.sh`, `scripts/perf-fixtures.sh`,
+  `scripts/build-baseline.sh` and `bench/cff-poc/craft.rs`. test.sh now
+  checks that `src/crc32_table.h` and `tests/perf/` are what their generators
+  write, and, where the HarfBuzz the fixtures name is installed, records the
+  metrics fixtures again. The benchmark scripts are still Python.
 - The README is shorter and starts with what termshot is for, a quick start, a comparison
   with similar tools and the GitHub Action. The full CLI reference moved to `docs/usage.md`,
   images to `docs/images.md`, and building and testing to `CONTRIBUTING.md`. Release archives

@@ -67,8 +67,8 @@ SC and JP, so zh-TW users want face 3.
   implementation in its own child process, under ASan and UBSan, with a 3 s limit. cff.rs runs
   there with overflow checks and debug assertions, and a panic counts as a failure. For a
   mutant on which all three run to the end, a hash of every outline and box shows whether
-  they drew the same thing. `craft.py` writes eight hostile fonts, one defect each, plus a
-  well-formed control.
+  they drew the same thing. `craft.py` wrote eight hostile fonts, one defect each, plus a
+  well-formed control; `craft.rs` now writes the same bytes.
 
 ## Results
 
@@ -102,7 +102,7 @@ at load: 137 µs on the CJK font, and it refused a whole font over one bad offse
 
 ### Robustness
 
-Hand-made fonts (`craft.py`):
+Hand-made fonts (`craft.py` then, `craft.rs` now):
 
 | defect | stb | cff.c | cff.rs |
 |---|---|---|---|
@@ -189,7 +189,8 @@ beyond libc and libm.
   (refusing `CFF2`) and runs `cff::Font::parse`. A glyph that errors is drawn as tofu.
 - Start with the **callback** (one new extern function, `draw.c` swaps `MakeGlyphBitmap` for
   `stbtt_Rasterize` on CFF faces). Leave precomputing for the #8 refactor.
-- Keep `bench/cff-poc/fuzz.c` and the `craft.py` fonts as tests, and the stb differential as a
+- Keep `bench/cff-poc/fuzz.c` and the hand-made fonts (`src/cff_craft.rs`, which
+  `bench/cff-poc/craft.rs` writes) as tests, and the stb differential as a
   harness in the style of `tests/deflate_diff.c`. stb is the oracle on well-formed fonts.
 - Face selection is independent and can go first. All Noto CJK faces share their outlines, so
   it only changes which `cmap` is read.
@@ -296,7 +297,8 @@ HarfBuzz is the reference throughout, so each step is done as `hb_font_set_varia
   glyph) get the advances through a callback in the Face. As in HarfBuzz, an advance or extent
   may vary past the 16 bits hmtx and hhea hold: stb_glue.c works out the cell from any `int`
   (its differences in 64 bits, each length in pixels saturated at 2^28, past the largest image).
-  Checked against HarfBuzz 14.4.0 (`tools/cff2-metrics.py`, through libharfbuzz) on starship:
+  Checked against HarfBuzz 14.4.0 (`tools/cff2-metrics.py` then, `tools/cff2-metrics.sh` now,
+  through libharfbuzz) on starship:
   every advance and the extents of the subset at four instances and of a crafted font at
   seven (`metrics_tests.rs`; deltas of each width, a null ItemVariationData, an advance map
   with entries past the store), and of the full Noto font, Source Serif 4 and Adobe's

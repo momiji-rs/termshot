@@ -39,7 +39,7 @@ tests are ignored. `poc_workloads` writes inputs for `bench/c-vs-rust/` and chec
 `any_cff2_font_matches_harfbuzz` checks a CFF2 font of your own, at any instance, against the
 outlines `tools/cff2-outlines.sh` recorded from HarfBuzz, and
 `any_cff2_font_s_metrics_match_harfbuzz` its advances and extents against what
-`tools/cff2-metrics.py` recorded; their doc comments give the commands.
+`tools/cff2-metrics.sh` recorded; their doc comments give the commands.
 
 ## Measure
 

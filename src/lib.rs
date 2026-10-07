@@ -98,6 +98,8 @@ mod cff_tests;
 #[cfg(test)]
 mod draw_tests;
 #[cfg(test)]
+mod grid_json_tests;
+#[cfg(test)]
 mod metrics_tests;
 #[cfg(test)]
 mod palette_tests;

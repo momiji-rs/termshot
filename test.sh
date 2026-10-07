@@ -460,12 +460,6 @@ check "--json reports the palette's colours" 'cmp -s "$out/grid-palette.json" "$
 ./termshot --text "$out/pad.txt" --json "$out/pad.json" --padding 40 "$log" "$out/pad.png"
 check "padding changes no --text or --json" 'cmp -s "$out/pad.txt" "$out/text-png.txt" && cmp -s "$out/pad.json" "$out/both.json"'
 check "--padding without a PNG needs no font" './termshot --font README.md --padding 4 --text "$out/q.txt" "$log"'
-# Every golden's JSON parses, and its runs spell the --text rows.
-if command -v python3 >/dev/null; then
-    check "the golden JSON parses and agrees with --text" 'python3 tests/grids/check.py tests/grids'
-else
-    echo "skip: golden JSON check (no python3)"
-fi
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
@@ -490,6 +484,8 @@ rustc --edition 2021 tests/golden.rs -o "$out/golden" -C opt-level=2 \
     -L native="$PWD/$out" -l static=png_read
 if [ "$mode" = update ]; then
     "$out/golden" --update
+    # The unit tests checked the grids before they were rewritten.
+    "$out/unit" -q grid_json || fail=1
 else
     "$out/golden" || fail=1
 fi
@@ -530,5 +526,58 @@ rustc --edition 2021 tests/output_aliases.rs -o "$out/output_aliases"
 echo "== font messages"
 rustc --edition 2021 tests/font_cli.rs -o "$out/font_cli"
 "$out/font_cli" ./termshot "$out/hollow-A.ttf" || fail=1
+
+echo "== generated files are what their generators write"
+rustc --edition 2021 -O tools/crc32-table.rs -o "$out/crc32-table"
+"$out/crc32-table" > "$out/crc32_table.h"
+check "src/crc32_table.h is what tools/crc32-table.rs writes" 'cmp -s "$out/crc32_table.h" src/crc32_table.h'
+rustc --edition 2021 -O scripts/perf-fixtures.rs -o "$out/perf-fixtures"
+check "tests/perf/ is what scripts/perf-fixtures.rs writes" '"$out/perf-fixtures" --check >/dev/null'
+# The HarfBuzz metrics fixtures, recorded again where the HarfBuzz they name
+# is installed (the unit tests wrote the crafted font). Only a missing
+# library or another version skips them; a failed build or run fails.
+recorded=$(sed -n '1s/^# HarfBuzz \([^,]*\),.*/\1/p' tests/fixtures/cff2-metrics.txt)
+set +e
+metrics=$(tools/cff2-metrics.sh --build-only 2> "$out/hb-build.log")
+built=$?
+set -e
+installed=
+if [ "$built" -eq 0 ]; then
+    "$metrics" third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf "$out/hb.txt"
+    installed=$(sed -n '1s/^# HarfBuzz \([^,]*\),.*/\1/p' "$out/hb.txt")
+elif [ "$built" -ne 3 ]; then
+    cat "$out/hb-build.log"
+    echo "FAIL tools/cff2-metrics.sh --build-only exits $built"
+    fail=1
+fi
+if [ "$built" -eq 3 ]; then
+    echo "skip: HarfBuzz metrics fixtures (no libharfbuzz)"
+elif [ -n "$installed" ] && [ "$installed" != "$recorded" ]; then
+    echo "skip: HarfBuzz metrics fixtures (HarfBuzz $installed, they name $recorded)"
+elif [ -n "$installed" ]; then
+    for fixture in tests/fixtures/cff2-metrics*.txt tests/fixtures/metrics-crafted*.txt; do
+        case $fixture in
+        */cff2-metrics*) metrics_font=third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf ;;
+        *) metrics_font=target/test/metrics-crafted.otf ;;
+        esac
+        variations=$(sed -n 's/^# variations: //p' "$fixture")
+        "$metrics" ${variations:+"--variations=$variations"} "$metrics_font" "$out/hb.txt"
+        sed 1d "$out/hb.txt" > "$out/hb-now.txt"
+        sed 1d "$fixture" > "$out/hb-then.txt"
+        check "$fixture is what HarfBuzz $recorded gives" 'cmp -s "$out/hb-now.txt" "$out/hb-then.txt"'
+    done
+    echo "ok, the HarfBuzz $recorded metrics fixtures recorded again"
+elif [ "$built" -eq 0 ]; then
+    echo "FAIL tools/cff2-metrics.rs wrote no HarfBuzz version line"
+    fail=1
+fi
+# The CFF POC's fonts (src/cff_craft.rs, which the unit tests use too):
+# the control draws, a defect is refused.
+rustc --edition 2021 bench/cff-poc/craft.rs -o "$out/craft-fonts"
+mkdir -p "$out/craft"
+"$out/craft-fonts" "$out/craft"
+check "bench/cff-poc/craft.rs writes the POC's nine fonts" '[ "$(ls "$out/craft"/*.otf | wc -l)" -eq 9 ]'
+check "its control font draws" 'printf A | ./termshot --font "$out/craft/control.otf" - "$out/craft.png"'
+expect 1 --font "$out/craft/bad_offsize.otf" "$log" "$out/craft.png"
 
 exit "$fail"
