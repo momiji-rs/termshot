@@ -66,7 +66,7 @@ sample, the output hashes and sizes, and the metadata. Of the per-run
 `TERMSHOT_PROFILE` records, it keeps only the stages named with `--stage`
 (repeatable, e.g. `--stage parse_ms`). `--full-profile` keeps every stage
 and counter, which `scripts/bench-report.sh`'s stage table needs, at about ten times
-the size. `bench.sh --slim FULL.json --output SLIM.json [--stage KEY]`
+the size. `scripts/bench.sh --slim FULL.json --output SLIM.json [--stage KEY]`
 slims an existing full file. Commit the slim form, with only the stages a
 section cites. The files from earlier rounds are full; slimming them is a
 possible follow-up.
