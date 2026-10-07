@@ -129,9 +129,13 @@ fn a_font_without_glyf_is_refused_for_what_it_has_instead() {
 }
 
 /// Render with the vendored font, as both fonts when fallback is set, and
-/// return what the render reports about empty glyphs.
+/// return what the render reports about empty glyphs. Each text has a PNG
+/// of its own: the tests that call this run at once, and one file would
+/// hold whichever finished last.
 fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
     let font = font::prepare(fs::read(FONT).unwrap()).unwrap();
+    let name: String = text.chars().map(|c| format!("{:x}", u32::from(c))).collect::<Vec<_>>().join("-");
+    let path = format!("target/test/empty-glyphs-{name}{}.png", if fallback { "-fallback" } else { "" });
     let cells = parse(text.as_bytes(), cols, 2);
     // Not zeroed: the render must clear it.
     let mut empty = EmptyGlyphs { cp: 1, fonts: 9, col: 9, row: 9, cells: 9 };
@@ -140,7 +144,7 @@ fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
             let fallback = fallback.then_some(face.ffi());
             unsafe {
                 render::draw_png_images(&cells, &[], cols, 2, face.ffi(), fallback, 16.0,
-                    "target/test/empty-glyphs.png", false, &[], Some(&mut empty))
+                    &path, false, &[], Some(&mut empty))
             }
         })
         .unwrap();
