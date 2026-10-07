@@ -531,4 +531,9 @@ echo "== font messages"
 rustc --edition 2021 tests/font_cli.rs -o "$out/font_cli"
 "$out/font_cli" ./termshot "$out/hollow-A.ttf" || fail=1
 
+echo "== generated files are what their generators write"
+rustc --edition 2021 -O tools/crc32-table.rs -o "$out/crc32-table"
+"$out/crc32-table" > "$out/crc32_table.h"
+check "src/crc32_table.h is what tools/crc32-table.rs writes" 'cmp -s "$out/crc32_table.h" src/crc32_table.h'
+
 exit "$fail"
