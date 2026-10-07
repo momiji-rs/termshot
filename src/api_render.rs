@@ -15,7 +15,7 @@ use crate::glyphs::{EmptyGlyphs, EMPTY_IN_FALLBACK, EMPTY_IN_FONT};
 use crate::grid::Grid;
 use crate::palette::Palette;
 use crate::prepare;
-use crate::render::{self, Encoding, Failure};
+use crate::render::{self, Encoding, Failure, Site};
 use crate::screen::CursorShape;
 
 /// The built-in font, JetBrains Mono Regular, so a lone binary works.
@@ -389,17 +389,24 @@ fn draw_checked(grid: &Grid, font: &Font, options: &RenderOptions, encoding: Enc
     let (cols, rows) = (grid.cols, grid.rows);
     let cell = font.cell(options.px)?;
     let palette = Palette { foreground: grid.foreground, background: grid.background, ..Palette::DEFAULT };
-    let oom = |what: &str| Error::OutOfMemory(format!("out of memory for the {what} of a {cols}x{rows} grid"));
+    render::start_faults();
+    // The copies the cells are prepared in, made with try_reserve_exact.
+    fn reserve<T>(v: &mut Vec<T>, len: usize, what: &str, (cols, rows): (usize, usize)) -> Result<(), Error> {
+        if render::allowed(Site::Prepare) && v.try_reserve_exact(len).is_ok() {
+            return Ok(());
+        }
+        Err(Error::OutOfMemory(format!("out of memory for the {what} of a {cols}x{rows} grid")))
+    }
     let mut cells = Vec::new();
-    cells.try_reserve_exact(grid.cells.len()).map_err(|_| oom("cells"))?;
+    reserve(&mut cells, grid.cells.len(), "cells", (cols, rows))?;
     cells.extend_from_slice(&grid.cells);
     let mut marks: Vec<CellMarks> = Vec::new();
-    marks.try_reserve_exact(grid.marks.len()).map_err(|_| oom("combining marks"))?;
+    reserve(&mut marks, grid.marks.len(), "combining marks", (cols, rows))?;
     marks.extend_from_slice(&grid.marks);
     let marks = prepare::blank_placeholders(&mut cells, marks);
     let views = grid.images.iter().map(|placement| placement.views().count()).sum::<usize>();
     let mut images: Vec<ImageView> = Vec::new();
-    images.try_reserve_exact(views + 1).map_err(|_| oom("image views"))?;
+    reserve(&mut images, views + 1, "image views", (cols, rows))?;
     let cursor = match options.cursor {
         Cursor::FromGrid => grid.cursor,
         Cursor::Hidden => None,

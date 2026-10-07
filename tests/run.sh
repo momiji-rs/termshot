@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 ./build.sh
 scratch=$(mktemp -d)
-trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/render.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
+trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/render.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image" "$scratch/libtermshot-faults.rlib" "$scratch/library-faults"; rmdir "$scratch"' EXIT HUP INT TERM
 sanitize=''
 if [ "${SANITIZE:-0}" = 1 ]; then
     sanitize='-fsanitize=address,undefined -fno-omit-frame-pointer'
@@ -55,10 +55,11 @@ if [ "$n" -le 4 ]; then
 fi
 echo "ok, each of $((n - 1)) compressor allocation failures exits 2 and leaves no output"
 
-# Fail each of the render's own allocations in turn (src/render.rs: the
-# canvas, the PNG's buffer, which stb_image_write asks for through
-# termshot_png_alloc, then the Vec the PNG's bytes are returned in): the run
-# must exit 2, say which ran out, and leave no output. The fault build says which allocation failed; when none does, all
+# Fail each of the render's own allocations in turn (src/api_render.rs: the
+# copies of the cells, the marks and the image views it prepares; then
+# src/render.rs: the canvas, the PNG's buffer, which stb_image_write asks
+# for through termshot_png_alloc, and the Vec the PNG's bytes are returned
+# in): the run must exit 2, say which ran out, and leave no output. The fault build says which allocation failed; when none does, all
 # have been.
 n=1
 while :; do
@@ -75,7 +76,10 @@ while :; do
         exit 1
     fi
     case $n in
-        1) want="out of memory for a 2200x1440 image" ;;
+        1) want="out of memory for the cells of a 100x30 grid" ;;
+        2) want="out of memory for the combining marks of a 100x30 grid" ;;
+        3) want="out of memory for the image views of a 100x30 grid" ;;
+        4) want="out of memory for a 2200x1440 image" ;;
         *) want="out of memory encoding a 2200x1440 PNG" ;;
     esac
     if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
@@ -86,11 +90,53 @@ while :; do
     fi
     n=$((n + 1))
 done
-if [ "$n" -ne 4 ]; then
-    echo "FAIL $((n - 1)) render allocations failed, want the canvas, the PNG's buffer and its bytes" >&2
+if [ "$n" -ne 7 ]; then
+    echo "FAIL $((n - 1)) render allocations failed, want the three copies, the canvas, the PNG's buffer and its bytes" >&2
     exit 1
 fi
 echo "ok, each of $((n - 1)) render allocation failures exits 2 and leaves no output"
+
+# Fail each of the parser's allocations that grow with the grid in turn
+# (src/screen.rs: both screens' cells, the marks, the cells in screen
+# order): the run must exit 2, say so, and leave no output.
+printf 'e\314\201q\314\202\r\n%.0s' $(seq 40) > "$scratch/glyphs.pty"
+n=1
+while :; do
+    rm -f "$scratch/fault.png" "$scratch/fault.txt"
+    set +e
+    TERMSHOT_PARSE_FAIL_AT=$n "$scratch/termshot-faults" --text "$scratch/fault.txt" \
+        "$scratch/glyphs.pty" "$scratch/fault.png" 2>"$scratch/fault.err"
+    code=$?
+    set -e
+    if ! grep -q "parse allocation $n " "$scratch/fault.err"; then
+        [ "$code" -eq 0 ] && [ -e "$scratch/fault.png" ] && break
+        echo "FAIL with no parse allocation $n failing: exit $code" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
+        ! grep -q "out of memory replaying the log on a 100x30 grid" "$scratch/fault.err"; then
+        echo "FAIL parse allocation $n: exit $code, want 2 with no output left" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    n=$((n + 1))
+done
+# Both screens, the marks, the cells and the marks in screen order.
+if [ "$n" -ne 6 ]; then
+    echo "FAIL $((n - 1)) parse allocations failed, want 5" >&2
+    exit 1
+fi
+echo "ok, each of $((n - 1)) parse allocation failures exits 2 and leaves no output"
+
+# The same faults through the library, as an embedder links it: the rlib
+# built with the fault hook, and tests/library.rs, which fails each of a
+# render's allocations in turn (the render's, the compressor's and the
+# glyphs') and checks that each render returns Error::OutOfMemory.
+rustc --edition 2021 --crate-type rlib --crate-name termshot src/lib.rs -o "$scratch/libtermshot-faults.rlib" \
+    -C opt-level=2 --cfg termshot_alloc_faults -L native="$PWD" -l static=termshot_c
+rustc --edition 2021 tests/library.rs -o "$scratch/library-faults" --extern termshot="$scratch/libtermshot-faults.rlib"
+"$scratch/library-faults" --faults 2>"$scratch/fault.err" || { cat "$scratch/fault.err" >&2; exit 1; }
 
 # Fail each allocation of the box-drawing caches in turn (the arcs' offsets
 # and the strokes reused): the strokes are stamped afresh, so the run

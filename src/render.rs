@@ -319,7 +319,9 @@ pub fn verbose_line(m: &CellMetrics, (width, height): (i64, i64)) -> String {
 /// MAX_PIXELS. With `profiling`, the result holds the profile record's
 /// fields (Png only).
 ///
-/// It prints nothing and writes no file: each failure is a Failure.
+/// It prints nothing and writes no file: each failure is a Failure. The
+/// caller has called start_faults() for the render, as its own allocations
+/// count too.
 ///
 /// # Safety
 /// `font` and `fallback` must be faces of fonts that passed font::check
@@ -335,7 +337,6 @@ pub unsafe fn draw(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize
     }
     let profiling = profiling && encoding == Encoding::Png;
     deflate::termshot_deflate_profiling(c_int::from(profiling));
-    faults::start();
     let clock = Clock(profiling);
     let started = clock.now();
     // SAFETY: all zeros is a valid FontSetup (null pointers, no functions);
@@ -523,6 +524,7 @@ pub unsafe fn draw_png_with(cells: &[Cell], marks: &[CellMarks], cols: usize, ro
         eprintln!("termshot: {}", failure.message());
         failure.code()
     };
+    start_faults();
     if verbose {
         match cell_metrics(font, fallback, font_px) {
             Ok(m) => eprintln!("{}", verbose_line(&m, image_size(&m, cols, rows, options.padding).1)),
@@ -614,9 +616,19 @@ pub unsafe extern "C" fn draw_png(cells: *const Cell, cols: c_int, rows: c_int, 
     .unwrap_or(2)
 }
 
+/// Starts a render's count of allocations, for the fault tests (nothing
+/// outside them): what the library's render copies (src/api_render.rs),
+/// then draw's.
+pub(crate) fn start_faults() {
+    faults::start();
+}
+
 /// Where the render allocates. The fault tests fail each in turn.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Site {
+    /// The copies of the cells, the marks and the image views the
+    /// library's render prepares (src/api_render.rs).
+    Prepare,
     /// The canvas.
     Canvas,
     /// The PNG's own buffer, which stb_image_write asks for.
@@ -628,7 +640,7 @@ pub(crate) enum Site {
 
 /// Whether an allocation at `site` may go ahead (always, but for the fault
 /// tests).
-fn allowed(site: Site) -> bool {
+pub(crate) fn allowed(site: Site) -> bool {
     #[cfg(any(test, termshot_alloc_faults))]
     if faults::fail(site) {
         return false;
