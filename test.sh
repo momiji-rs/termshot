@@ -27,6 +27,14 @@ if [ "${SANITIZE:-}" = 1 ]; then
 fi
 
 ./build.sh
+# The bench harness (scripts/bench.rs, bench-report.rs) builds while the
+# tests run; "== bench harness" waits for it.
+mkdir -p target/scripts
+{ rustc --edition 2021 -O --crate-name bench scripts/bench.rs -o target/scripts/bench &&
+    rustc --edition 2021 -O --crate-name bench_report scripts/bench-report.rs -o target/scripts/bench-report &&
+    rustc --edition 2021 --test --crate-name bench_common scripts/bench_common.rs -o "$out/bench-common"
+} > "$out/bench-build.log" 2>&1 &
+bench_build=$!
 
 echo "== unit tests"
 # The library's (src/lib.rs, linking the C as build.sh does), then the CLI's
@@ -579,5 +587,53 @@ mkdir -p "$out/craft"
 check "bench/cff-poc/craft.rs writes the POC's nine fonts" '[ "$(ls "$out/craft"/*.otf | wc -l)" -eq 9 ]'
 check "its control font draws" 'printf A | ./termshot --font "$out/craft/control.otf" - "$out/craft.png"'
 expect 1 --font "$out/craft/bad_offsize.otf" "$log" "$out/craft.png"
+
+echo "== bench harness"
+# scripts/bench.sh and bench-report.sh against what the Python originals
+# (bench.py, bench-report.py) wrote, kept in tests/bench/: every suite's
+# workload inputs, a run of tests/bench/fake-termshot with the clock fixed
+# (TERMSHOT_BENCH_FAKE_CLOCK), and the tables of committed reports.
+if wait "$bench_build"; then
+    root=$(pwd -P)
+    # The float repr and division bugs the comparison with Python caught.
+    "$out/bench-common" -q > "$out/bench-common.log" 2>&1 || { cat "$out/bench-common.log"; fail=1; }
+    check "the bench workloads are the ones bench.py generated" \
+        'scripts/bench.sh --list-workloads --cjk-font third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf > "$out/bench-workloads.txt" &&
+        cmp -s "$out/bench-workloads.txt" tests/bench/workloads.txt'
+    rm -f "$out/bench-fake-state" "$out/bench-fake.json"
+    check "a bench run with the clock fixed prints what bench.py printed" \
+        'TERMSHOT_BENCH_FAKE_CLOCK=1 FAKE_STATE="$root/$out/bench-fake-state" scripts/bench.sh \
+            --binary a=tests/bench/fake-termshot --binary b=tests/bench/fake-termshot --reference a \
+            --runs 4 --warmups 1 --seed 3 --case reply-sent --case color-grid --case font-builtin --case text-kitty \
+            --cjk-font "$root/third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf" \
+            --verify-identical --stage total_ms --output "$out/bench-fake.json" > "$out/bench-fake-run.txt" &&
+        cmp -s "$out/bench-fake-run.txt" tests/bench/fake-run.txt'
+    # The host's machine, source and toolchain fields, and the checkout's path, vary.
+    # (--cjk-font names the subset, which the report lists anyway, so a host
+    # with the full collection installed lists no other font.)
+    touch "$out/bench-fake.json"
+    sed -e "s|$root|ROOT|g" \
+        -e 's|"machine":{[^}]*}|"machine":{"hostname":"host","cpu":"cpu","platform":"platform"}|' \
+        -e 's|"source":{[^}]*}|"source":{}|' -e 's|"toolchain":{[^}]*}|"toolchain":{}|' \
+        "$out/bench-fake.json" > "$out/fake-report.json"
+    check "and writes the report bench.py wrote" 'cmp -s "$out/fake-report.json" tests/bench/fake-report.json'
+    check "bench-report prints bench-report.py's tables of it" \
+        'scripts/bench-report.sh "$out/fake-report.json" --label b > "$out/bench-fake-report.md" &&
+        cmp -s "$out/bench-fake-report.md" tests/bench/fake-report.md'
+    check "bench-report: two full reports, paired" \
+        'scripts/bench-report.sh docs/performance-2026-10-03-prescan-macos-a.json docs/performance-2026-10-03-prescan-macos-b.json |
+        cmp -s - tests/bench/report-prescan.md'
+    check "bench-report: a slim report, six binaries" \
+        'scripts/bench-report.sh docs/performance-2026-10-05-release-probe-linux.json --label o2-fat | cmp -s - tests/bench/report-release-probe.md'
+    check "bench-report: cold runs" \
+        'scripts/bench-report.sh docs/performance-2026-10-03-linux-cold.json | cmp -s - tests/bench/report-linux-cold.md'
+    check "bench --slim keeps the stages named" \
+        'scripts/bench.sh --slim "$out/fake-report.json" --stage nope --output "$out/bench-slim.json" &&
+        grep -q "\"profile_stages_kept\":\[\"nope\"\]" "$out/bench-slim.json" && ! grep -q total_ms "$out/bench-slim.json"'
+else
+    cat "$out/bench-build.log"
+    echo "FAIL the bench harness does not build"
+    fail=1
+fi
 
 exit "$fail"

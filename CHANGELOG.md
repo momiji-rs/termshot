@@ -16,7 +16,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `scripts/build-baseline.sh` and `bench/cff-poc/craft.rs`. test.sh now
   checks that `src/crc32_table.h` and `tests/perf/` are what their generators
   write, and, where the HarfBuzz the fixtures name is installed, records the
-  metrics fixtures again. The benchmark scripts are still Python.
+  metrics fixtures again. The benchmark and its tables are Rust too
+  (`scripts/bench.sh`, `scripts/bench-report.sh`), with the same flags,
+  workloads, report JSON and tables as `bench.py` and `bench-report.py`. On
+  macOS the new harness costs about 1.1 ms less per run (Python forked itself
+  to start each one), so compare absolute macOS times only between reports
+  from the same harness.
 - The README is shorter and starts with what termshot is for, a quick start, a comparison
   with similar tools and the GitHub Action. The full CLI reference moved to `docs/usage.md`,
   images to `docs/images.md`, and building and testing to `CONTRIBUTING.md`. Release archives

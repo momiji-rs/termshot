@@ -20,7 +20,7 @@
    - whether a scene's backdrop goes by rows (16 MiB, 64 images) must agree;
    - then a few scenes at the CLI's sizes, past 16 MiB, so by rows.
 
-   Time: the C and the Rust painting bench.py's image screens, in
+   Time: the C and the Rust painting bench.rs's image screens, in
    alternating rounds, median per screen. TIME_ONLY=1 skips the pixels. */
 #include "draw.c"
 
@@ -221,7 +221,7 @@ static void random_scenes(int count) {
     }
 }
 
-/* bench.py's image screens: 100x30 cells, a 128x128 RGBA image put over
+/* bench.rs's image screens: 100x30 cells, a 128x128 RGBA image put over
    60x20 cells at z, and every third row of text on its own background. */
 typedef struct {
     Cell *cells;

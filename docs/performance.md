@@ -60,16 +60,54 @@ changelog) are traced, or marked unverified, in
 [Published claims and their evidence](#published-claims-and-their-evidence-checked-2026-10-03)
 at the end.
 
-**Result files.** Since #83, `scripts/bench.py` writes a slim result by
+**Result files.** Since #83, the benchmark (`scripts/bench.sh`) writes a slim result by
 default. It keeps every per-run wall, CPU, profiled-wall and peak-RSS
 sample, the output hashes and sizes, and the metadata. Of the per-run
 `TERMSHOT_PROFILE` records, it keeps only the stages named with `--stage`
 (repeatable, e.g. `--stage parse_ms`). `--full-profile` keeps every stage
-and counter, which `bench-report.py`'s stage table needs, at about ten times
-the size. `bench.py --slim FULL.json --output SLIM.json [--stage KEY]`
+and counter, which `scripts/bench-report.sh`'s stage table needs, at about ten times
+the size. `scripts/bench.sh --slim FULL.json --output SLIM.json [--stage KEY]`
 slims an existing full file. Commit the slim form, with only the stages a
 section cites. The files from earlier rounds are full; slimming them is a
 possible follow-up.
+
+**The harness.** Every report in this directory up to 2026-10-07 came from
+`scripts/bench.py` and its tables from `scripts/bench-report.py`. Both are
+now Rust (`scripts/bench.rs`, `scripts/bench-report.rs`, with Python's
+`random.Random`, `statistics` and `json` reproduced in
+`scripts/bench_common.rs`); `scripts/bench.sh` and `scripts/bench-report.sh`
+build them into `target/scripts/` on first use and take the same flags.
+Verified 2026-10-07 on macOS (Mac Studio, M2 Max) and Linux (starship),
+against Python 3.14.7:
+
+- The workloads are the same bytes: every case's input, command line and
+  metadata, for each suite and for `--case` selections (15 selections, up
+  to 48 cases each, on both hosts).
+- With the clock, CPU times, load averages and timestamp fixed on both
+  sides, the reports and stdout are byte-identical (29 runs per host:
+  references, seeds, slim and full profiles, the path checks, memory runs,
+  and every usage error, with the same exit status). Against the real
+  termshot, every field but the timings agrees: hashes, sizes, profile keys,
+  `machine`, `source`, cold runs on Linux.
+- `summary`, `paired_ratio` and the float formatting agree on 2,000 random
+  lists (ints, ties, huge and tiny floats); `--slim` writes the same file
+  for every report here (154 runs); `bench-report.sh` prints the same bytes
+  as `bench-report.py` for every report here, alone, with each of its
+  labels, and paired (375 runs; the 19 that stop on a missing key stop in
+  both).
+- What differs: `toolchain` no longer records `python3`, the slim note
+  names `bench.sh`, and the harness's own cost per run is lower on macOS.
+  The same binary measured 1.07 to 1.17 ms faster under the Rust harness
+  (median of three batches of 40 rounds: `text-reply-sent` 3.09 → 2.02 ms,
+  `reply-sent` 8.58 → 7.42, `dense-sgr` 31.23 → 30.06), because Python
+  forks itself to start each run. On Linux the difference is 0.0 to
+  0.16 ms. Compare absolute macOS times only between reports from the same
+  harness; ratios within a report are unaffected.
+
+`test.sh` checks the harness against what the Python wrote, kept in
+`tests/bench/`: the workload list with each input's SHA-256, a run of
+`tests/bench/fake-termshot` under `TERMSHOT_BENCH_FAKE_CLOCK=1`, and
+`bench-report.sh`'s tables of that run and of three reports here.
 
 ## Headline figures (0.3.0)
 
@@ -333,7 +371,7 @@ The files are slim, with no profile stage kept: dev
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
 for flavor in dev fat; do
   for batch in a:71 b:89; do
-    python3 scripts/bench.py --binary main=/tmp/main-$flavor --binary branch=/tmp/branch-$flavor \
+    scripts/bench.sh --binary main=/tmp/main-$flavor --binary branch=/tmp/branch-$flavor \
       --binary two=/tmp/two-$flavor --reference main --runs 40 --warmups 5 --memory-runs 5 \
       --verify-identical --cjk-font "$cjk" --seed "${batch#*:}" \
       --output "/tmp/lib-render-$flavor-${batch%%:*}.json"
@@ -514,7 +552,7 @@ RUSTFLAGS='-C lto=fat' ./build.sh && cp termshot /tmp/branch-fat
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
 for flavor in dev fat; do
   for batch in a:53 b:67; do
-    python3 scripts/bench.py --binary main=/tmp/main-$flavor --binary branch=/tmp/branch-$flavor \
+    scripts/bench.sh --binary main=/tmp/main-$flavor --binary branch=/tmp/branch-$flavor \
       --reference main --runs 40 --warmups 5 --memory-runs 5 --verify-identical --cjk-font "$cjk" \
       --seed "${batch#*:}" --output "/tmp/lib-parse-$flavor-${batch%%:*}.json"
   done
@@ -1016,13 +1054,13 @@ RUSTFLAGS='-C lto=fat' CFLAGS='-arch arm64' TARGET=aarch64-apple-darwin ./build.
 scripts/release.sh macos-universal
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
 for batch in a:53 b:67; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary base=/tmp/base/termshot --binary o2-fat=/tmp/o2-fat/termshot \
     --reference base --runs 40 --warmups 5 --memory-runs 5 \
     --verify-identical --cjk-font "$cjk" \
     --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
 done
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json --label o2-fat
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json --label o2-fat
 ```
 
 ## The render driver in Rust (2026-10-04, `cc29aed`, #12 step 2d)
@@ -1186,14 +1224,14 @@ git worktree add /tmp/termshot-main 48192f6 && (cd /tmp/termshot-main && ./build
 ./build.sh && cp termshot /tmp/termshot-branch
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
 for batch in a:17 b:29; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
     --describe main=48192f6 --describe branch=cc29aed \
     --reference main --runs 40 --warmups 5 --memory-runs 5 \
     --verify-identical --cjk-font "$cjk" \
     --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
 done
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json
 CJK_FONT="$cjk" bench/c-vs-rust/run.sh full 1
 ```
 
@@ -1392,14 +1430,14 @@ git worktree add /tmp/termshot-main c0b7b02 && (cd /tmp/termshot-main && ./build
 ./build.sh && cp termshot /tmp/termshot-branch
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
 for batch in a:17 b:29; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
     --describe main=c0b7b02 --describe branch=ab924ca \
     --reference main --runs 40 --warmups 5 --memory-runs 5 \
     --verify-identical --cjk-font "$cjk" \
     --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
 done
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json
 CJK_FONT="$cjk" bench/c-vs-rust/run.sh glyphs 61
 ```
 
@@ -1568,14 +1606,14 @@ git worktree add /tmp/termshot-main 431ed23 && (cd /tmp/termshot-main && ./build
 ./build.sh && cp termshot /tmp/termshot-branch
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
 for batch in a:17 b:29; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
     --describe main=431ed23 --describe branch=82c3f3d \
     --reference main --runs 40 --warmups 5 --memory-runs 5 \
     --verify-identical --cjk-font "$cjk" \
     --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
 done
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json
 bench/c-vs-rust/run.sh images 61
 ```
 
@@ -1759,14 +1797,14 @@ git worktree add /tmp/termshot-main 24d71fe && (cd /tmp/termshot-main && ./build
 ./build.sh && cp termshot /tmp/termshot-branch
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
 for batch in a:17 b:29; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
     --describe main=24d71fe --describe branch=629a4d4 \
     --reference main --runs 40 --warmups 5 --memory-runs 5 \
     --verify-identical --cjk-font "$cjk" \
     --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
 done
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json
 bench/c-vs-rust/run.sh geometry 61
 cc -O2 bench/c-vs-rust/sincos.c -lm -o /tmp/sincos && /tmp/sincos
 ```
@@ -2022,14 +2060,14 @@ git worktree add /tmp/termshot-main 63d6de8 && (cd /tmp/termshot-main && ./build
 ./build.sh && cp termshot /tmp/termshot-branch
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
 for batch in a:17 b:29; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary main=/tmp/termshot-main/termshot --binary branch=/tmp/termshot-branch \
     --describe main=63d6de8 --describe branch=6396b8d \
     --reference main --runs 40 --warmups 5 --memory-runs 5 \
     --verify-identical --cjk-font "$cjk" \
     --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
 done
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json
 bench/c-vs-rust/run.sh deflate 61        # CC=gcc or CC=clang on Linux
 ```
 
@@ -2107,7 +2145,7 @@ for a PNG.
 ```sh
 ./build.sh && cp termshot /tmp/ts/branch   # and main a8a95e0 as /tmp/ts/main
 for batch in a:17 b:29; do
-  python3 scripts/bench.py --suite text \
+  scripts/bench.sh --suite text \
     --binary main=/tmp/ts/main --binary branch=/tmp/ts/branch --reference main \
     --runs 40 --warmups 5 --memory-runs 5 --verify-identical \
     --seed "${batch#*:}" --output "/tmp/ts/text-${batch%%:*}.json"
@@ -2518,14 +2556,14 @@ aarch64 (GCC).
 scripts/build-baseline.sh /tmp/termshot-main --revision 5a832cd
 ./build.sh && cp termshot /tmp/termshot-branch
 for batch in a:17 b:29; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
     --describe main=5a832cd --describe branch=721d3fe \
     --reference main --runs 40 --warmups 5 --memory-runs 5 --verify-identical \
     --cjk-font /usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc \
     --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
 done
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json
 ```
 
 `--suite draw` runs only the painting workloads.
@@ -2827,14 +2865,14 @@ RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64' scripts/build-baseline.sh /tmp/ts
 RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64' ./build.sh && cp termshot /tmp/ts/branch-al
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # or a copy with the same sha256
 for batch in a:17 b:29; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary main=/tmp/ts/main/original --binary branch=/tmp/ts/branch \
     --binary main-al=/tmp/ts/main-al/original --binary branch-al=/tmp/ts/branch-al \
     --reference main --runs 40 --warmups 5 --memory-runs 5 \
     --verify-identical --cjk-font "$cjk" \
     --seed "${batch#*:}" --output "/tmp/ts/${batch%%:*}.json"
 done
-python3 scripts/bench.py ... --suite parser   # the five new logs alone
+scripts/bench.sh ... --suite parser   # the five new logs alone
 ```
 
 ## PNG compression: Adler-32 and DEFLATE matching (2026-10-03, `3bf2ffc`, #20)
@@ -3112,14 +3150,14 @@ scripts/build-baseline.sh /tmp/termshot-main --revision bb21b3c
 # Arch's copy; on macOS, point this at a copy of the same file (same sha256).
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc
 for batch in a:17 b:29; do
-  python3 scripts/bench.py \
+  scripts/bench.sh \
     --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
     --describe main=bb21b3c --describe branch=3bf2ffc \
     --reference main --runs 40 --warmups 5 --memory-runs 5 \
     --verify-identical --cjk-font "$cjk" \
     --seed "${batch#*:}" --output "/tmp/termshot-${batch%%:*}.json"
 done
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json
 ```
 
 ## Current baseline: font paths and Linux (2026-10-03, `d83c8fd`)
@@ -3443,16 +3481,16 @@ Two separate questions, both measured in the same interleaved rounds:
 ```sh
 scripts/build-baseline.sh /tmp/termshot-main --revision d83c8fd
 ./build.sh && cp termshot /tmp/termshot-branch
-python3 scripts/bench.py \
+scripts/bench.sh \
   --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
   --describe main=d83c8fd --describe branch="$(git rev-parse --short HEAD)" \
   --unchecked main --reference main --runs 40 --warmups 5 --memory-runs 5 \
   --verify-identical --cjk-font /usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc \
   --seed 17 --output /tmp/termshot-a.json        # again with --seed 29
-python3 scripts/bench.py ... --case font-builtin --case font-file \
+scripts/bench.sh ... --case font-builtin --case font-file \
   --case cjk-subset --case cjk-full --runs 5 --warmups 1 --cold-runs 15 \
   --seed 41 --output /tmp/termshot-cold.json      # Linux, passwordless sudo
-python3 scripts/bench-report.py /tmp/termshot-a.json /tmp/termshot-b.json
+scripts/bench-report.sh /tmp/termshot-a.json /tmp/termshot-b.json
 ```
 
 `--suite legacy` or `--suite fonts` runs one half; `--case` and `--cold-case`
@@ -3739,12 +3777,12 @@ Choose a baseline destination that does not exist:
 ```sh
 scripts/build-baseline.sh /tmp/termshot-baseline
 ./build.sh
-python3 scripts/bench.py \
+scripts/bench.sh \
   --binary baseline=/tmp/termshot-baseline/original \
   --binary optimized=./termshot --reference baseline \
   --runs 40 --warmups 5 --memory-runs 5 --verify-identical --seed 17 \
   --output /tmp/termshot-a.json
-python3 scripts/bench.py \
+scripts/bench.sh \
   --binary baseline=/tmp/termshot-baseline/original \
   --binary optimized=./termshot --reference baseline \
   --runs 40 --warmups 5 --memory-runs 5 --verify-identical --seed 29 \
@@ -3759,9 +3797,8 @@ and `--profile-patch` options.
 
 `TERMSHOT_PROFILE` is enabled by presence, including `0`, and emits two
 `termshot-profile ` JSON records to stderr. Timers are thread-local and rendering
-buffers/caches are per-call. Python is needed only for the benchmark scripts
-(`scripts/bench.py`, `scripts/bench-report.py`), not the build, the tests or
-the other tools.
+buffers/caches are per-call. Nothing here needs Python: the benchmark and its
+tables are Rust too (`scripts/bench.sh`, `scripts/bench-report.sh`).
 
 ### Where the historical “~20 ms” came from
 

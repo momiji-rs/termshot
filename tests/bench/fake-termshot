@@ -1,0 +1,34 @@
+#!/bin/sh
+# A stand-in for termshot that scripts/bench.sh can time without rendering
+# (test.sh runs it). It writes the base names of its other arguments to its
+# output: the file after --text, the second of the positional form, or else
+# the last argument. With TERMSHOT_PROFILE=1 it also prints two termshot-profile
+# records whose values count the profiled runs in $FAKE_STATE. $FAKE_EXTRA,
+# when set, goes into the output too, so two binaries can disagree.
+out= prev=
+for a; do
+    [ "$prev" = --text ] && out=$a
+    prev=$a
+done
+if [ -z "$out" ]; then
+    if [ $# -eq 6 ] && [ "${1#-}" = "$1" ]; then
+        out=$2
+    else
+        eval "out=\${$#}"
+    fi
+fi
+{
+    for a; do
+        [ "$a" = "$out" ] || printf '%s\n' "${a##*/}"
+    done
+    [ -z "${FAKE_EXTRA:-}" ] || printf '%s\n' "$FAKE_EXTRA"
+} > "$out"
+if [ "${TERMSHOT_PROFILE:-}" = 1 ]; then
+    n=$(cat "$FAKE_STATE" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    echo "$n" > "$FAKE_STATE"
+    echo "a line that is not a record" >&2
+    printf 'termshot-profile {"total_ms":%d.125,"parse_ms":0.0%d,"glyph_cache_evictions":%d,"font_builtin":1,"font_bytes":0}\n' \
+        $((n % 7 + 3)) $((n % 10)) $((n % 3)) >&2
+    printf 'termshot-profile {"total_ms":%d.5,"blend_ms":1e-3,"big_ms":1E17,"fallback_lookups":0}\n' $((n % 5 + 2)) >&2
+fi

@@ -584,7 +584,7 @@ fn stats(v: &mut [f64]) -> (f64, f64) {
 
 /// Python's random.Random(seed) for a seed below 2^32 (MT19937, seeded by
 /// init_by_array([seed])), with randrange as Python 3 computes it. Only for
-/// rebuilding scripts/bench.py's color-grid log byte for byte.
+/// rebuilding scripts/bench.rs's color-grid log byte for byte.
 struct PyRandom {
     mt: [u32; 624],
     i: usize,
@@ -648,7 +648,7 @@ impl PyRandom {
     }
 }
 
-/// The logs of the #20 round's cases from scripts/bench.py's
+/// The logs of the #20 round's cases from scripts/bench.rs's
 /// legacy_workloads: (name, log, px, cols, rows).
 fn bench_logs() -> Vec<(&'static str, Vec<u8>, u32, u32, u32)> {
     let mut rng = PyRandom::new(13);
@@ -770,7 +770,7 @@ fn idat(png: &[u8]) -> Vec<u8> {
 /// compressor was given, <name>.raw, to out. The poc_workloads logs
 /// (<name>.pty and <name>.meta "cols rows px") use the CLI's defaults, cursor
 /// included, so 1-reply-px48 is what a plain reply-sent run compresses. The
-/// #20 round's blank, color-grid and large use bench.py's positional form.
+/// #20 round's blank, color-grid and large use bench.rs's positional form.
 fn make_inputs(termshot: &str, poc: &str, out: &str) {
     let out = std::path::Path::new(out);
     std::fs::create_dir_all(out).unwrap();

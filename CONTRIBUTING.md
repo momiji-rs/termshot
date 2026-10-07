@@ -46,7 +46,7 @@ outlines `tools/cff2-outlines.sh` recorded from HarfBuzz, and
 ```sh
 TERMSHOT_PROFILE=1 ./termshot examples/reply-sent.pty /tmp/reply.png \
   third_party/jetbrains-mono/JetBrainsMono-Regular.ttf
-python3 scripts/bench.py --binary current=./termshot --runs 40 \
+scripts/bench.sh --binary current=./termshot --runs 40 \
   --output /tmp/termshot-bench.json
 SANITIZE=1 ./tests/run.sh
 ```
@@ -59,9 +59,9 @@ ordinary and profiled CLI runs in the same rounds, plus optional peak RSS and (o
 cold-cache runs; it records raw samples, means, medians, p95, child CPU time, paired
 comparisons, profiling overhead, output size and hash, and host, toolchain, source and font
 details. Each font-path case checks the profile counters that show it took its path
-(`scripts/bench-report.py` summarizes a result file). Python 3 is needed only for optional
-development scripts (benchmarks and CRC table generation); the tests need only a C compiler and
-rustc.
+(`scripts/bench-report.sh` summarizes a result file). Both are Rust, built into
+`target/scripts/` on first use. Nothing needs Python: the build, the tests and every tool
+need only a C compiler and rustc (and `tools/cff2-metrics.sh`, libharfbuzz).
 
 See [performance measurements](docs/performance.md) for the before/after results, baseline
 reproduction, timing boundaries, and remaining bottlenecks. Extended pixel tests retain main's

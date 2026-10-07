@@ -242,7 +242,7 @@ if [ "$mode" = glyphs ] || [ "$mode" = full ]; then
         rm -f "$work/out/c.png" "$work/out/rust.png"
         echo "ok, $n renders byte-identical to the CLI at $old_rev, with the same exit code and stderr"
     fi
-    # The glyph stages' time in each CLI (TERMSHOT_PROFILE): bench.py's text
+    # The glyph stages' time in each CLI (TERMSHOT_PROFILE): bench.rs's text
     # cases, glyph_ms finding and rasterizing, blend_ms blending, and
     # foreground_ms all of the text.
     echo "== glyph stages per render, median of $rounds alternating rounds (ms, Rust/C)"
