@@ -5,26 +5,66 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-06
+
+termshot 0.3.0 can be used as a Rust library: `termshot::parse` replays a
+log into a grid of cells and `termshot::render` draws it as a PNG in memory,
+with errors as values, built and linked with plain rustc and no Cargo. The
+CLI now takes a colour palette (`--palette`, `--fg`, `--bg`) and a margin
+(`--padding`), and draws kitty animations as a still. The CLI is a thin
+layer over the library; given the same log and options, it writes what
+0.2.0 wrote, byte for byte, except as listed below.
+
+Some 0.2.0 renders and runs change. Upgrading, expect:
+
+- **kitty animation commands take effect.** 0.2.0 ignored frame uploads
+  (`a=f`), composition (`a=c`), animation control (`a=a`) and frame
+  deletion (`d=f`, `d=F`), and drew the image as transmitted. Now an image
+  shows the frame an explicit `a=a` with `c` last made current, else its
+  root frame, as frames, edits and compositions built it. A log that never
+  makes another frame current, as `kitten icat` with a GIF, still shows the
+  root frame, but edits of the root, `a=c` onto it, a current frame chosen
+  with `a=a` and frame deletion now change the picture. Frames count against the
+  16 MiB image quota, so a log with many frames can evict images 0.2.0 kept.
+- **Out of memory exits 2 instead of aborting** when the screens of a large
+  grid or a font file's bytes can't be allocated, with "out of memory ..."
+  on stderr, and the outputs the run created are removed.
+- **"font metrics unusable" is printed once**, not twice.
+- **A font file named `-` is protected.** 0.2.0 overwrote it when an output
+  named the same file (`--font - log ./-`); now that is refused with exit 2,
+  as for any other input.
+- **`TERMSHOT_PROFILE`'s `face_ms` moved** from the CLI's record (the one
+  with `total_ms`) to the render's (the one with `output_write_ms`). A run
+  without a PNG still reports it in the CLI's record, as 0. The keys are
+  otherwise the same.
+
 ### Added
 
-- termshot can be used as a Rust library (#85). `build.sh` also builds
+- **termshot as a Rust library** (#85). `build.sh` also builds
   `libtermshot.rlib` from `src/lib.rs`, with no dependencies and the C it
-  needs inside; link it with `rustc --extern termshot=libtermshot.rlib`.
-  `termshot::parse` replays a log into a `Grid`, whose `to_text` and
-  `to_json` are byte for byte what `--text` and `--json` write, and
-  `termshot::render` draws it and returns the PNG's bytes, byte for byte
-  what the CLI writes with the same options (or `render_rgba`, the pixels).
-  `RenderOptions` takes the pixel size, a `Font` (the built-in one, a file
-  with the CLI's `#N`, `#NAME` and `#wght=...`, or bytes), a fallback,
-  padding, and the cursor and its shape; `Font::cell_size` gives the cell
-  that images placed by pixels move the cursor by. A character drawn as a
-  box for an empty glyph comes back as data (`Rendered::empty_glyph`).
-  Errors are values (`termshot::Error`, with the CLI's messages): the
-  library prints nothing of its own, never exits, and returns
-  `Error::OutOfMemory` rather than abort where an allocation grows with its
-  input; a panic in a render is caught as `Error::Internal`. Grids, fonts and renders can be
-  used from many threads at once. The CLI is a thin layer over this API,
-  with the same output bytes, messages and exit codes.
+  needs inside; link it with `rustc --edition 2021 app.rs --extern
+  termshot=libtermshot.rlib`, using the rustc that built it. The release
+  archives hold the CLI only; the library is built from source.
+  - `termshot::parse` replays a log into a `Grid` (`ParseOptions`: the LF
+    mode and the palette), whose cells, cursor and shape can be read, and
+    whose `to_text` and `to_json` are byte for byte what `--text` and
+    `--json` write. `parse_with_cell_size` parses with a font's cell
+    (`Font::cell_size`), for logs whose images move the cursor by pixels
+    (`needs_cell_size`); `decode_cast` and `is_cast` read asciicasts.
+  - `termshot::render` draws a grid and returns the PNG's bytes, byte for
+    byte what the CLI writes with the same options; `render_rgba` returns
+    the pixels. `RenderOptions` takes the pixel size, a `Font` (the built-in
+    one, a file with the CLI's `#N`, `#NAME` and `#wght=...`, or bytes), a
+    fallback font, padding, and the cursor and its shape. A character drawn
+    as a box for an empty glyph comes back as data
+    (`Rendered::empty_glyph`).
+  - Errors are values (`termshot::Error`, with the CLI's messages): the
+    library prints nothing of its own and never exits. Where an allocation
+    grows with the input it returns `Error::OutOfMemory` rather than abort
+    (the crate docs list what is still bounded otherwise), and a panic in a
+    render is caught as `Error::Internal`. A grid with no cells, a side over 65,535, or more
+    than 4,194,304 (2048 x 2048) cells is `Error::GridSize`.
+  - Grids, fonts and renders can be used from many threads at once.
 - **kitty animation, drawn as a still** (#44): frame uploads (`a=f`: new
   frames over a base frame `c` or a background colour `Y`, edits of frame
   `r`, blended or overwriting with `X`, in every format and chunked),
@@ -35,22 +75,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   counts are parsed and change nothing. Every placement, relative placement
   and Unicode placeholder shows the current frame. Frames count against the
   16 MiB image quota; an image may have 1,024 frames and a screen 16,384
-  past the roots, and composing is bounded per screen. Animated images used
-  to show only their first frame, as any image. See
+  past the roots, and a screen may compose 2^28 pixels in all. See
   [docs/kitty-graphics.md](docs/kitty-graphics.md#animation).
 - `--palette FILE` sets the default foreground and background and the 16
   named colours, in kitty's colour keys (`foreground`, `background`,
-  `color0` to `color15`, each with `#rrggbb`); `--fg` and `--bg` set the
-  default colours on their own. Colours 16 to 255 and 24-bit colours keep
-  their values. The palette applies as the log is replayed, so `--json`
-  reports the colours it resolves to, and the cursor, dim, conceal and
-  kitty's images below the cell backgrounds follow its default colours. A
-  malformed file exits 2 with its line; one that can't be read exits 1
-  (#87).
-- `--padding N` or `--padding X,Y` draws a margin of pixels around the
-  cells in the default background. Everything drawn moves by it, cut at the
-  cells' edges as before; the cell size, `--text` and `--json` don't
-  change, and the margin counts towards the 2^27-pixel limit (#87).
+  `color0` to `color15`, each with `#rrggbb`), so those lines of a kitty
+  theme work as they are; `--fg #RRGGBB` and `--bg #RRGGBB` set the default
+  colours on their own, over the file's. Colours 16 to 255 and 24-bit
+  colours keep their values. The palette applies as the log is replayed, so
+  `--json` reports the colours it resolves to, and the cursor, dim, conceal
+  and kitty's images below the cell backgrounds follow its default colours.
+  A malformed file (an unknown or repeated key, a bad colour, text that
+  isn't UTF-8, or over 64 KiB) exits 2 with its line; one that can't be
+  read exits 1 (#87).
+- `--padding N` or `--padding X,Y` draws a margin of 0 to 1024 pixels
+  around the cells in the default background. Everything drawn moves by it,
+  cut at the cells' edges as before; the cell size, `--text` and `--json`
+  don't change, and the margin counts towards the 2^27-pixel limit. `-v`
+  prints the padded size (#87).
+
+### Changed
+
+- The CLI (`src/main.rs`) is a crate of its own over the library's public
+  API, linking `libtermshot.rlib` as an embedder does, with the same output
+  bytes, messages and exit codes; no existing golden changed. Moving the
+  parser and the render into the library (#92, #93) was timed against the
+  main each started from: with fat LTO, as the release archives are built,
+  no case was slower on macOS, and on Linux two large-image cases were
+  1-2.5% slower, from code layout alone
+  ([docs/performance.md](docs/performance.md#the-render-as-a-library-2026-10-06-35c62b9-85-part-2)).
 
 ### Fixed
 
@@ -59,6 +112,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Running out of memory for the screens of a large grid, or for the font
   file's bytes, aborted; the CLI exits 2 with "out of memory ..." and
   removes the outputs it created, as for the render's own allocations.
+- A `--font` or `--fallback-font` file named `-` was not checked against
+  the outputs, so `./-` as an output overwrote it; it is refused with
+  exit 2, as for the log and the other inputs.
 
 ## [0.2.0] - 2026-10-06
 
@@ -437,6 +493,7 @@ Some 0.1.0 renders change. Upgrading, expect:
 - A wide character on a one-column screen panicked (exit 101). It now
   takes the one cell as a narrow character (#18).
 
-[Unreleased]: https://github.com/momiji-rs/termshot/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/momiji-rs/termshot/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/momiji-rs/termshot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/momiji-rs/termshot/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/momiji-rs/termshot/releases/tag/v0.1.0
