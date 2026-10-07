@@ -602,9 +602,12 @@ if wait "$bench_build"; then
         'TERMSHOT_BENCH_FAKE_CLOCK=1 FAKE_STATE="$root/$out/bench-fake-state" scripts/bench.sh \
             --binary a=tests/bench/fake-termshot --binary b=tests/bench/fake-termshot --reference a \
             --runs 4 --warmups 1 --seed 3 --case reply-sent --case color-grid --case font-builtin --case text-kitty \
+            --cjk-font "$root/third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf" \
             --verify-identical --stage total_ms --output "$out/bench-fake.json" > "$out/bench-fake-run.txt" &&
         cmp -s "$out/bench-fake-run.txt" tests/bench/fake-run.txt'
     # The host's machine, source and toolchain fields, and the checkout's path, vary.
+    # (--cjk-font names the subset, which the report lists anyway, so a host
+    # with the full collection installed lists no other font.)
     touch "$out/bench-fake.json"
     sed -e "s|$root|ROOT|g" \
         -e 's|"machine":{[^}]*}|"machine":{"hostname":"host","cpu":"cpu","platform":"platform"}|' \
