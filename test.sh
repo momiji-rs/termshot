@@ -497,7 +497,8 @@ echo "== the library, linked as an embedder links it"
 # After the goldens, which check tests/grids/ against the CLI: the library
 # must write the same grids.
 # shellcheck disable=SC2086
-rustc --edition 2021 tests/library.rs -o "$out/library" --extern termshot=libtermshot.rlib ${RUSTC_LINK_ARGS:-}
+rustc --edition 2021 tests/library.rs -o "$out/library" --extern termshot=libtermshot.rlib \
+    -L native="$PWD/$out" -l static=png_read ${RUSTC_LINK_ARGS:-}
 "$out/library" || fail=1
 echo "== the crate docs' examples"
 # They are no_run (they read session.pty), so rustdoc compiles and links

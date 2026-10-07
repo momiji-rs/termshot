@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 ./build.sh
 scratch=$(mktemp -d)
-trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/render.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image" "$scratch/libtermshot-faults.rlib" "$scratch/library-faults"; rmdir "$scratch"' EXIT HUP INT TERM
+trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/render.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image" "$scratch/libtermshot-faults.rlib" "$scratch/library-faults" "$scratch/png_read.o" "$scratch/libpng_read.a"; rmdir "$scratch"' EXIT HUP INT TERM
 sanitize=''
 if [ "${SANITIZE:-0}" = 1 ]; then
     sanitize='-fsanitize=address,undefined -fno-omit-frame-pointer'
@@ -137,7 +137,10 @@ echo "ok, each of $((n - 1)) parse allocation failures exits 2 and leaves no out
 # tests/library.rs, which fails each of a parse's and a render's
 # allocations in turn (the render's, the compressor's and the glyphs') and
 # checks that each returns Error::OutOfMemory.
-rustc --edition 2021 tests/library.rs -o "$scratch/library-faults" --extern termshot="$scratch/libtermshot-faults.rlib"
+cc -c tests/png_read.c -o "$scratch/png_read.o" -O2 -I third_party/stb
+ar rcs "$scratch/libpng_read.a" "$scratch/png_read.o"
+rustc --edition 2021 tests/library.rs -o "$scratch/library-faults" --extern termshot="$scratch/libtermshot-faults.rlib" \
+    -L native="$scratch" -l static=png_read
 "$scratch/library-faults" --faults 2>"$scratch/fault.err" || { cat "$scratch/fault.err" >&2; exit 1; }
 
 # Fail each allocation of the box-drawing caches in turn (the arcs' offsets

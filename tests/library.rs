@@ -6,7 +6,9 @@
 //!   tests/golden.rs checks the CLI's `--text` and `--json` against.
 //! - It draws every pixel golden's case (tests/golden_cases.rs) with
 //!   `termshot::render` and compares the PNG, byte for byte, with the one
-//!   the CLI wrote to target/test/ for tests/golden.rs.
+//!   the CLI wrote to target/test/ for tests/golden.rs, and draws it with
+//!   `termshot::render_rgba` and compares the pixels with that PNG's,
+//!   decoded by stb_image (tests/png_read.c, linked as golden.rs links it).
 //! - It reads cells, the cursor and casts through the API, returns every
 //!   error the API has, renders on twelve threads at once, and renders
 //!   hostile logs and options, which must return Ok or an error, never
@@ -19,6 +21,7 @@
 //!
 //! Built and run by test.sh, after the goldens, from the repo root.
 
+use std::ffi::{c_char, CStr, CString};
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::ExitCode;
@@ -32,6 +35,28 @@ mod golden_cases;
 const GRIDS: &str = "tests/grids";
 const OUT: &str = "target/test";
 const FONT: &str = "third_party/jetbrains-mono/JetBrainsMono-Regular.ttf";
+
+extern "C" {
+    fn png_read_rgba(path: *const c_char, width: *mut i32, height: *mut i32) -> *mut u8;
+    fn png_read_error() -> *const c_char;
+    fn png_read_free(pixels: *mut u8);
+}
+
+/// The RGBA pixels of the PNG at `path`, decoded by stb_image, and its size.
+fn decode(path: &str) -> Result<(u32, u32, Vec<u8>), String> {
+    let c_path = CString::new(path).map_err(|_| format!("{path}: nul in path"))?;
+    let (mut width, mut height) = (0, 0);
+    // SAFETY: png_read_rgba returns width * height RGBA pixels or null.
+    unsafe {
+        let pixels = png_read_rgba(c_path.as_ptr(), &mut width, &mut height);
+        if pixels.is_null() {
+            return Err(format!("{path}: {}", CStr::from_ptr(png_read_error()).to_string_lossy()));
+        }
+        let rgba = std::slice::from_raw_parts(pixels, width as usize * height as usize * 4).to_vec();
+        png_read_free(pixels);
+        Ok((width as u32, height as u32, rgba))
+    }
+}
 
 /// The log a grid comes from, as tests/golden.rs finds it.
 fn source(log: &str) -> Option<String> {
@@ -156,6 +181,12 @@ fn case_png(log: &str, px: &str, cols: u32, rows: u32, args: &[&str]) -> Result<
     let ihdr = |at: usize| u32::from_be_bytes([cli[at], cli[at + 1], cli[at + 2], cli[at + 3]]);
     if (rendered.width, rendered.height) != (ihdr(16), ihdr(20)) {
         return Err(format!("{name}: Rendered says {}x{}", rendered.width, rendered.height));
+    }
+    // The pixels render_rgba returns are the PNG's.
+    let image = termshot::render_rgba(&grid, &options).map_err(|error| format!("{name}: {error}"))?;
+    let (width, height, rgba) = decode(&path)?;
+    if (image.width, image.height) != (width, height) || image.rgba != rgba || image.empty_glyph != rendered.empty_glyph {
+        return Err(format!("{name}: render_rgba's {}x{} pixels differ from {path}'s", image.width, image.height));
     }
     Ok(())
 }
@@ -763,7 +794,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    println!("ok, {} PNGs byte for byte as the CLI writes them", golden_cases::CASES.len());
+    println!("ok, {} PNGs byte for byte as the CLI writes them, and render_rgba's pixels theirs", golden_cases::CASES.len());
     if !run(&[accessors, fonts, errors, findings, cursor_options, sizes, threads, cast, hostile]) {
         return ExitCode::FAILURE;
     }
