@@ -1471,4 +1471,23 @@ mod tests {
             assert_eq!(py_float_repr(value), want, "{value:e}");
         }
     }
+
+    #[test]
+    fn int_division_by_2_to_the_32_or_more_rounds_as_python() {
+        // Each of the first four is a case where dividing the two values as
+        // floats is off in the last digit; the naive quotient is the third.
+        let cases: [(i128, i128, &str, &str); 6] = [
+            (1231539773591854968456481802472166036, 1134287117256262144938919098, "1085739011.627707", "1085739011.6277068"),
+            (-229967558723986580288750073933687997, 870322308515071994416206671, "-264232637.1207846", "-264232637.12078464"),
+            (-692447181265884125851302152802230805, 907120143044188243146478296, "-763346714.9589612", "-763346714.9589614"),
+            (16352929007397123160021129265067220, 1064987165405413568806149739, "15355047.965457855", "15355047.965457857"),
+            (12884901889, 4294967296, "3.0000000002328306", "3.0000000002328306"),
+            (18446744073709551615, 18446744073709551613, "1.0", "1.0"),
+        ];
+        for (a, b, want, naive) in cases {
+            assert!(b.unsigned_abs() >= 1 << 32);
+            assert_eq!(py_float_repr(int_ratio(a, b)), want, "{a} / {b}");
+            assert_eq!(py_float_repr(a as f64 / b as f64), naive, "{a} / {b} as floats");
+        }
+    }
 }
