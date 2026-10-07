@@ -87,6 +87,14 @@ the CLI only; for the library, [build from source](#use-as-a-rust-library).
 sha256sum -c --ignore-missing SHA256SUMS    # or: shasum -a 256 -c --ignore-missing SHA256SUMS
 ```
 
+**From npm**, on the same platforms, with Node 18 or newer. The package runs the release
+binary, which npm installs for your platform as an optional dependency:
+
+```sh
+npx -y @momiji-rs/termshot session.pty session.png
+npm install -g @momiji-rs/termshot
+```
+
 **From source**, with a C compiler and rustc 1.70 or newer:
 
 ```sh
