@@ -71,6 +71,86 @@ slims an existing full file. Commit the slim form, with only the stages a
 section cites. The files from earlier rounds are full; slimming them is a
 possible follow-up.
 
+## Headline figures (0.3.0)
+
+This is the summary the README carried up to 0.3.0; the README now gives only the first
+table's rows and links here.
+
+How long a run takes depends on the log, the image size, the fonts, the disk
+cache and the machine, so termshot has no single latency figure. The current
+figures below come from the versioned rounds below,
+whose JSON files keep every raw sample of each round with the binary hashes,
+toolchains, fonts and inputs. Older figures at the end of this section are
+history: other revisions, and one with no retained samples.
+
+Current figures: measured 2026-10-05 with `scripts/bench.py` in the
+[release size profile round](#release-size-profile-2026-10-05-66780fc-83)
+(#83), on **release binaries**: built from `66780fc` as `scripts/release.sh`
+builds them (`build.sh`'s flags plus `-C lto=fat`, then `strip`). 0.2.0's
+code differed from `66780fc` only in its version string; 0.3.0 adds the
+palette, padding and kitty animation (not timed) and the library (#92, #93).
+Those two rounds, the
+[parser](#the-parser-as-a-library-2026-10-06-3c69f71-85-part-1)
+and the
+[render as a library](#the-render-as-a-library-2026-10-06-35c62b9-85-part-2),
+timed fat-LTO builds paired against the main each started from, not absolute
+figures: no case was slower on macOS, and on Linux two large-image cases were
+1-2.5% slower, from code layout. So the figures below are still the latest
+absolute ones. On macOS this is
+the arm64 slice of the universal binary; on Linux, the static x86_64 musl
+binary, run on the host. Each figure is the median of 40 **whole CLI
+runs**, wall time from spawn to exit: start-up, reading the log and the
+fonts, parsing, drawing, PNG encoding and closing the file, with a warm page
+cache and no `fsync`. They are not `TERMSHOT_PROFILE`'s internal stage
+timers, which leave out process start-up and exit. Two batches with
+different run orders are shown as A / B.
+
+| workload | grid / px | image | fonts | Apple M2 Max, macOS 26.6.2, arm64 slice (ms) | Ryzen 7 8745HS, Arch Linux, x86_64 musl (ms) |
+| --- | --- | --- | --- | ---: | ---: |
+| `examples/reply-sent.pty` (`font-builtin`) | 100×30 / 48 | 2200×1440 | built-in JetBrains Mono | 8.64 / 8.71 | 8.36 / 8.15 |
+| same log (`reply-24px`) | 100×30 / 24 | 1100×720 | JetBrains Mono file | 5.70 / 5.69 | 5.43 / 5.53 |
+| same log (`reply-128px`) | 100×30 / 128 | 5800×3840 | JetBrains Mono file | 28.74 / 28.64 | 23.90 / 23.65 |
+| `large` (generated) | 240×80 / 48 | 5280×3840 | JetBrains Mono file | 37.70 / 37.00 | 30.59 / 31.45 |
+| `ansi-replay` (`reply-sent.pty` × 250, 4.7 MB) | 100×30 / 48 | 2200×1440 | JetBrains Mono file | 18.57 / 18.39 | 17.23 / 17.10 |
+| `tests/perf/cjk-dense.pty` (`cjk-full`) | 100×30 / 24 | 1100×720 | built-in + `--fallback-font NotoSansCJK-Regular.ttc#3` (19 MB) | 12.63 / 12.74 | 13.67 / 13.27 |
+
+That round covers 48 workloads on each host. Their batch-A medians with a
+PNG range from 4.96 ms (`cjk-none`, macOS) and 4.17 ms (`blank`, Linux) to
+143.90 and 127.05 ms for `large-color` (240×80 on 216 background colours).
+The report also gives p95, child CPU time and peak RSS. These are two
+machines with warm caches; a different log, font, disk or a busy machine
+can take longer. The universal binary's x86_64 slice and the aarch64 Linux
+binary were not timed.
+
+Without a PNG, `--text` and `--json` read no font unless the log has an
+image that needs cell metrics. The 4.7 MB `ansi-replay` log as text
+(`--size 100x30 --text`, `text-ansi-replay`) takes 13.41 / 13.47 ms on the
+M2 Max and 10.82 / 10.49 ms on the Ryzen, in the same round. Before the
+[text-only pre-scan](#text-only-runs-one-pre-scan-instead-of-two-2026-10-03-macos-only)
+(main `a8a95e0`) it took 18.82 / 18.77 ms on the M2 Max.
+
+History. These rounds timed `build.sh` builds, not release binaries, and
+on Linux a glibc build. The
+[painting round](#painting-and-geometry-2026-10-03-721d3fe-22)
+(2026-10-03, `721d3fe`, after #20, #21 and #22, before the move to Rust)
+measured the same six rows at 8.90, 5.82, 28.82, 38.14, 18.47 and 12.38 ms
+on the M2 Max (`cjk-full` from the
+[parser round](#ansi-replay-parsing-2026-10-03-10f1ea1-21),
+`10f1ea1`) and 7.49, 5.17, 24.30, 34.26, 16.14 and 13.55 ms on the Ryzen.
+The first 2026-10-03 baseline, built from `22b77e8` before #20, #21 and #22
+(the report's
+[font-path baseline](#current-baseline-font-paths-and-linux-2026-10-03-d83c8fd)),
+measured them at 9.27, 5.83, 31.56, 41.91, 20.80 and 12.67 ms on the M2 Max
+and 9.64, 5.63, 38.06, 49.24, 19.69 and 14.85 ms on the Ryzen (batch-A CLI
+wall medians). Its Linux cold-cache run, the
+only one, found that dropping the page cache adds 6.9-8.2 ms to three
+small-font cases. Earlier rounds (2026-10-01, Apple M3, revisions up to
+`c44d83c`) used a different machine, revision and harness, so their numbers
+must not be subtracted from these. The "~20 ms for 2200×1440" quoted in
+older descriptions was a 21 ms mean of 40 hyperfine runs on that M3 at
+`fb714a5`, whose samples were not kept; the report records
+[what is known about it](#published-claims-and-their-evidence-checked-2026-10-03).
+
 ## The render as a library (2026-10-06, `35c62b9`, #85 part 2)
 
 #85's second part makes the render library API: `termshot::render` returns
