@@ -88,5 +88,25 @@ mkdir "$work/$name/docs"
 cp docs/usage.md docs/images.md "$work/$name/docs/"
 # The built-in font ships inside the binary, so its license ships with it.
 cp third_party/jetbrains-mono/OFL.txt "$work/$name/LICENSE-JetBrains-Mono.txt"
+# A relative link to a file the archive doesn't hold (docs/performance.md,
+# the sample image, CONTRIBUTING.md) points at the file in this version's tag.
+for md in README.md CHANGELOG.md docs/usage.md docs/images.md; do
+    dir=$(dirname "$md")
+    for target in $(grep -o ']([A-Za-z0-9_./-]*[#)]' "$work/$name/$md" | sed 's/^](//; s/.$//' | sort -u); do
+        case $target in
+            ../*) path=${target#../} ;;
+            *) if [ "$dir" = . ]; then path=$target; else path=$dir/$target; fi ;;
+        esac
+        [ -e "$work/$name/$path" ] && continue
+        [ -e "$path" ] || { echo "$md links to $target, which does not exist" >&2; exit 1; }
+        case $path in
+            *.md) url=https://github.com/momiji-rs/termshot/blob/v$version/$path ;;
+            *) url=https://github.com/momiji-rs/termshot/raw/v$version/$path ;;
+        esac
+        escaped=$(printf '%s' "$target" | sed 's/[.[\*^$]/\\&/g')
+        sed "s|](${escaped}\([#)]\)|](${url}\1|g" "$work/$name/$md" > "$work/link.tmp"
+        mv "$work/link.tmp" "$work/$name/$md"
+    done
+done
 tar -czf "dist/$name.tar.gz" -C "$work" "$name"
 echo "dist/$name.tar.gz"
