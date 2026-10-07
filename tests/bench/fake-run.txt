@@ -1,0 +1,8 @@
+font-builtin       a          median=    7.47 ms p95=    9.27 ms profiled x0.708
+font-builtin       b          median=    4.59 ms p95=    8.91 ms profiled x1.473
+reply-sent         a          median=    7.28 ms p95=    8.18 ms profiled x0.426
+reply-sent         b          median=    5.84 ms p95=    8.54 ms profiled x0.694
+color-grid         a          median=    4.93 ms p95=    9.97 ms profiled x1.110
+color-grid         b          median=    3.31 ms p95=    9.62 ms profiled x2.417
+text-kitty         a          median=    3.30 ms p95=    4.57 ms profiled x1.657
+text-kitty         b          median=    7.44 ms p95=    8.16 ms profiled x1.291

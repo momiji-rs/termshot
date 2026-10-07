@@ -1,8 +1,8 @@
 #!/bin/sh
 # A stand-in for termshot that scripts/bench.sh can time without rendering
-# (test.sh runs it). It writes the base names of its arguments to its output:
-# the file after --text, the second of the positional form, or else the last
-# argument. With TERMSHOT_PROFILE=1 it also prints two termshot-profile
+# (test.sh runs it). It writes the base names of its other arguments to its
+# output: the file after --text, the second of the positional form, or else
+# the last argument. With TERMSHOT_PROFILE=1 it also prints two termshot-profile
 # records whose values count the profiled runs in $FAKE_STATE. $FAKE_EXTRA,
 # when set, goes into the output too, so two binaries can disagree.
 out= prev=
@@ -19,7 +19,7 @@ if [ -z "$out" ]; then
 fi
 {
     for a; do
-        printf '%s\n' "${a##*/}"
+        [ "$a" = "$out" ] || printf '%s\n' "${a##*/}"
     done
     [ -z "${FAKE_EXTRA:-}" ] || printf '%s\n' "$FAKE_EXTRA"
 } > "$out"
