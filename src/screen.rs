@@ -145,6 +145,15 @@ pub(crate) fn reserved<T>(len: usize) -> Option<Vec<T>> {
     (faults::allowed() && v.try_reserve_exact(len).is_ok()).then_some(v)
 }
 
+/// Room for one more item in `v`, which grows as push would grow it, or
+/// None when memory runs out: for a Vec whose length isn't known ahead.
+pub(crate) fn grow<T>(v: &mut Vec<T>) -> Option<()> {
+    if v.len() < v.capacity() {
+        return Some(());
+    }
+    (faults::allowed() && v.try_reserve(v.len().max(16)).is_ok()).then_some(())
+}
+
 /// `len` copies of `value`, as vec! makes them, or None when memory runs
 /// out.
 fn filled<T: Clone>(len: usize, value: T) -> Option<Vec<T>> {

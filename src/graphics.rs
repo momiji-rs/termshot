@@ -1384,10 +1384,10 @@ struct Run {
 /// It inherits what it lacks. Any other cell starts a run, at row 0, column
 /// 0 and high byte 0 where it has no diacritic.
 ///
-/// None when memory for them runs out: a run per cell at most, room for
-/// which is made up front (crate::screen::reserved).
+/// None when memory for them runs out: the Vec grows as the runs come
+/// (crate::screen::grow), as a row of placeholders is often one run.
 fn runs(cells: &[PlaceholderCell]) -> Option<Vec<Run>> {
-    let mut runs: Vec<Run> = crate::screen::reserved(cells.len())?;
+    let mut runs: Vec<Run> = Vec::new();
     for c in cells {
         let [row, col, high] = c.marks.map(diacritic);
         if let Some(run) = runs.last_mut() {
@@ -1403,6 +1403,7 @@ fn runs(cells: &[PlaceholderCell]) -> Option<Vec<Run>> {
                 continue;
             }
         }
+        crate::screen::grow(&mut runs)?;
         runs.push(Run {
             row: c.row,
             start: c.col,
