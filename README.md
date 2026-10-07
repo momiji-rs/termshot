@@ -49,13 +49,14 @@ termshot draws one frame, with no animation and no window chrome.
 
 ## Quick start
 
-Download a release archive and render the bundled sample:
+Download a release archive and put the binary on your `PATH`:
 
 ```sh
 v=0.3.0 p=linux-x86_64-musl   # or linux-aarch64-musl, macos-universal
 curl -LO https://github.com/momiji-rs/termshot/releases/download/v$v/termshot-$v-$p.tar.gz
 tar -xzf termshot-$v-$p.tar.gz
-./termshot-$v-$p/termshot --version
+export PATH="$PWD/termshot-$v-$p:$PATH"
+termshot --version
 ```
 
 Then render some output:
@@ -148,8 +149,8 @@ format, fonts, collections and variable fonts, palettes and exit codes.
 
 ## In CI
 
-[termshot screens](https://github.com/momiji-rs/termshot-action) is a GitHub Action built on
-termshot. It runs your CLI or TUI in a real PTY, can send it keys, and screenshots it. On a pull
+[termshot screens](https://github.com/marketplace/actions/termshot-screens) is a GitHub Action
+built on termshot. It runs your CLI or TUI in a real PTY, can send it keys, and screenshots it. On a pull
 request it posts one comment, updated on every push, with each changed screen before and
 after, a diff image and a diff of the text:
 
@@ -165,7 +166,7 @@ after, a diff image and a diff of the text:
         snap selected
 ```
 
-Its [README](https://github.com/momiji-rs/termshot-action#readme) has the full setup: a
+[Its README](https://github.com/momiji-rs/termshot-action#readme) has the full setup: a
 read-only job that runs your code, and a separate job that publishes the comment.
 
 Without the Action, render in your own test job and compare `--text` output, or the PNG, with
