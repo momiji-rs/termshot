@@ -26,6 +26,18 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
+/// println!, flushed (bench.py printed with flush=True), quietly ending the
+/// run when stdout is gone (a closed pipe) instead of panicking.
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout().lock();
+        if writeln!(stdout, $($arg)*).and_then(|_| stdout.flush()).is_err() {
+            std::process::exit(1);
+        }
+    }};
+}
+
 const PROG: &str = "bench.sh";
 
 const USAGE: &str = "usage: bench.sh [-h] [--binary BINARY] [--describe DESCRIBE] [--runs RUNS]
@@ -1608,7 +1620,7 @@ fn main() {
             let mut sorted = plain[l].clone();
             sort_nums(&mut sorted);
             let p95 = sorted[(sorted.len() as f64 * 0.95).ceil() as usize - 1].f();
-            println!(
+            say!(
                 "{:18} {:10} median={:8.2} ms p95={:8.2} ms profiled x{:.3}",
                 case.name,
                 labels[l],
@@ -1653,7 +1665,7 @@ fn main() {
         cold_report.set(&case.name, Json::Obj(per));
         report.set("cold", Json::Obj(cold_report.clone()));
         for l in 0..n {
-            println!("{:18} {:10} cold median={:8.2} ms", case.name, labels[l], median(&cold[l]).f());
+            say!("{:18} {:10} cold median={:8.2} ms", case.name, labels[l], median(&cold[l]).f());
         }
     }
     let _ = std::fs::remove_dir_all(&directory);
@@ -1739,7 +1751,7 @@ fn list_workloads(paths: &Paths, suite: &str, wanted: &[String], cjk: Option<&st
         } else {
             let checks: Vec<String> = case.checks.iter().map(|(k, op, v)| format!("{k}{op}{v}")).collect();
             let fonts: Vec<String> = case.fonts.iter().map(|f| f.replace(&paths.root, ".")).collect();
-            println!(
+            say!(
                 "{} {} {}px {}x{} {} {} {} {} {} [{}] [{}]",
                 case.name,
                 case.group,
