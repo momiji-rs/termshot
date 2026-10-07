@@ -534,11 +534,27 @@ check "src/crc32_table.h is what tools/crc32-table.rs writes" 'cmp -s "$out/crc3
 rustc --edition 2021 -O scripts/perf-fixtures.rs -o "$out/perf-fixtures"
 check "tests/perf/ is what scripts/perf-fixtures.rs writes" '"$out/perf-fixtures" --check >/dev/null'
 # The HarfBuzz metrics fixtures, recorded again where the HarfBuzz they name
-# is installed (the unit tests wrote the crafted font).
+# is installed (the unit tests wrote the crafted font). Only a missing
+# library or another version skips them; a failed build or run fails.
 recorded=$(sed -n '1s/^# HarfBuzz \([^,]*\),.*/\1/p' tests/fixtures/cff2-metrics.txt)
-if metrics=$(tools/cff2-metrics.sh --build-only 2>/dev/null) &&
-    "$metrics" third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf "$out/hb.txt" &&
-    [ "$(sed -n '1s/^# HarfBuzz \([^,]*\),.*/\1/p' "$out/hb.txt")" = "$recorded" ]; then
+set +e
+metrics=$(tools/cff2-metrics.sh --build-only 2> "$out/hb-build.log")
+built=$?
+set -e
+installed=
+if [ "$built" -eq 0 ]; then
+    "$metrics" third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf "$out/hb.txt"
+    installed=$(sed -n '1s/^# HarfBuzz \([^,]*\),.*/\1/p' "$out/hb.txt")
+elif [ "$built" -ne 3 ]; then
+    cat "$out/hb-build.log"
+    echo "FAIL tools/cff2-metrics.sh --build-only exits $built"
+    fail=1
+fi
+if [ "$built" -eq 3 ]; then
+    echo "skip: HarfBuzz metrics fixtures (no libharfbuzz)"
+elif [ -n "$installed" ] && [ "$installed" != "$recorded" ]; then
+    echo "skip: HarfBuzz metrics fixtures (HarfBuzz $installed, they name $recorded)"
+elif [ -n "$installed" ]; then
     for fixture in tests/fixtures/cff2-metrics*.txt tests/fixtures/metrics-crafted*.txt; do
         case $fixture in
         */cff2-metrics*) metrics_font=third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf ;;
@@ -551,8 +567,9 @@ if metrics=$(tools/cff2-metrics.sh --build-only 2>/dev/null) &&
         check "$fixture is what HarfBuzz $recorded gives" 'cmp -s "$out/hb-now.txt" "$out/hb-then.txt"'
     done
     echo "ok, the HarfBuzz $recorded metrics fixtures recorded again"
-else
-    echo "skip: HarfBuzz metrics fixtures (no libharfbuzz $recorded)"
+elif [ "$built" -eq 0 ]; then
+    echo "FAIL tools/cff2-metrics.rs wrote no HarfBuzz version line"
+    fail=1
 fi
 # The CFF POC's fonts (src/cff_craft.rs, which the unit tests use too):
 # the control draws, a defect is refused.
