@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-07
+
 ### Changed
 
 - The npm package asks for Node 22 or newer (`engines`), the oldest Node
@@ -531,7 +533,8 @@ Some 0.1.0 renders change. Upgrading, expect:
 - A wide character on a one-column screen panicked (exit 101). It now
   takes the one cell as a narrow character (#18).
 
-[Unreleased]: https://github.com/momiji-rs/termshot/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/momiji-rs/termshot/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/momiji-rs/termshot/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/momiji-rs/termshot/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/momiji-rs/termshot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/momiji-rs/termshot/compare/v0.1.0...v0.2.0
