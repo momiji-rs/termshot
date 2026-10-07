@@ -672,11 +672,11 @@ fn faults() -> Result<(), String> {
             }
         }
         // The copies of the cells, the marks and the image views, the
-        // canvas, the PNG's buffer and its bytes; the compressor's hash
-        // table, its counts and its output; the glyph cache, the scratch
-        // and the bitmaps.
+        // canvas and the PNG's buffer; the compressor's hash table, its
+        // counts and its output; the glyph cache, the scratch and the
+        // bitmaps.
         let least = match site {
-            "TERMSHOT_RENDER_FAIL_AT" => 6,
+            "TERMSHOT_RENDER_FAIL_AT" => 5,
             "TERMSHOT_DEFLATE_FAIL_AT" => 3,
             _ => 8,
         };

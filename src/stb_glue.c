@@ -42,9 +42,13 @@ static double now_ms(void) {
    when memory runs out. */
 unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality);
 #define STBIW_ZLIB_COMPRESS termshot_zlib_compress
-/* The PNG's own buffer comes from malloc through Rust (src/render.rs), so
-   the fault tests can fail it as they fail the compressor's; the
-   compressor's buffer, which stb frees, is malloc's too. */
+/* The PNG's own buffer, the only one stbiw__write_png_from_filtered asks
+   STBIW_MALLOC for, is a Rust Vec's (src/render.rs), which the render
+   returns as it is, and which the fault tests can fail as they fail the
+   compressor's; stb never frees it. The compressor's buffer, which stb
+   frees, is malloc's. stb's functions that would STBIW_FREE or
+   STBIW_REALLOC a buffer of STBIW_MALLOC's (its own zlib compressor, the
+   file writers) are never called. */
 void *termshot_png_alloc(size_t size);
 #define STBIW_MALLOC(size) termshot_png_alloc(size)
 #define STBIW_REALLOC(p, size) realloc(p, size)

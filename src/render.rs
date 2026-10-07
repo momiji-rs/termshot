@@ -34,8 +34,9 @@
 //! Memory: the canvas is made with alloc_zeroed, so running out of memory
 //! fails the render (Failure::Canvas, exit 2: "out of memory for a WxH
 //! image") instead of aborting; so does an allocation the PNG encoder makes
-//! (its buffer, through termshot_png_alloc, or the compressor's) and the
-//! Vec the bytes are returned in (try_reserve_exact). The canvas, the glyph
+//! (its buffer, through termshot_png_alloc, or the compressor's). stb's
+//! buffer is the Vec the PNG is returned in, so it is never copied. The
+//! canvas, the glyph
 //! cache and the box-drawing cache are the render's own, and the profile
 //! clocks and fault counters are per thread, so concurrent renders stay
 //! independent.
@@ -114,18 +115,51 @@ extern "C" {
     /// with `profile`, the clock at its four stages in `marks`.
     fn termshot_png_encode(filtered: *mut u8, w: c_int, h: c_int, profile: c_int, marks: *mut [f64; 4],
                            len: *mut c_int) -> *mut u8;
-    fn malloc(size: usize) -> *mut c_void;
-    fn free(p: *mut c_void);
 }
 
-/// STBIW_MALLOC in stb_glue.c: malloc, but where the fault tests fail it.
+thread_local! {
+    /// The PNG's buffer while stb fills it: the Vec termshot_png_alloc
+    /// made, as its pointer and capacity, which png_bytes takes back.
+    static PNG_BUFFER: std::cell::Cell<Option<(*mut u8, usize)>> = std::cell::Cell::new(None);
+}
+
+/// STBIW_MALLOC in stb_glue.c, which stb_image_write calls once per PNG,
+/// for the PNG's own buffer: a Vec's, made with try_reserve_exact, so the
+/// render returns it as it is, with no copy (png_bytes). Null when memory
+/// runs out, which stb checks, and where the fault tests fail it, or if a
+/// buffer is already out (stb never asks for two).
 #[no_mangle]
 pub extern "C" fn termshot_png_alloc(size: usize) -> *mut c_void {
-    if !allowed(Site::Png) {
+    if !allowed(Site::Png) || PNG_BUFFER.with(|buffer| buffer.get().is_some()) {
         return std::ptr::null_mut();
     }
-    // SAFETY: malloc of any size; null when it fails, which stb checks.
-    unsafe { malloc(size) }
+    let mut buffer = Vec::<u8>::new();
+    if buffer.try_reserve_exact(size).is_err() {
+        return std::ptr::null_mut();
+    }
+    let mut buffer = std::mem::ManuallyDrop::new(buffer);
+    let (data, capacity) = (buffer.as_mut_ptr(), buffer.capacity());
+    PNG_BUFFER.with(|buffer| buffer.set(Some((data, capacity))));
+    data as *mut c_void
+}
+
+/// The Vec termshot_png_alloc made, holding the `len` bytes of `png` that
+/// stb returned (null when it failed: then the buffer, if one was made, is
+/// freed). None for a null `png`.
+///
+/// # Safety
+/// `png` and `len` are termshot_png_encode's result, on this thread.
+unsafe fn png_bytes(png: *mut u8, len: usize) -> Option<Vec<u8>> {
+    let buffer = PNG_BUFFER.with(|buffer| buffer.take());
+    match buffer {
+        // SAFETY: the Vec's own pointer and capacity, stb's bytes in it.
+        Some((data, capacity)) if data == png && len <= capacity => Some(Vec::from_raw_parts(data, len, capacity)),
+        Some((data, capacity)) => {
+            drop(Vec::from_raw_parts(data, 0, capacity));
+            None
+        }
+        None => None,
+    }
 }
 
 /// The canvas's filtered scanlines (`filtered` in Canvas), zeroed, freed on
@@ -199,8 +233,7 @@ pub enum Failure {
     BoxDrawing,
     /// A painter failed or panicked (a bug; exit 2).
     Painting,
-    /// The PNG encoder, its compressor, or the bytes returned could not be
-    /// allocated (exit 2).
+    /// The PNG encoder or its compressor could not allocate (exit 2).
     Encode { width: i64, height: i64 },
     /// The RGBA pixels returned could not be allocated (exit 2).
     Rgba { width: i64, height: i64 },
@@ -431,16 +464,11 @@ pub unsafe fn draw(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize
     let png = termshot_png_encode(raster.data, width as c_int, height as c_int, c_int::from(profiling),
                                   &mut png_marks, &mut png_len);
     // stb returns null only when an allocation failed, its own or the
-    // compressor's. The bytes are copied into a Vec the caller owns, which
-    // may fail too.
-    let bytes = (!png.is_null()).then(|| {
-        let bytes = copied(std::slice::from_raw_parts(png, png_len.max(0) as usize));
-        free(png as *mut c_void);
-        bytes
-    });
+    // compressor's; its buffer is the Vec returned.
+    let bytes = png_bytes(png, png_len.max(0) as usize);
     let encoded = clock.now();
     drop(raster);
-    let Some(Some(bytes)) = bytes else {
+    let Some(bytes) = bytes else {
         return Err(Failure::Encode { width, height });
     };
     let profile = profiling.then(|| {
@@ -460,16 +488,6 @@ pub unsafe fn draw(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize
         )
     });
     Ok(Drawn { bytes, width: width as u32, height: height as u32, profile })
-}
-
-/// `bytes` in a Vec of their own, or None when memory runs out.
-fn copied(bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    if !allowed(Site::Bytes) || out.try_reserve_exact(bytes.len()).is_err() {
-        return None;
-    }
-    out.extend_from_slice(bytes);
-    Some(out)
 }
 
 /// The RGBA pixels of `filtered`'s scanlines (`stride` bytes apart, each a
@@ -633,8 +651,7 @@ pub(crate) enum Site {
     Canvas,
     /// The PNG's own buffer, which stb_image_write asks for.
     Png,
-    /// The bytes returned: the PNG's, copied out of stb's buffer, or the
-    /// RGBA pixels.
+    /// The RGBA pixels render_rgba returns.
     Bytes,
 }
 

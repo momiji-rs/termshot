@@ -374,9 +374,9 @@ fn a_failed_glyph_allocation_fails_the_render() {
     assert!(fail > 6, "only {} allocations", fail - 1);
 }
 
-/// The render's own allocations, the canvas, the PNG's buffer (which
-/// stb_image_write asks for through termshot_png_alloc) and the bytes it
-/// returns, fail it each in turn: the render returns 2, which main makes
+/// The render's own allocations, the canvas and the PNG's buffer (which
+/// stb_image_write asks for through termshot_png_alloc, and the render
+/// returns), fail it each in turn: the render returns 2, which main makes
 /// exit 2, and writes no PNG. tests/run.sh fails them through the CLI too.
 #[test]
 fn a_failed_render_allocation_fails_the_render() {
@@ -404,7 +404,7 @@ fn a_failed_render_allocation_fails_the_render() {
         }
         fail += 1;
     }
-    assert_eq!(sites, [Site::Canvas, Site::Png, Site::Bytes]);
+    assert_eq!(sites, [Site::Canvas, Site::Png]);
 }
 
 /// Written for test.sh's CLI checks, which run after these tests.
