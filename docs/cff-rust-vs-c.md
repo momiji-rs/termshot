@@ -296,7 +296,8 @@ HarfBuzz is the reference throughout, so each step is done as `hb_font_set_varia
   glyph) get the advances through a callback in the Face. As in HarfBuzz, an advance or extent
   may vary past the 16 bits hmtx and hhea hold: stb_glue.c works out the cell from any `int`
   (its differences in 64 bits, each length in pixels saturated at 2^28, past the largest image).
-  Checked against HarfBuzz 14.4.0 (`tools/cff2-metrics.py`, through libharfbuzz) on starship:
+  Checked against HarfBuzz 14.4.0 (`tools/cff2-metrics.py` then, `tools/cff2-metrics.sh` now,
+  through libharfbuzz) on starship:
   every advance and the extents of the subset at four instances and of a crafted font at
   seven (`metrics_tests.rs`; deltas of each width, a null ItemVariationData, an advance map
   with entries past the store), and of the full Noto font, Source Serif 4 and Adobe's

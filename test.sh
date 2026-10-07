@@ -533,6 +533,26 @@ rustc --edition 2021 -O tools/crc32-table.rs -o "$out/crc32-table"
 check "src/crc32_table.h is what tools/crc32-table.rs writes" 'cmp -s "$out/crc32_table.h" src/crc32_table.h'
 rustc --edition 2021 -O scripts/perf-fixtures.rs -o "$out/perf-fixtures"
 check "tests/perf/ is what scripts/perf-fixtures.rs writes" '"$out/perf-fixtures" --check >/dev/null'
+# The HarfBuzz metrics fixtures, recorded again where the HarfBuzz they name
+# is installed (the unit tests wrote the crafted font).
+recorded=$(sed -n '1s/^# HarfBuzz \([^,]*\),.*/\1/p' tests/fixtures/cff2-metrics.txt)
+if metrics=$(tools/cff2-metrics.sh --build-only 2>/dev/null) &&
+    "$metrics" third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf "$out/hb.txt" &&
+    [ "$(sed -n '1s/^# HarfBuzz \([^,]*\),.*/\1/p' "$out/hb.txt")" = "$recorded" ]; then
+    for fixture in tests/fixtures/cff2-metrics*.txt tests/fixtures/metrics-crafted*.txt; do
+        case $fixture in
+        */cff2-metrics*) metrics_font=third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.otf ;;
+        *) metrics_font=target/test/metrics-crafted.otf ;;
+        esac
+        variations=$(sed -n 's/^# variations: //p' "$fixture")
+        "$metrics" ${variations:+"--variations=$variations"} "$metrics_font" "$out/hb.txt"
+        sed 1d "$out/hb.txt" > "$out/hb-now.txt"
+        sed 1d "$fixture" > "$out/hb-then.txt"
+        check "$fixture is what HarfBuzz $recorded gives" 'cmp -s "$out/hb-now.txt" "$out/hb-then.txt"'
+    done
+else
+    echo "skip: HarfBuzz metrics fixtures (no libharfbuzz $recorded)"
+fi
 # The CFF POC's fonts (src/cff_craft.rs, which the unit tests use too):
 # the control draws, a defect is refused.
 rustc --edition 2021 bench/cff-poc/craft.rs -o "$out/craft-fonts"

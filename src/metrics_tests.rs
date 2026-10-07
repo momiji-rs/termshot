@@ -25,7 +25,7 @@ fn drawn(font: &font::Font, count: usize) -> (Vec<i32>, [i32; 3]) {
 }
 
 /// Check the font at `path` against `reference`, which
-/// tools/cff2-metrics.py wrote, at the instance it names. Returns the
+/// tools/cff2-metrics.sh wrote, at the instance it names. Returns the
 /// glyphs checked and how many of them the instance moved.
 fn matches_harfbuzz(path: &str, reference: &str) -> (usize, usize) {
     let axes = reference.lines().find_map(|line| line.strip_prefix("# variations: ")).map(String::from);
@@ -71,7 +71,7 @@ fn every_advance_of_a_cff2_font_matches_harfbuzz() {
 /// Any variable CFF2 font against HarfBuzz, at any instance: record its
 /// metrics, then check them, with no change here.
 ///
-///     tools/cff2-metrics.py --variations=wght=700 FONT OUT
+///     tools/cff2-metrics.sh --variations=wght=700 FONT OUT
 ///     TERMSHOT_CFF2_FONT=FONT TERMSHOT_CFF2_METRICS=OUT ./target/test/unit --ignored any_cff2_font_s_metrics
 ///
 /// Without the variables it checks nothing.
@@ -345,7 +345,7 @@ fn metrics_past_16_bits_size_the_cell_without_overflow() {
 /// metrics-crafted-*.txt names. The font is written to
 /// target/test/metrics-crafted.otf; after changing it, record them again:
 ///
-///     tools/cff2-metrics.py --variations=ax0=1,ax1=1 target/test/metrics-crafted.otf \
+///     tools/cff2-metrics.sh --variations=ax0=1,ax1=1 target/test/metrics-crafted.otf \
 ///         tests/fixtures/metrics-crafted-ax0=1,ax1=1.txt
 #[test]
 fn crafted_metrics_match_harfbuzz() {
