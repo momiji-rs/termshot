@@ -477,7 +477,14 @@ pub fn py_float_repr(f: f64) -> String {
     if f.is_infinite() {
         return if f > 0.0 { "inf" } else { "-inf" }.to_string();
     }
-    let sci = format!("{:e}", f); // shortest round-trip digits: "-1.2345e-5"
+    // The shortest digits that read back as f ("-1.2345e-5"), then, at that
+    // length, the digits nearest f's exact value, ties to even, as Python's
+    // dtoa picks between two candidates as near (642059682355646.25 is
+    // 642059682355646.2, where Rust's shortest form says .3).
+    let shortest = format!("{:e}", f);
+    let len = shortest.split_once('e').unwrap().0.chars().filter(|c| c.is_ascii_digit()).count();
+    let nearest = format!("{:.*e}", len - 1, f);
+    let sci = if nearest.parse::<f64>() == Ok(f) { nearest } else { shortest };
     let (mantissa, exp) = sci.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let (sign, mantissa) = match mantissa.strip_prefix('-') {
@@ -648,9 +655,38 @@ fn int_ratio(a: i128, b: i128) -> f64 {
     }
     match u32::try_from(ub) {
         Ok(d) => ratio_to_f64(neg, Big::from_u128(ua), d, 0),
-        // Not met in a report: two huge integers.
-        Err(_) => a as f64 / b as f64,
+        Err(_) => big_ratio(neg, ua, ub),
     }
+}
+
+/// ua / ub correctly rounded for a divisor of 2^32 or more: 55 quotient bits
+/// by long division, then the rounding of ratio_to_f64.
+fn big_ratio(neg: bool, ua: u128, ub: u128) -> f64 {
+    let la = 128 - ua.leading_zeros() as i64;
+    let lb = 128 - ub.leading_zeros() as i64;
+    let k = 55 - (la - lb);
+    // a * 2^k / b, with a and b as Bigs so the shift cannot overflow.
+    let (num, den) = if k >= 0 {
+        (Big::from_u128(ua).shl(k as usize), Big::from_u128(ub))
+    } else {
+        (Big::from_u128(ua), Big::from_u128(ub).shl((-k) as usize))
+    };
+    let mut q = 0u64;
+    let mut rem = Big::zero();
+    for i in (0..num.bits()).rev() {
+        rem = rem.shl(1);
+        if num.0[i / 32] >> (i % 32) & 1 == 1 {
+            rem = rem.add(&Big::from_u128(1));
+        }
+        q <<= 1;
+        if rem.cmp(&den) != std::cmp::Ordering::Less {
+            rem = rem.sub(&den);
+            q |= 1;
+        }
+    }
+    // q has 55 or 56 bits; one sticky bit stands for a nonzero remainder.
+    let q2 = (q << 1) | !rem.is_zero() as u64;
+    ratio_to_f64(neg, Big::from_u128(q2 as u128), 1, -(k + 1))
 }
 
 /// statistics.mean: the exact mean, rounded once. An int when every value is
