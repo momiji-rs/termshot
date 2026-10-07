@@ -23,6 +23,6 @@ jobs:
           termshot-path: ./termshot
           logs: examples/*.pty
           shots: |
-            help: ./termshot --help
+            help: ./termshot --help | head -28
             colors: for i in 0 1 2 3 4 5 6 7; do printf '\e[4%dm  \e[10%dm  ' $i $i; done; printf '\e[0m\n'
             less: seq 1 200 | less
