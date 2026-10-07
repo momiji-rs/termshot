@@ -5,7 +5,8 @@ name: screens
 on:
   pull_request:
   push:
-    branches: [main]
+    # poc/** too, so a pull request based on the proof-of-concept branch has a baseline
+    branches: [main, 'poc/**']
 
 permissions:
   contents: write

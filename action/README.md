@@ -31,7 +31,9 @@ jobs:
 
 Each pull request gets **one comment, updated in place on every push**:
 
-- **changed** screens show before and after side by side, plus a diff of their text
+- **changed** screens show before and after side by side, a **diff image** (the new screen with
+  every changed cell lit and the rest dimmed, so a colour-only change shows too), and a diff of
+  their text
 - **new** screens are shown in full, and **removed** ones are listed
 - **unchanged** screens fold into one line
 
@@ -48,6 +50,8 @@ Each pull request gets **one comment, updated in place on every push**:
 3. **Compare.** termshot is deterministic, so the same screen gives the same bytes on every runner,
    and a change is exact rather than a pixel-tolerance guess. A push to a branch stores that
    branch's screens as its baseline. A pull request compares with the baseline of its base branch.
+   The diff is per cell, from `--json` (character, colours, attributes), and termshot draws it:
+   the action writes a log of the new screen with the changed cells lit and renders that.
 4. **Publish.** GitHub has no API for uploading images to comments, so the PNGs are committed to an
    orphan branch, `termshot-assets`, which never touches your history. Image URLs are pinned to a
    commit, so old comments keep showing what they showed. The same report goes to the job summary,

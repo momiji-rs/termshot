@@ -6,7 +6,8 @@ Standard library only, so it runs on any hosted runner without a setup step.
   capture   run each shot's command in a real PTY of the given size and keep the bytes
   render    termshot each log into a PNG and its --text
   compare   against the baseline stored for the base branch (exact: termshot is
-            deterministic, so the same screen gives the same bytes)
+            deterministic, so the same screen gives the same bytes), and draw a diff
+            image: termshot renders the new screen again with the changed cells lit
   publish   push the PNGs to an orphan assets branch and upsert one sticky comment
 
 Inputs arrive as INPUT_* environment variables (set by action.yml). Run locally with
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import termios
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -204,6 +206,71 @@ class GitHub:
             page += 1
 
 
+# ---------------------------------------------------------------- cell diff
+
+DEFAULT_BG = "#111823"
+ATTRS = ("bold", "italic", "underline", "double_underline", "strike")
+SGR = {"bold": "1", "italic": "3", "underline": "4", "double_underline": "21", "strike": "9"}
+LIT_BG = "#8a1c4a"
+
+
+def cells(screen):
+    """{(row, col): (char, fg, bg, attrs)} from termshot --json; blank cells are left out."""
+    grid = {}
+    for row, runs in enumerate(screen["lines"]):
+        for run in runs:
+            col = run["col"]
+            attrs = tuple(a for a in ATTRS if run.get(a))
+            for ch in run["text"]:
+                fg = run["fg"]
+                if ch == " " and not set(attrs) & {"underline", "double_underline", "strike"}:
+                    fg = None  # a plain space looks the same in any foreground
+                if not (ch == " " and fg is None and run["bg"] == DEFAULT_BG):
+                    grid[(row, col)] = (ch, fg, run["bg"], attrs)
+                col += 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+    return grid
+
+
+def rgb(hex_colour):
+    return tuple(int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def mix(a, b, t):
+    return tuple(round(x + (y - x) * t) for x, y in zip(rgb(a), rgb(b)))
+
+
+def diff_log(head, base):
+    """A PTY log of `head` with the cells that differ from `base` lit and the rest
+    dimmed, and the changed cells. termshot renders it like any other log."""
+    new, old = cells(head), cells(base)
+    changed = {k for k in set(new) | set(old) if new.get(k) != old.get(k)}
+    out = ["\x1b[?25l\x1b[2J"]
+    for (row, col) in sorted(set(new) | changed):
+        ch, fg, bg, attrs = new.get((row, col), (" ", None, DEFAULT_BG, ()))
+        fg = fg or "#dbe7f7"
+        if (row, col) in changed:
+            f, b = rgb("#ffffff") if ch == " " else rgb(fg), rgb(LIT_BG)
+        else:
+            f, b = mix(fg, bg, 0.65), mix(bg, DEFAULT_BG, 0.5)
+        sgr = ";".join(["0", *(SGR[a] for a in attrs), "38;2;%d;%d;%d" % f, "48;2;%d;%d;%d" % b])
+        out.append(f"\x1b[{row + 1};{col + 1}H\x1b[{sgr}m{ch}")
+    out.append("\x1b[0m")
+    return "".join(out).encode(), changed
+
+
+def describe(changed):
+    rows = sorted({r for r, _ in changed})
+    if not rows:
+        return "no cells changed (the images in the screen did)"
+    spans, start = [], rows[0]
+    for a, b in zip(rows, rows[1:] + [None]):
+        if b != a + 1:
+            spans.append(f"{start + 1}" if start == a else f"{start + 1}–{a + 1}")
+            start = b
+    n = len(changed)
+    return f"{n} cell{'s' * (n != 1)} changed, in row{'s' * (len(rows) != 1)} {', '.join(spans)}"
+
+
 # ---------------------------------------------------------------- report
 
 
@@ -262,6 +329,10 @@ def report(ctx, shots, base, url_of):
         if hu and bu:
             out += ["| before | after |", "|---|---|",
                     f"| {img(bu, s['name'] + ' before')} | {img(hu, s['name'] + ' after')} |", ""]
+        if "diff_desc" in s:
+            out += [f"**diff** · {s['diff_desc']}", ""]
+            du = url_of("diff", s["name"]) if "diff_png" in s else None
+            out += [img(du, s["name"] + " diff"), ""] if du else []
         d = text_diff(s["base_text"], s["text"], s["name"])
         if d:
             out += ["<details open><summary>text diff</summary>", "", fence(d, "diff"),
@@ -341,7 +412,8 @@ def main():
             log(f"captured {s['name']}: {state}, {secs:.1f}s")
         png = os.path.join(out_dir, s["name"] + ".png")
         txt = os.path.join(out_dir, s["name"] + ".txt")
-        r = subprocess.run([termshot, *render_args, "--text", txt, s["log"], png],
+        js = os.path.join(out_dir, s["name"] + ".json")
+        r = subprocess.run([termshot, *render_args, "--text", txt, "--json", js, s["log"], png],
                            capture_output=True, text=True)
         if r.stderr.strip():
             log(r.stderr.strip())
@@ -351,6 +423,8 @@ def main():
             s["png"] = f.read()
         with open(txt, encoding="utf-8", errors="replace") as f:
             s["text"] = f.read().rstrip("\n")
+        with open(js, "rb") as f:
+            s["json"] = f.read()
         s["sha"] = hashlib.sha256(s["png"]).hexdigest()
 
     event = os.environ.get("GITHUB_EVENT_NAME", "")
@@ -389,6 +463,19 @@ def main():
             s["status"] = "changed"
             s["base_text"] = (gh.file_at(base_commit, f"{base_dir}/{s['name']}.txt") or b"").decode(
                 "utf-8", "replace")
+            base_json = gh.file_at(base_commit, f"{base_dir}/{s['name']}.json")
+            if base_json:
+                log_bytes, changed_cells = diff_log(json.loads(s["json"]), json.loads(base_json))
+                s["diff_desc"] = describe(changed_cells)
+                dlog = os.path.join(out_dir, s["name"] + ".diff.pty")
+                dpng = os.path.join(out_dir, s["name"] + ".diff.png")
+                with open(dlog, "wb") as f:
+                    f.write(log_bytes)
+                r = subprocess.run([termshot, *render_args, "--cursor", "none", dlog, dpng],
+                                   capture_output=True, text=True)
+                if r.returncode == 0:
+                    with open(dpng, "rb") as f:
+                        s["diff_png"] = f.read()
 
     def raw_url(commit, path):
         # Public repos: raw.githubusercontent.com, proxied by camo. Private repos: a
@@ -410,6 +497,9 @@ def main():
                 continue  # the comment shows the baseline's copy
             files[f"{prefix}/{s['name']}.png"] = s["png"]
             files[f"{prefix}/{s['name']}.txt"] = s["text"].encode()
+            files[f"{prefix}/{s['name']}.json"] = s["json"]
+            if "diff_png" in s:
+                files[f"{prefix}/{s['name']}.diff.png"] = s["diff_png"]
         if not pr:
             manifest = {"version": version, "commit": ctx["sha"],
                         "shots": {s["name"]: {"sha": s["sha"]} for s in shots}}
@@ -429,6 +519,8 @@ def main():
             kind = "base"
         if kind == "head" and published:
             return raw_url(published, f"{prefix}/{name}.png")
+        if kind == "diff" and published:
+            return raw_url(published, f"{prefix}/{name}.diff.png")
         if kind == "base" and base_commit:
             return raw_url(base_commit, f"{base_dir}/{name}.png")
         return None
