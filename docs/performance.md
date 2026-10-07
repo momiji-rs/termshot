@@ -2152,7 +2152,7 @@ is within noise on both hosts.
 ### What was measured
 
 - **main**: `5a832cd` (main after #67, #68 and #70, the parser round),
-  built with `scripts/build-baseline.py --revision 5a832cd`.
+  built with `scripts/build-baseline.sh --revision 5a832cd`.
 - **branch**: `721d3fe`, this PR merged with that main. The documentation
   commit after it changes no build input. The parser round's five long logs
   (`dense-sgr` and the rest) are in the suite and in the tables.
@@ -2515,7 +2515,7 @@ aarch64 (GCC).
 ### Reproduce
 
 ```sh
-python3 scripts/build-baseline.py /tmp/termshot-main --revision 5a832cd
+scripts/build-baseline.sh /tmp/termshot-main --revision 5a832cd
 ./build.sh && cp termshot /tmp/termshot-branch
 for batch in a:17 b:29; do
   python3 scripts/bench.py \
@@ -2567,7 +2567,7 @@ aligned, while the branch took 0.45 ms in both.
 Four binaries per host, built on that host from the same sources (on Linux
 from a fresh clone of the pushed branch):
 
-- **main**: `76f18ee` (the merge of #68), `scripts/build-baseline.py --revision 76f18ee`.
+- **main**: `76f18ee` (the merge of #68), `scripts/build-baseline.sh --revision 76f18ee`.
 - **branch**: `10f1ea1`, this round's changes merged with `76f18ee`.
 - **main-al**, **branch-al**: the same, with `RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64'`
   (build.sh appends it to the rustc command).
@@ -2821,8 +2821,8 @@ read-only data. `TERMSHOT_PROFILE` costs the same as before
 ### Reproduce
 
 ```sh
-python3 scripts/build-baseline.py /tmp/ts/main --revision 76f18ee
-RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64' python3 scripts/build-baseline.py /tmp/ts/main-al --revision 76f18ee
+scripts/build-baseline.sh /tmp/ts/main --revision 76f18ee
+RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64' scripts/build-baseline.sh /tmp/ts/main-al --revision 76f18ee
 ./build.sh && cp termshot /tmp/ts/branch
 RUSTC_LINK_ARGS='-C llvm-args=-align-loops=64' ./build.sh && cp termshot /tmp/ts/branch-al
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # or a copy with the same sha256
@@ -2868,7 +2868,7 @@ within noise. No case is slower with confidence on either host: the lowest
 ### What was measured
 
 - **main**: `bb21b3c` (main when this work started), built with
-  `scripts/build-baseline.py --revision bb21b3c`.
+  `scripts/build-baseline.sh --revision bb21b3c`.
 - **branch**: `3bf2ffc`, the three `deflate.c` commits on top of it. The later
   documentation commit does not change any build input.
 
@@ -3107,7 +3107,7 @@ macOS arm64, Linux x86-64 and Linux aarch64 (GCC there).
 ### Reproduce
 
 ```sh
-python3 scripts/build-baseline.py /tmp/termshot-main --revision bb21b3c
+scripts/build-baseline.sh /tmp/termshot-main --revision bb21b3c
 ./build.sh && cp termshot /tmp/termshot-branch
 # Arch's copy; on macOS, point this at a copy of the same file (same sha256).
 cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc
@@ -3134,7 +3134,7 @@ kitty graphics, so everything here was remeasured from scratch.
 
 Two binaries per host, built on that host from the same sources:
 
-- **main**: `d83c8fd` (the merge of PR #52), built with `scripts/build-baseline.py --revision d83c8fd`.
+- **main**: `d83c8fd` (the merge of PR #52), built with `scripts/build-baseline.sh --revision d83c8fd`.
 - **branch**: `d83c8fd` plus this round's profiling change (`22b77e8`): no change
   to parsing, drawing or encoding, only timers and counters.
 
@@ -3441,7 +3441,7 @@ Two separate questions, both measured in the same interleaved rounds:
 ### Reproduce
 
 ```sh
-python3 scripts/build-baseline.py /tmp/termshot-main --revision d83c8fd
+scripts/build-baseline.sh /tmp/termshot-main --revision d83c8fd
 ./build.sh && cp termshot /tmp/termshot-branch
 python3 scripts/bench.py \
   --binary main=/tmp/termshot-main/original --binary branch=/tmp/termshot-branch \
@@ -3737,7 +3737,7 @@ no shared-runner timing thresholds.
 Choose a baseline destination that does not exist:
 
 ```sh
-python3 scripts/build-baseline.py /tmp/termshot-baseline
+scripts/build-baseline.sh /tmp/termshot-baseline
 ./build.sh
 python3 scripts/bench.py \
   --binary baseline=/tmp/termshot-baseline/original \
@@ -3759,9 +3759,9 @@ and `--profile-patch` options.
 
 `TERMSHOT_PROFILE` is enabled by presence, including `0`, and emits two
 `termshot-profile ` JSON records to stderr. Timers are thread-local and rendering
-buffers/caches are per-call. Python is needed only for optional development
-scripts, including benchmarks and `scripts/generate-crc32.py`, not the build
-or tests.
+buffers/caches are per-call. Python is needed only for the benchmark scripts
+(`scripts/bench.py`, `scripts/bench-report.py`), not the build, the tests or
+the other tools.
 
 ### Where the historical “~20 ms” came from
 
