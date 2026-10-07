@@ -1,5 +1,5 @@
 {
- "commit": "52d8e53065a9e250f5670f6d898ee40ba202d8d9",
+ "commit": "5d21488151eda00d358588f8b44bb3202b467c83",
  "shots": {
   "colors": {
    "json": "objects/fb/fb04f6d8e4d64bbfa7b916cc868ec6e1229912fdcbf7316bea767319ff7b2075.json",
@@ -33,5 +33,5 @@
   }
  },
  "termshot": "0.3.1",
- "updated": "2026-10-07T20:47:01+00:00"
+ "updated": "2026-10-07T20:48:15+00:00"
 }
