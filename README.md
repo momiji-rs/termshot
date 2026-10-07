@@ -61,7 +61,16 @@ Current figures: measured 2026-10-05 with `scripts/bench.py` in the
 [release size profile round](docs/performance.md#release-size-profile-2026-10-05-66780fc-83)
 (#83), on **release binaries**: built from `66780fc` as `scripts/release.sh`
 builds them (`build.sh`'s flags plus `-C lto=fat`, then `strip`). 0.2.0's
-code differs from `66780fc` only in its version string. On macOS this is
+code differed from `66780fc` only in its version string; 0.3.0 adds the
+palette, padding and kitty animation (not timed) and the library (#92, #93).
+Those two rounds, the
+[parser](docs/performance.md#the-parser-as-a-library-2026-10-06-3c69f71-85-part-1)
+and the
+[render as a library](docs/performance.md#the-render-as-a-library-2026-10-06-35c62b9-85-part-2),
+timed fat-LTO builds paired against the main each started from, not absolute
+figures: no case was slower on macOS, and on Linux two large-image cases were
+1-2.5% slower, from code layout. So the figures below are still the latest
+absolute ones. On macOS this is
 the arm64 slice of the universal binary; on Linux, the static x86_64 musl
 binary, run on the host. Each figure is the median of 40 **whole CLI
 runs**, wall time from spawn to exit: start-up, reading the log and the
@@ -121,17 +130,19 @@ older descriptions was a 21 ms mean of 40 hyperfine runs on that M3 at
 [GitHub Releases](https://github.com/momiji-rs/termshot/releases) has a binary for each
 platform, with `SHA256SUMS`:
 
-- `termshot-0.2.0-macos-universal.tar.gz`: arm64 and x86_64, macOS 11 or newer
-- `termshot-0.2.0-linux-x86_64-musl.tar.gz` and `termshot-0.2.0-linux-aarch64-musl.tar.gz`:
+- `termshot-0.3.0-macos-universal.tar.gz`: arm64 and x86_64, macOS 11 or newer
+- `termshot-0.3.0-linux-x86_64-musl.tar.gz` and `termshot-0.3.0-linux-aarch64-musl.tar.gz`:
   static, no libc needed
 
-Each archive holds `termshot-0.2.0-<platform>/` with the binary, this README, the changelog
-and the licenses. The binary carries its font, so it needs no other files:
+Each archive holds `termshot-0.3.0-<platform>/` with the binary, this README, the changelog
+and the licenses. The binary carries its font, so it needs no other files. The archives hold
+the CLI only; to use termshot as a Rust library, build it (see
+[Use as a Rust library](#use-as-a-rust-library)):
 
 ```sh
 sha256sum -c --ignore-missing SHA256SUMS    # or shasum -a 256 -c --ignore-missing
-tar -xzf termshot-0.2.0-linux-x86_64-musl.tar.gz
-./termshot-0.2.0-linux-x86_64-musl/termshot --version
+tar -xzf termshot-0.3.0-linux-x86_64-musl.tar.gz
+./termshot-0.3.0-linux-x86_64-musl/termshot --version
 ```
 
 ## Build
