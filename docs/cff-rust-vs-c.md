@@ -189,7 +189,8 @@ beyond libc and libm.
   (refusing `CFF2`) and runs `cff::Font::parse`. A glyph that errors is drawn as tofu.
 - Start with the **callback** (one new extern function, `draw.c` swaps `MakeGlyphBitmap` for
   `stbtt_Rasterize` on CFF faces). Leave precomputing for the #8 refactor.
-- Keep `bench/cff-poc/fuzz.c` and the `craft.py` fonts as tests, and the stb differential as a
+- Keep `bench/cff-poc/fuzz.c` and the hand-made fonts (`src/cff_craft.rs`, which
+  `bench/cff-poc/craft.rs` writes) as tests, and the stb differential as a
   harness in the style of `tests/deflate_diff.c`. stb is the oracle on well-formed fonts.
 - Face selection is independent and can go first. All Noto CJK faces share their outlines, so
   it only changes which `cmap` is read.
