@@ -7,15 +7,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- termshot can be used as a Rust library (parse only for now, #85).
-  `build.sh` also builds `libtermshot.rlib` from `src/lib.rs`, with no
-  dependencies; link it with `rustc --extern termshot=libtermshot.rlib`.
+- termshot can be used as a Rust library (#85). `build.sh` also builds
+  `libtermshot.rlib` from `src/lib.rs`, with no dependencies and the C it
+  needs inside; link it with `rustc --extern termshot=libtermshot.rlib`.
   `termshot::parse` replays a log into a `Grid`, whose `to_text` and
-  `to_json` are byte for byte what `--text` and `--json` write; the grid's
-  cells, the cursor and its shape, the cell size images move the cursor
-  by, and asciicast decoding are in the API too, with errors as values
-  (`termshot::Error`). Drawing a PNG is still the CLI's only. The CLI is
-  unchanged.
+  `to_json` are byte for byte what `--text` and `--json` write, and
+  `termshot::render` draws it and returns the PNG's bytes, byte for byte
+  what the CLI writes with the same options (or `render_rgba`, the pixels).
+  `RenderOptions` takes the pixel size, a `Font` (the built-in one, a file
+  with the CLI's `#N`, `#NAME` and `#wght=...`, or bytes), a fallback,
+  padding, and the cursor and its shape; `Font::cell_size` gives the cell
+  that images placed by pixels move the cursor by. A character drawn as a
+  box for an empty glyph comes back as data (`Rendered::empty_glyph`).
+  Errors are values (`termshot::Error`, with the CLI's messages): the
+  library prints nothing, never exits, and returns `Error::OutOfMemory`
+  rather than abort where an allocation grows with its input; a panic in a
+  render is caught as `Error::Internal`. Grids, fonts and renders can be
+  used from many threads at once. The CLI is a thin layer over this API,
+  with the same output bytes, messages and exit codes.
 - **kitty animation, drawn as a still** (#44): frame uploads (`a=f`: new
   frames over a base frame `c` or a background colour `Y`, edits of frame
   `r`, blended or overwriting with `X`, in every format and chunked),
@@ -42,6 +51,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cells in the default background. Everything drawn moves by it, cut at the
   cells' edges as before; the cell size, `--text` and `--json` don't
   change, and the margin counts towards the 2^27-pixel limit (#87).
+
+### Fixed
+
+- A font whose metrics can't make a cell printed "font metrics unusable"
+  twice; it is said once.
+- Running out of memory for the screens of a large grid, or for the font
+  file's bytes, aborted; the CLI exits 2 with "out of memory ..." and
+  removes the outputs it created, as for the render's own allocations.
 
 ## [0.2.0] - 2026-10-06
 

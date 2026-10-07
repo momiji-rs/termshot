@@ -32,12 +32,16 @@
 //!
 //! Errors are values ([`Error`]): the library prints nothing, never exits,
 //! and returns [`Error::OutOfMemory`] instead of aborting where an
-//! allocation's size comes from its input: the render's canvas, cells,
-//! image views, glyphs, PNG encoder and the bytes it returns, and a font
-//! file's bytes. Allocations of a fixed or small bounded size (a font
-//! check's tables, the parser's screens and kitty image buffers, which
-//! [`MAX_CELLS`] and kitty's quotas bound) still abort, as any `Vec`'s do.
-//! A panic in a render is caught and returned as [`Error::Internal`].
+//! allocation grows with the input: the parser's screens, marks and
+//! placeholder ids (up to [`MAX_CELLS`] cells), the render's copies of
+//! them, its canvas, glyphs and PNG encoder and the bytes it returns, and
+//! a font file's bytes and padding. What still aborts if memory runs out,
+//! as any `Vec` does, is bounded otherwise: a kitty or Sixel image's
+//! buffers (by kitty's 16 MiB quota and the Sixel budget), a font check's
+//! tables (by the font's size and its 16-bit counts), an asciicast's
+//! output (by the recording's size), and the strings of
+//! [`Grid::to_text`] and [`Grid::to_json`] (by the grid's). A panic in a
+//! render is caught and returned as [`Error::Internal`].
 //!
 //! The crate has no dependencies and builds with plain rustc (1.70 or
 //! later), after `./build.sh`, which makes `libtermshot.rlib` with the C it
