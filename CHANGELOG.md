@@ -85,9 +85,9 @@ Some 0.2.0 renders and runs change. Upgrading, expect:
   colours keep their values. The palette applies as the log is replayed, so
   `--json` reports the colours it resolves to, and the cursor, dim, conceal
   and kitty's images below the cell backgrounds follow its default colours.
-  A malformed file (an unknown or repeated key, a bad colour, text that
-  isn't UTF-8, or over 64 KiB) exits 2 with its line; one that can't be
-  read exits 1 (#87).
+  A malformed file (an unknown or repeated key, a bad colour, or text that
+  isn't UTF-8) exits 2 with its line, and a file over 64 KiB exits 2 with
+  that limit; one that can't be read exits 1 (#87).
 - `--padding N` or `--padding X,Y` draws a margin of 0 to 1024 pixels
   around the cells in the default background. Everything drawn moves by it,
   cut at the cells' edges as before; the cell size, `--text` and `--json`
