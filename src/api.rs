@@ -95,10 +95,10 @@ impl std::error::Error for Error {}
 /// only matters to an image placed by pixels (see [`needs_cell_size`]).
 ///
 /// A grid of 0 cells, wider or taller than [`MAX_SIDE`], or of more than
-/// [`MAX_CELLS`] cells is an [`Error::GridSize`].
-/// The two screens' cells are allocated up front, 24 bytes a cell; like any
-/// `Vec`, a failed allocation aborts (errors for that come with the render,
-/// #85).
+/// [`MAX_CELLS`] cells is an [`Error::GridSize`]. The two screens' cells
+/// are allocated up front, 24 bytes a cell, and the combining marks and
+/// placeholder ids when the first comes, 16 and 8 bytes a cell: memory
+/// that runs out for them is an [`Error::OutOfMemory`].
 pub fn parse(log: &[u8], cols: usize, rows: usize, options: &ParseOptions) -> Result<Grid, Error> {
     parse_with_cell_size(log, cols, rows, options, (1, 1))
 }
@@ -120,7 +120,8 @@ pub fn parse_with_cell_size(
         return Err(Error::GridSize { cols, rows });
     }
     let side = |n: u32| i32::try_from(n.max(1)).unwrap_or(i32::MAX);
-    Ok(vt::replay_with(log, cols, rows, options, (side(cell_size.0), side(cell_size.1))))
+    vt::replay_with(log, cols, rows, options, (side(cell_size.0), side(cell_size.1)))
+        .ok_or_else(|| Error::OutOfMemory(format!("out of memory replaying the log on a {cols}x{rows} grid")))
 }
 
 /// Whether the screen `log` leaves may depend on the cell size: it has a

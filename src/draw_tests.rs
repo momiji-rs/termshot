@@ -312,7 +312,7 @@ fn draw_png_is_reentrant() {
     let paddings = [(0, 0), (7, 3), (0, 0), (1, 12)];
     let screens: Vec<(Vec<Cell>, Vec<CellMarks>)> = logs.iter().zip(palettes).map(|(log, palette)| {
         let log = format!("\x1b[41m \x1b[49m{log}");
-        let g = replay_with(log.as_bytes(), 20, 2, &ParseOptions { lf: Lf::Index, palette }, (1, 1));
+        let g = replay_with(log.as_bytes(), 20, 2, &ParseOptions { lf: Lf::Index, palette }, (1, 1)).unwrap();
         (g.cells, g.marks)
     }).collect();
     let draw = |k: usize, out: &str| {

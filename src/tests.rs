@@ -111,7 +111,7 @@ fn ascii_scroll_batches_match_individual_prints() {
                         fast.combine(0x0301);
                         reference.combine(0x0301);
                         assert_eq!(fast.screen_marks(), reference.screen_marks());
-                        for (a, b) in fast.into_cells().iter().zip(reference.into_cells()) {
+                        for (a, b) in fast.into_cells().unwrap().iter().zip(reference.into_cells().unwrap()) {
                             assert_eq!((a.ch, fg(a), bg(a), a.attrs), (b.ch, fg(&b), bg(&b), b.attrs));
                         }
                     }
@@ -1558,4 +1558,39 @@ fn rep_and_attributes_cover_both_halves() {
 #[test]
 fn printf_decoding() {
     assert_eq!(printf_bytes(r"a\tb\033[1m\0337\\%%\n"), b"a\tb\x1b[1m\x1b7\\%\n");
+}
+
+/// Each of a parse's allocations that grow with the grid (both screens'
+/// cells, the marks, the placeholder ids, the cells and the marks in screen
+/// order, and a reset's fresh screens) fails it in turn: replay_with
+/// returns None, which the library makes Error::OutOfMemory and the CLI
+/// exit 2, and with nothing left to fail it gives the grid it gives
+/// without faults. tests/run.sh and tests/library.rs fail them through the
+/// CLI and the library too.
+#[test]
+fn a_failed_parse_allocation_fails_the_parse() {
+    use crate::screen::faults::FAULTS;
+    // A placeholder with a colour (ids), a combining mark (marks), a reset
+    // (two screens again), another mark, and a scroll (cells in screen order).
+    let log = "\x1b[38;5;1m\u{10EEEE}e\u{301}q\u{302}\x1bcq\u{301}\r\n\r\nx\u{303}".as_bytes();
+    let options = ParseOptions::default();
+    let want = replay_with(log, 4, 2, &options, (1, 1)).unwrap();
+    let mut fail = 1;
+    loop {
+        FAULTS.with(|f| f.set((0, fail)));
+        let grid = replay_with(log, 4, 2, &options, (1, 1));
+        let calls = FAULTS.with(|f| f.get().0);
+        FAULTS.with(|f| f.set((0, 0)));
+        match grid {
+            None => fail += 1,
+            Some(grid) => {
+                assert!(fail > calls, "allocation {fail} of {calls} failed, and the parse went on");
+                assert_eq!((grid.to_text(), grid.to_json()), (want.to_text(), want.to_json()));
+                break;
+            }
+        }
+    }
+    // Both screens, the ids, the marks, both screens again after the
+    // reset, the marks again, then the cells and the marks in screen order.
+    assert_eq!(fail - 1, 9, "{} allocations failed", fail - 1);
 }

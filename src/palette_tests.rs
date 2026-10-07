@@ -21,7 +21,7 @@ fn custom() -> Palette {
 }
 
 fn replay_in(log: &[u8], cols: usize, rows: usize, palette: Palette) -> Grid {
-    replay_with(log, cols, rows, &ParseOptions { lf: Lf::Index, palette }, (1, 1))
+    replay_with(log, cols, rows, &ParseOptions { lf: Lf::Index, palette }, (1, 1)).unwrap()
 }
 
 fn fg(c: &Cell) -> Rgb {
@@ -204,7 +204,7 @@ fn placeholder_ids_ignore_the_palette() {
     let log = "\x1b_Ga=T,f=24,s=1,v=1,i=5,U=1,c=1,r=1;/wAA\x1b\\\x1b[38;5;5m\u{10EEEE}\u{305}\u{305}";
     let default = replay_sized(log.as_bytes(), 4, 2, Lf::Index, (10, 20));
     assert_eq!(default.images.len(), 1, "the placeholder shows image 5");
-    let themed = replay_with(log.as_bytes(), 4, 2, &ParseOptions { lf: Lf::Index, palette: custom() }, (10, 20));
+    let themed = replay_with(log.as_bytes(), 4, 2, &ParseOptions { lf: Lf::Index, palette: custom() }, (10, 20)).unwrap();
     assert_eq!(themed.images.len(), 1);
     let views = |g: &Grid| g.images.iter().flat_map(graphics::Placement::views).map(|v| (v.x, v.y, v.w, v.h)).collect::<Vec<_>>();
     assert_eq!(views(&themed), views(&default));
