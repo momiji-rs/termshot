@@ -1,0 +1,37 @@
+{
+ "termshot": "0.2.0",
+ "commit": "759c862fad0af3d63aa994c3eff2dc4064c51714",
+ "updated": "2026-10-07T17:11:18+00:00",
+ "shots": {
+  "help": {
+   "png": "objects/b3/b3ed65d2382e60ac117f7ee194965d8cc2fd07a848ebceb86dad5cf24d5af4e6.png",
+   "txt": "objects/0b/0bf4c12ca413236b69e5ebadc1368b8215c60c235486e1a9f9b34e8415695dc6.txt",
+   "json": "objects/32/32a327fc0ad035bdbec26a8dc22ba025edeb3b62d34e26dab9efc99fc78d8ef4.json"
+  },
+  "colors": {
+   "png": "objects/1a/1a920807dc12e12a3e067f263de9c2ad704fa99ea0c3250b89c7245dd249b117.png",
+   "txt": "objects/e3/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.txt",
+   "json": "objects/fb/fb04f6d8e4d64bbfa7b916cc868ec6e1229912fdcbf7316bea767319ff7b2075.json"
+  },
+  "less.top": {
+   "png": "objects/55/552cbad01622f4142aeda89f92cdd5f04dd3e635c225c11cf37b22a0379f6f8d.png",
+   "txt": "objects/a9/a900dbe2ad7bfce932c4c5b9929496bbb36a36da0a120358c8d017c7f455a36f.txt",
+   "json": "objects/66/666a39fd7a2f5e5306af10b60bb7c6bc2dc425c92fc85e16014ec30aef13deb8.json"
+  },
+  "less": {
+   "png": "objects/4a/4abf95f002be5ec71ad91faf2fa5ad783b5e84eefa5d8b4881bf4eee44d469a1.png",
+   "txt": "objects/36/36a408f1278ea36c42bbe517f689e9a579263983746f02eedb4f0e932a8c4d1c.txt",
+   "json": "objects/14/14e7637d736298725ca1504f50544fd4d15c154e8e849f8c1ce4f8b5ecfeeb4c.json"
+  },
+  "draft-ready": {
+   "png": "objects/9c/9cc12bb3dc0a15fa76eabe7204935231ffb80322310baf5d360f79a85d136fd6.png",
+   "txt": "objects/2a/2a19bb46502ea8a52e82860d36bd51bdf5ea0b8aeb2591216adcefafb772f414.txt",
+   "json": "objects/20/201b7f308e07e05f73503902c1af3c270242aefe156ef2f2e18bc4c2382cd116.json"
+  },
+  "reply-sent": {
+   "png": "objects/c9/c96118a51121876b245543a976fe3c532cdd4dee643c534e2365463fe1668a88.png",
+   "txt": "objects/c2/c25d6a51f01633f6efd1163306a2e3fd866e69a25d15d5883d109b0f8357a0e2.txt",
+   "json": "objects/e8/e80ef520c4fb1d4b65a882fe6c0c50440e509e7fa3b0c2fa18ecb735d153aa63.json"
+  }
+ }
+}
