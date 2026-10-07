@@ -31,7 +31,8 @@ fi
 # tests run; "== bench harness" waits for it.
 mkdir -p target/scripts
 { rustc --edition 2021 -O --crate-name bench scripts/bench.rs -o target/scripts/bench &&
-    rustc --edition 2021 -O --crate-name bench_report scripts/bench-report.rs -o target/scripts/bench-report
+    rustc --edition 2021 -O --crate-name bench_report scripts/bench-report.rs -o target/scripts/bench-report &&
+    rustc --edition 2021 --test --crate-name bench_common scripts/bench_common.rs -o "$out/bench-common"
 } > "$out/bench-build.log" 2>&1 &
 bench_build=$!
 
@@ -594,6 +595,8 @@ echo "== bench harness"
 # (TERMSHOT_BENCH_FAKE_CLOCK), and the tables of committed reports.
 if wait "$bench_build"; then
     root=$(pwd -P)
+    # The float repr and division bugs the comparison with Python caught.
+    "$out/bench-common" -q > "$out/bench-common.log" 2>&1 || { cat "$out/bench-common.log"; fail=1; }
     check "the bench workloads are the ones bench.py generated" \
         'scripts/bench.sh --list-workloads --cjk-font third_party/noto-sans-cjk/NotoSansCJKtc-Subset.otf > "$out/bench-workloads.txt" &&
         cmp -s "$out/bench-workloads.txt" tests/bench/workloads.txt'

@@ -1438,3 +1438,37 @@ pub fn splitlines(s: &str) -> Vec<&str> {
     }
     out
 }
+
+// The bugs the comparison with the Python caught, kept as tests (test.sh
+// runs them: rustc --test scripts/bench_common.rs). Every expected value is
+// what Python 3.14.7 printed for it.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn float_repr_breaks_ties_to_even_as_python() {
+        // Two shortest forms are as near; Rust's shortest says .3.
+        assert_eq!(py_float_repr(642059682355646.25), "642059682355646.2");
+        assert_ne!(format!("{}", 642059682355646.25f64), "642059682355646.2");
+    }
+
+    #[test]
+    fn float_repr_matches_python() {
+        let cases: [(f64, &str); 10] = [
+            (0.1, "0.1"),
+            (1e16, "1e+16"),
+            (1e-5, "1e-05"),
+            (123.0, "123.0"),
+            (2.5, "2.5"),
+            (1e22, "1e+22"),
+            (5e-324, "5e-324"),
+            (0.30000000000000004, "0.30000000000000004"),
+            (1234567.0625, "1234567.0625"),
+            (9007199254740993.0, "9007199254740992.0"),
+        ];
+        for (value, want) in cases {
+            assert_eq!(py_float_repr(value), want, "{value:e}");
+        }
+    }
+}
