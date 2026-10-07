@@ -781,7 +781,9 @@ fn main() -> ExitCode {
     if let Err(message) = written {
         return cleanup(1, message);
     }
+    let mut rendered = false;
     if let (Some(out), Some((font, fallback))) = (&options.out, &fonts) {
+        rendered = true;
         let out = if out == "-" { "/dev/stdout" } else { out };
         if out.contains('\0') {
             return cleanup(2, "output path contains a nul byte".into());
@@ -829,6 +831,11 @@ fn main() -> ExitCode {
             );
         }
         let builtin = u8::from(needs_fonts && options.font.is_none());
+        // A render's record has face_ms; a run without one reports 0, as
+        // every run did when the CLI timed it.
+        if !rendered {
+            fields += ",\"face_ms\":0.000000";
+        }
         eprintln!(
             "termshot-profile {{{fields},\"font_builtin\":{builtin},\"total_ms\":{:.6},\"input_bytes\":{input_bytes}}}",
             started.elapsed().as_secs_f64() * 1000.0

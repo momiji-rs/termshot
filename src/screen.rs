@@ -153,6 +153,13 @@ fn filled<T: Clone>(len: usize, value: T) -> Option<Vec<T>> {
     Some(v)
 }
 
+/// 0, 1, ..., len - 1, or None when memory runs out.
+fn counted(len: usize) -> Option<Vec<usize>> {
+    let mut v = reserved(len)?;
+    v.extend(0..len);
+    Some(v)
+}
+
 /// Allocation failure injection for the parser: the shipped binary has
 /// none. Unit tests set it per thread; a build with `--cfg
 /// termshot_alloc_faults` reads TERMSHOT_PARSE_FAIL_AT=n and fails the nth
@@ -296,11 +303,11 @@ impl Screen {
             other_graphics: graphics::Graphics::default(),
             cell_size: (1, 1),
             cells: filled(cols * rows, blank_cell(&palette))?,
-            map: (0..rows).collect(),
+            map: counted(rows)?,
             marks: Vec::new(),
             ids: Vec::new(),
             other: filled(cols * rows, blank_cell(&palette))?,
-            other_map: (0..rows).collect(),
+            other_map: counted(rows)?,
             other_marks: Vec::new(),
             other_ids: Vec::new(),
             on_alternate: false,
@@ -316,7 +323,11 @@ impl Screen {
             saved: [Saved::home(&palette); 2],
             pen: Pen::reset(&palette),
             pen_cell: Pen::reset(&palette).cell(),
-            tabs: (0..cols).map(|c| c % 8 == 0).collect(),
+            tabs: {
+                let mut tabs = reserved(cols)?;
+                tabs.extend((0..cols).map(|c| c % 8 == 0));
+                tabs
+            },
             charsets: [Charset::Ascii; 2],
             shifted: false,
             last: None,
@@ -444,8 +455,10 @@ impl Screen {
 
     /// The placeholder cells on the screen, in screen order.
     #[inline]
-    pub(crate) fn placeholders(&self) -> Vec<graphics::PlaceholderCell> {
-        let mut found = Vec::new();
+    /// None when memory for them runs out.
+    pub(crate) fn placeholders(&self) -> Option<Vec<graphics::PlaceholderCell>> {
+        let count = self.cells.iter().filter(|cell| cell.ch == graphics::PLACEHOLDER).count();
+        let mut found = reserved(count)?;
         for r in 0..self.rows {
             let line = self.line(r);
             for (c, cell) in self.cells[line.clone()].iter().enumerate() {
@@ -464,7 +477,7 @@ impl Screen {
                 });
             }
         }
-        found
+        Some(found)
     }
 
     /// Before ICH or DCH moves storage cells [at, end) n to the right or

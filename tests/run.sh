@@ -97,8 +97,9 @@ fi
 echo "ok, each of $((n - 1)) render allocation failures exits 2 and leaves no output"
 
 # Fail each of the parser's allocations that grow with the grid in turn
-# (src/screen.rs: both screens' cells, the marks, the cells in screen
-# order): the run must exit 2, say so, and leave no output.
+# (src/screen.rs: both screens' cells and rows, the tab stops, the marks,
+# the marks and the cells in screen order): the run must exit 2, say so,
+# and leave no output.
 printf 'e\314\201q\314\202\r\n%.0s' $(seq 40) > "$scratch/glyphs.pty"
 n=1
 while :; do
@@ -122,9 +123,9 @@ while :; do
     fi
     n=$((n + 1))
 done
-# Both screens, the marks, the cells and the marks in screen order.
-if [ "$n" -ne 6 ]; then
-    echo "FAIL $((n - 1)) parse allocations failed, want 5" >&2
+# Five for the screens, the marks, the marks and the cells in screen order.
+if [ "$n" -ne 9 ]; then
+    echo "FAIL $((n - 1)) parse allocations failed, want 8" >&2
     exit 1
 fi
 echo "ok, each of $((n - 1)) parse allocation failures exits 2 and leaves no output"

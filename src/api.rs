@@ -98,7 +98,8 @@ impl std::error::Error for Error {}
 /// [`MAX_CELLS`] cells is an [`Error::GridSize`]. The two screens' cells
 /// are allocated up front, 24 bytes a cell, and the combining marks and
 /// placeholder ids when the first comes, 16 and 8 bytes a cell: memory
-/// that runs out for them is an [`Error::OutOfMemory`].
+/// that runs out for them, or for the rows, the tab stops, the placeholder
+/// cells or the result, is an [`Error::OutOfMemory`].
 pub fn parse(log: &[u8], cols: usize, rows: usize, options: &ParseOptions) -> Result<Grid, Error> {
     parse_with_cell_size(log, cols, rows, options, (1, 1))
 }

@@ -1561,8 +1561,9 @@ fn printf_decoding() {
 }
 
 /// Each of a parse's allocations that grow with the grid (both screens'
-/// cells, the marks, the placeholder ids, the cells and the marks in screen
-/// order, and a reset's fresh screens) fails it in turn: replay_with
+/// cells and rows, the tab stops, the marks, the placeholder ids, the
+/// cells and the marks in screen order, and a reset's fresh screens) fails
+/// it in turn: replay_with
 /// returns None, which the library makes Error::OutOfMemory and the CLI
 /// exit 2, and with nothing left to fail it gives the grid it gives
 /// without faults. tests/run.sh and tests/library.rs fail them through the
@@ -1590,7 +1591,8 @@ fn a_failed_parse_allocation_fails_the_parse() {
             }
         }
     }
-    // Both screens, the ids, the marks, both screens again after the
-    // reset, the marks again, then the cells and the marks in screen order.
-    assert_eq!(fail - 1, 9, "{} allocations failed", fail - 1);
+    // Both screens' cells and rows and the tab stops, the ids, the marks,
+    // all five again after the reset, the marks again, then the marks and
+    // the cells in screen order.
+    assert_eq!(fail - 1, 15, "{} allocations failed", fail - 1);
 }
