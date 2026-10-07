@@ -101,25 +101,33 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "termshot ${GITHUB_REF_NAME#v}" --notes-file ../notes.md
 
-  # Pull requests stage the packages and run the Linux one; tags also publish.
-  npm:
-    needs: [build, publish]
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.publish.result != 'failure' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+  # The npm job holds id-token: write, npm's publish credential under Trusted
+  # Publishing, so the actions both npm jobs run are pinned to commits.
+  #
+  # Install the staged packages on each platform the launcher maps, with the
+  # oldest Node the package declares (engines), and run them.
+  npm-check:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    package: linux-x64 }
+          - { os: ubuntu-24.04-arm, package: linux-arm64 }
+          - { os: macos-latest,     package: darwin-universal }
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
+          node-version: 18
       - name: stage
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
         run: |
           version=$(ls dist/termshot-*-linux-x86_64-musl.tar.gz | sed 's/.*termshot-\(.*\)-linux-x86_64-musl.tar.gz/\1/')
           if [ -n "$RELEASE_TAG" ] && [ "$RELEASE_TAG" != "v$version" ]; then
@@ -128,21 +136,48 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_ENV"
           scripts/npm-stage.sh "$version" dist npm-out
-        env:
-          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
       - name: install and run
         run: |
           mkdir smoke
           for dir in npm-out/*; do (cd smoke && npm pack "../$dir"); done
           cd smoke
           npm init -y > /dev/null
-          npm install --no-audit --no-fund "./momiji-rs-termshot-linux-x64-$version.tgz" "./momiji-rs-termshot-$version.tgz"
+          npm install --no-audit --no-fund "./momiji-rs-termshot-${{ matrix.package }}-$version.tgz" "./momiji-rs-termshot-$version.tgz"
           test "$(npx termshot --version)" = "termshot $version"
           printf 'ok\r\n' | npx termshot --text - --size 10x2 - | grep -qx ok
           rc=0; npx termshot --bogus 2> /dev/null || rc=$?
           test "$rc" = 2
+
+  # After the GitHub release, publish the packages that npm-check ran.
+  npm:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [npm-check, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: stage
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: |
+          version=$(ls dist/termshot-*-linux-x86_64-musl.tar.gz | sed 's/.*termshot-\(.*\)-linux-x86_64-musl.tar.gz/\1/')
+          if [ -n "$RELEASE_TAG" ] && [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "the archives are $version, the tag is $RELEASE_TAG" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
+          scripts/npm-stage.sh "$version" dist npm-out
       - name: publish
-        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           # Trusted Publishing needs npm 11.5.1 or newer.
           npm install -g npm@latest
