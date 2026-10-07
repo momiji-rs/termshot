@@ -550,6 +550,7 @@ if metrics=$(tools/cff2-metrics.sh --build-only 2>/dev/null) &&
         sed 1d "$fixture" > "$out/hb-then.txt"
         check "$fixture is what HarfBuzz $recorded gives" 'cmp -s "$out/hb-now.txt" "$out/hb-then.txt"'
     done
+    echo "ok, the HarfBuzz $recorded metrics fixtures recorded again"
 else
     echo "skip: HarfBuzz metrics fixtures (no libharfbuzz $recorded)"
 fi
