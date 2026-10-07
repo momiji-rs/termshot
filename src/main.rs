@@ -25,7 +25,7 @@ extern "C" {
     fn close(fd: std::ffi::c_int) -> std::ffi::c_int;
 }
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 
 const USAGE: &str = "\
 usage: termshot [options] <log> <out.png>
