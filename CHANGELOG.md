@@ -20,9 +20,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that images placed by pixels move the cursor by. A character drawn as a
   box for an empty glyph comes back as data (`Rendered::empty_glyph`).
   Errors are values (`termshot::Error`, with the CLI's messages): the
-  library prints nothing, never exits, and returns `Error::OutOfMemory`
-  rather than abort where an allocation grows with its input; a panic in a
-  render is caught as `Error::Internal`. Grids, fonts and renders can be
+  library prints nothing of its own, never exits, and returns
+  `Error::OutOfMemory` rather than abort where an allocation grows with its
+  input; a panic in a render is caught as `Error::Internal`. Grids, fonts and renders can be
   used from many threads at once. The CLI is a thin layer over this API,
   with the same output bytes, messages and exit codes.
 - **kitty animation, drawn as a still** (#44): frame uploads (`a=f`: new

@@ -151,8 +151,8 @@ dependencies and the C it needs bundled inside (#85). `termshot::parse` replays 
 into a `Grid`, with its cells, the cursor, and the same text and JSON as `--text` and
 `--json`; `termshot::render` draws the grid and returns the PNG's bytes, the same bytes
 the CLI writes. Errors are values (`termshot::Error`, with the CLI's messages): the
-library prints nothing and never exits. Where an allocation grows with the input (the
-parser's screens, the render's canvas, cells and PNG, a font file) it returns
+library prints nothing of its own and never exits. Where an allocation grows with the
+input (the parser's screens, the render's canvas, cells and PNG, a font file) it returns
 `Error::OutOfMemory` rather than abort; allocations bounded otherwise (image buffers
 under kitty's quota, a font check's tables, a cast's output, the text and JSON strings)
 still abort if memory runs out, as the crate docs list.

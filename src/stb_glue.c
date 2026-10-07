@@ -48,13 +48,19 @@ unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *ou
    compressor's; stb never frees it. The compressor's buffer, which stb
    frees, is malloc's. stb's functions that would STBIW_FREE or
    STBIW_REALLOC a buffer of STBIW_MALLOC's (its own zlib compressor, the
-   file writers) are never called. */
+   file writers) are static (STB_IMAGE_WRITE_STATIC, below) and never
+   called. */
 void *termshot_png_alloc(size_t size);
 #define STBIW_MALLOC(size) termshot_png_alloc(size)
 #define STBIW_REALLOC(p, size) realloc(p, size)
 #define STBIW_FREE(p) free(p)
 #include "png_crc.h"
 #define STBIW_CRC32 termshot_png_crc
+/* Every stb_image_write function is this file's own: nothing outside it
+   (an embedder linking libtermshot.rlib included) can call the generic
+   writers, which would STBIW_MALLOC more than the one buffer and
+   STBIW_FREE it. */
+#define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 

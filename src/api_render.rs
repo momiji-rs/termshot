@@ -338,8 +338,9 @@ pub struct RgbaImage {
 /// draw is an [`Error::Font`], an image over [`MAX_PIXELS`](crate::MAX_PIXELS)
 /// an [`Error::ImageTooLarge`], memory that runs out an
 /// [`Error::OutOfMemory`], and a bug an [`Error::Internal`]: a render never
-/// panics or aborts on its input. Renders on many threads at once are
-/// independent.
+/// panics or aborts on its input. (A bug's panic is caught, after the
+/// process's panic hook has seen it: Rust's default hook prints it.)
+/// Renders on many threads at once are independent.
 pub fn render(grid: &Grid, options: &RenderOptions) -> Result<Rendered, Error> {
     let (drawn, empty_glyph) = draw(grid, options, Encoding::Png)?;
     Ok(Rendered { png: drawn.bytes, width: drawn.width, height: drawn.height, empty_glyph, profile: drawn.profile })
