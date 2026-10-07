@@ -683,7 +683,8 @@ fn faults() -> Result<(), String> {
     let want = termshot::render(&grid, &options).map_err(|error| format!("faults: {error}"))?.png;
     let mut report = Vec::new();
     // The parse's: both screens' cells and rows, the tab stops, the marks,
-    // the ids, the placeholder cells, and the marks in screen order.
+    // the ids, the placeholder cells, their runs, the placement they show
+    // and its slice, and the marks in screen order.
     let mut n = 1;
     loop {
         std::env::set_var("TERMSHOT_PARSE_FAIL_AT", n.to_string());
@@ -697,7 +698,7 @@ fn faults() -> Result<(), String> {
             Ok(Ok(_)) => return Err(format!("faults: TERMSHOT_PARSE_FAIL_AT={n} parsed another grid")),
         }
     }
-    if n - 1 < 9 {
+    if n - 1 < 12 {
         return Err(format!("faults: only {} parse allocations failed", n - 1));
     }
     report.push(format!("{} at TERMSHOT_PARSE_FAIL_AT", n - 1));

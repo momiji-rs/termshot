@@ -355,7 +355,7 @@ pub(crate) fn replay_with(data: &[u8], cols: usize, rows: usize, options: &Parse
     }
     // Placeholder cells show nothing without a virtual placement to name.
     let placeholders = if screen.graphics.has_virtual() { screen.placeholders()? } else { Vec::new() };
-    let images = std::mem::take(&mut screen.graphics).finish(&placeholders, cell_size, rows);
+    let images = std::mem::take(&mut screen.graphics).finish(&placeholders, cell_size, rows)?;
     let cursor_shape = screen.cursor_shape;
     let marks = screen.screen_marks()?;
     let (foreground, background) = (options.palette.foreground, options.palette.background);

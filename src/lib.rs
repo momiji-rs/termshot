@@ -36,10 +36,11 @@
 //! tab stops, marks, placeholder ids and placeholder cells (up to
 //! [`MAX_CELLS`] cells), the render's copies of them, its canvas, glyphs
 //! and PNG encoder and the bytes it returns, and a font file's bytes and
-//! padding. What still aborts if memory runs out, as any `Vec` does, is
-//! bounded otherwise: a kitty or Sixel image's
-//! buffers and the placements' layout (by kitty's 16 MiB quota, its
-//! limits on images and placements, and the Sixel budget), a font check's
+//! padding, and the placements Unicode placeholders show. What still
+//! aborts if memory runs out, as any `Vec` does, is bounded otherwise: a
+//! kitty or Sixel image's buffers and the other placements' layout (by
+//! kitty's 16 MiB quota, its limits on images and placements, and the
+//! Sixel budget), a font check's
 //! tables (by the font's size and its 16-bit counts), an asciicast's
 //! output (by the recording's size), and the strings of
 //! [`Grid::to_text`] and [`Grid::to_json`] (by the grid's). A panic in a

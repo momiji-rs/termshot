@@ -100,8 +100,9 @@ echo "ok, each of $((n - 1)) render allocation failures exits 2 and leaves no ou
 
 # Fail each of the parser's allocations that grow with the grid in turn
 # (src/screen.rs: both screens' cells and rows, the tab stops, the marks,
-# a placeholder's ids, the placeholder cells, the marks and the cells in
-# screen order): the run must exit 2, say so, and leave no output.
+# a placeholder's ids, the placeholder cells, and src/graphics.rs: their
+# runs, the placement they show and its slice; then the marks and the cells
+# in screen order): the run must exit 2, say so, and leave no output.
 {
     printf 'e\314\201q\314\202\r\n%.0s' $(seq 40)
     printf '\033_Ga=T,U=1,i=7,f=24,s=1,v=1,q=2;/wAA\033\\\033[38;5;7m\364\216\273\256\033[m'
@@ -128,10 +129,10 @@ while :; do
     fi
     n=$((n + 1))
 done
-# Five for the screens, the marks, the ids, the placeholder cells, the
-# marks and the cells in screen order.
-if [ "$n" -ne 11 ]; then
-    echo "FAIL $((n - 1)) parse allocations failed, want 10" >&2
+# Five for the screens, the marks, the ids, the placeholder cells, their
+# runs, placement and slice, the marks and the cells in screen order.
+if [ "$n" -ne 14 ]; then
+    echo "FAIL $((n - 1)) parse allocations failed, want 13" >&2
     exit 1
 fi
 echo "ok, each of $((n - 1)) parse allocation failures exits 2 and leaves no output"

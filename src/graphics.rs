@@ -1383,8 +1383,11 @@ struct Run {
 /// what it would inherit: the same row, the next column, the same high byte.
 /// It inherits what it lacks. Any other cell starts a run, at row 0, column
 /// 0 and high byte 0 where it has no diacritic.
-fn runs(cells: &[PlaceholderCell]) -> Vec<Run> {
-    let mut runs: Vec<Run> = Vec::new();
+///
+/// None when memory for them runs out: a run per cell at most, room for
+/// which is made up front (crate::screen::reserved).
+fn runs(cells: &[PlaceholderCell]) -> Option<Vec<Run>> {
+    let mut runs: Vec<Run> = crate::screen::reserved(cells.len())?;
     for c in cells {
         let [row, col, high] = c.marks.map(diacritic);
         if let Some(run) = runs.last_mut() {
@@ -1411,7 +1414,7 @@ fn runs(cells: &[PlaceholderCell]) -> Vec<Run> {
             high: high.max(1),
         });
     }
-    runs
+    Some(runs)
 }
 
 impl Graphics {
@@ -1436,26 +1439,33 @@ impl Graphics {
     ///   part of the image. With none on the screen it is not drawn.
     ///
     /// Every placement shows its image's current frame (`show_frames`).
-    pub fn finish(mut self, cells: &[PlaceholderCell], cell: (i32, i32), screen_rows: usize) -> Vec<Placement> {
+    ///
+    /// None when memory runs out for what grows with the placeholder
+    /// cells: their runs, the placements they show and the maps of them
+    /// (try_reserve, through crate::screen::reserved for the fault tests).
+    pub fn finish(mut self, cells: &[PlaceholderCell], cell: (i32, i32), screen_rows: usize) -> Option<Vec<Placement>> {
         self.show_frames();
         let (cw, ch) = (i64::from(cell.0), i64::from(cell.1));
         let any_virtual = self.has_virtual();
         let mut out = std::mem::take(&mut self.placements);
         if cw <= 0 || ch <= 0 || !any_virtual {
             out.retain(|p| !p.is_virtual && p.virtual_root.is_none());
-            return out;
+            return Some(out);
         }
+        let runs = runs(cells)?;
         // The virtual placement each (image id, placement id) names.
         let mut named: std::collections::HashMap<(u32, u32), Option<usize>> = Default::default();
         // Each virtual placement's top row and leftmost column shown.
         let mut shown: std::collections::HashMap<u64, (i64, i64)> = Default::default();
-        let mut cell_images = Vec::new();
-        for run in runs(cells) {
+        // At most a placement per run.
+        let mut cell_images = crate::screen::reserved(runs.len())?;
+        for run in runs {
             let id = run.image | ((run.high - 1) & 0xff) << 24;
             // kitty's ids are never 0; it would find an image without one.
             if id == 0 {
                 continue;
             }
+            named.try_reserve(1).ok()?;
             let found = *named.entry((id, run.placement)).or_insert_with(|| {
                 (0..out.len())
                     .filter(|&i| out[i].is_virtual && out[i].id == id)
@@ -1481,17 +1491,20 @@ impl Graphics {
             if left >= right || top >= bottom {
                 continue;
             }
+            shown.try_reserve(1).ok()?;
             let at = shown.entry(v.key).or_insert((row, i64::MAX));
             at.0 = at.0.min(row);
             at.1 = at.1.min(left / cw);
             self.clock += 1;
+            let mut slices = crate::screen::reserved(1)?;
+            slices.push(ImageSlice { y, top, bottom });
             cell_images.push(Placement {
                 pixels: Arc::clone(&v.pixels),
                 src: [0, 0, v.width, v.height],
                 x,
                 w,
                 h,
-                slices: vec![ImageSlice { y, top, bottom }],
+                slices,
                 clip_x: (left, right),
                 key: self.clock,
                 placement_id: 0,
@@ -1522,9 +1535,12 @@ impl Graphics {
             append_slice(&mut p.slices, y, y.max(0), (y + p.h).min(bottom));
             true
         });
+        out.try_reserve_exact(cell_images.len()).ok()?;
         out.append(&mut cell_images);
-        out.sort_by_key(|p| (p.z, p.image, p.key));
-        out
+        // Every key is its own (the clock), so an unstable sort, which
+        // allocates nothing, orders them as a stable one would.
+        out.sort_unstable_by_key(|p| (p.z, p.image, p.key));
+        Some(out)
     }
 }
 
