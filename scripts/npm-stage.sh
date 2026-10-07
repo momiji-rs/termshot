@@ -70,7 +70,7 @@ cat > "$dir/package.json" <<JSON
   "repository": $repo,
   "bin": { "termshot": "bin/termshot.js" },
   "files": ["bin/termshot.js", "LICENSE"],
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=22" },
   "optionalDependencies": {
     "@momiji-rs/termshot-darwin-universal": "$version",
     "@momiji-rs/termshot-linux-x64": "$version",

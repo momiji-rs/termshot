@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The npm package asks for Node 22 or newer (`engines`), the oldest Node
+  line still maintained; it asked for 18, which reached its end of life in
+  April 2025. The release workflow checks it with Node 22 on each platform.
+
 ## [0.3.1] - 2026-10-07
 
 ### Added
