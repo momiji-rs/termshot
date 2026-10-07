@@ -52,7 +52,7 @@ termshot draws one frame, with no animation and no window chrome.
 Download a release archive and put the binary on your `PATH`:
 
 ```sh
-v=0.3.1 p=linux-x86_64-musl   # or linux-aarch64-musl, macos-universal
+v=0.3.2 p=linux-x86_64-musl   # or linux-aarch64-musl, macos-universal
 curl -LO https://github.com/momiji-rs/termshot/releases/download/v$v/termshot-$v-$p.tar.gz
 tar -xzf termshot-$v-$p.tar.gz
 export PATH="$PWD/termshot-$v-$p:$PATH"
@@ -75,11 +75,11 @@ platform, with `SHA256SUMS`:
 
 | archive | runs on |
 | --- | --- |
-| `termshot-0.3.1-macos-universal.tar.gz` | macOS 11 or newer, arm64 and x86_64 |
-| `termshot-0.3.1-linux-x86_64-musl.tar.gz` | x86_64 Linux, static (no libc needed) |
-| `termshot-0.3.1-linux-aarch64-musl.tar.gz` | aarch64 Linux, static (no libc needed) |
+| `termshot-0.3.2-macos-universal.tar.gz` | macOS 11 or newer, arm64 and x86_64 |
+| `termshot-0.3.2-linux-x86_64-musl.tar.gz` | x86_64 Linux, static (no libc needed) |
+| `termshot-0.3.2-linux-aarch64-musl.tar.gz` | aarch64 Linux, static (no libc needed) |
 
-Each archive holds `termshot-0.3.1-<platform>/`, with the binary, this README, the changelog
+Each archive holds `termshot-0.3.2-<platform>/`, with the binary, this README, the changelog
 and the licenses. The binary carries its font, so it needs no other files. The archives hold
 the CLI only; for the library, [build from source](#use-as-a-rust-library).
 
