@@ -1,0 +1,27 @@
+name: screens
+
+# Dogfoods action/: renders the samples and a few commands with the termshot built
+# from this commit, and shows on the pull request what changed.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  screens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build.sh
+      - uses: ./action
+        with:
+          termshot-path: ./termshot
+          logs: examples/*.pty
+          shots: |
+            help: ./termshot --help
+            colors: for i in 0 1 2 3 4 5 6 7; do printf '\e[4%dm  \e[10%dm  ' $i $i; done; printf '\e[0m\n'
+            less: seq 1 200 | less

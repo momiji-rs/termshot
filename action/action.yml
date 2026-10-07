@@ -1,0 +1,127 @@
+name: termshot
+description: Screenshot terminal commands and TUIs in CI and show what changed on the pull request
+author: momiji-rs
+branding:
+  icon: terminal
+  color: orange
+
+inputs:
+  shots:
+    description: |
+      One screen per line, as `name: command`. Each command runs under bash in a real
+      PTY of `size`; one still running after `timeout` seconds is captured as it is.
+  logs:
+    description: Globs of PTY logs you already recorded (one screen each, named after the file)
+  size:
+    description: Terminal size, COLSxROWS
+    default: 100x30
+  px:
+    description: Font pixel height
+    default: '28'
+  timeout:
+    description: Seconds a command may run before its screen is taken
+    default: '10'
+  font:
+    description: TrueType or OpenType font (default the built-in JetBrains Mono)
+  fallback-font:
+    description: Font for characters the first lacks, such as CJK
+  args:
+    description: Extra termshot arguments, such as --lf-newline
+  id:
+    description: Names this set of screens, to tell apart several uses in one repository
+    default: termshot
+  comment:
+    description: auto (comment on pull requests when the token can) or never
+    default: auto
+  publish:
+    description: Push the PNGs to `assets-branch` so the comment can show them
+    default: 'true'
+  assets-branch:
+    description: Orphan branch holding the images and the baselines
+    default: termshot-assets
+  fail-on-change:
+    description: Fail when a screen differs from the base branch's baseline
+    default: 'false'
+  github-token:
+    description: Token with contents and pull-requests write
+    default: ${{ github.token }}
+  termshot-version:
+    description: termshot release to download
+    default: 0.2.0
+  termshot-path:
+    description: Use this termshot binary instead of downloading one
+
+outputs:
+  changed:
+    description: Number of screens that differ from the baseline
+    value: ${{ steps.run.outputs.changed }}
+  dir:
+    description: Directory with the logs, PNGs and texts
+    value: ${{ steps.run.outputs.dir }}
+  comment-url:
+    description: The pull request comment, when one was posted
+    value: ${{ steps.run.outputs.comment-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: install termshot
+      id: install
+      shell: bash
+      env:
+        VERSION: ${{ inputs.termshot-version }}
+        LOCAL: ${{ inputs.termshot-path }}
+      run: |
+        set -euo pipefail
+        if [ -n "$LOCAL" ]; then
+          echo "bin=$(cd "$(dirname "$LOCAL")" && pwd)/$(basename "$LOCAL")" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) platform=linux-x86_64-musl ;;
+          Linux-ARM64) platform=linux-aarch64-musl ;;
+          macOS-*) platform=macos-universal ;;
+          *) echo "::error::termshot has no build for $RUNNER_OS $RUNNER_ARCH"; exit 1 ;;
+        esac
+        dir="$RUNNER_TOOL_CACHE/termshot/$VERSION/$platform"
+        if [ ! -x "$dir/termshot" ]; then
+          name="termshot-$VERSION-$platform"
+          url="https://github.com/momiji-rs/termshot/releases/download/v$VERSION"
+          tmp=$(mktemp -d)
+          curl -fsSL --retry 3 -o "$tmp/$name.tar.gz" "$url/$name.tar.gz"
+          curl -fsSL --retry 3 -o "$tmp/SHA256SUMS" "$url/SHA256SUMS"
+          (cd "$tmp" && grep " $name.tar.gz\$" SHA256SUMS | shasum -a 256 -c -)
+          mkdir -p "$dir"
+          tar -xzf "$tmp/$name.tar.gz" -C "$dir" --strip-components 1
+        fi
+        echo "bin=$dir/termshot" >> "$GITHUB_OUTPUT"
+
+    - name: capture, render and report
+      id: run
+      shell: bash
+      env:
+        INPUT_TERMSHOT: ${{ steps.install.outputs.bin }}
+        INPUT_SHOTS: ${{ inputs.shots }}
+        INPUT_LOGS: ${{ inputs.logs }}
+        INPUT_SIZE: ${{ inputs.size }}
+        INPUT_PX: ${{ inputs.px }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_FONT: ${{ inputs.font }}
+        INPUT_FALLBACK_FONT: ${{ inputs.fallback-font }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_ID: ${{ inputs.id }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_PUBLISH: ${{ inputs.publish }}
+        INPUT_ASSETS_BRANCH: ${{ inputs.assets-branch }}
+        INPUT_FAIL_ON_CHANGE: ${{ inputs.fail-on-change }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_OUTPUT_DIR: ${{ runner.temp }}/termshot-${{ inputs.id }}
+      run: python3 "$GITHUB_ACTION_PATH/termshot_action.py"
+
+    - name: upload screens
+      if: always() && steps.run.outputs.dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: termshot-${{ inputs.id }}
+        path: ${{ steps.run.outputs.dir }}
+        if-no-files-found: ignore
