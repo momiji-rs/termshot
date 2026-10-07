@@ -460,12 +460,6 @@ check "--json reports the palette's colours" 'cmp -s "$out/grid-palette.json" "$
 ./termshot --text "$out/pad.txt" --json "$out/pad.json" --padding 40 "$log" "$out/pad.png"
 check "padding changes no --text or --json" 'cmp -s "$out/pad.txt" "$out/text-png.txt" && cmp -s "$out/pad.json" "$out/both.json"'
 check "--padding without a PNG needs no font" './termshot --font README.md --padding 4 --text "$out/q.txt" "$log"'
-# Every golden's JSON parses, and its runs spell the --text rows.
-if command -v python3 >/dev/null; then
-    check "the golden JSON parses and agrees with --text" 'python3 tests/grids/check.py tests/grids'
-else
-    echo "skip: golden JSON check (no python3)"
-fi
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.
@@ -490,6 +484,8 @@ rustc --edition 2021 tests/golden.rs -o "$out/golden" -C opt-level=2 \
     -L native="$PWD/$out" -l static=png_read
 if [ "$mode" = update ]; then
     "$out/golden" --update
+    # The unit tests checked the grids before they were rewritten.
+    "$out/unit" -q grid_json || fail=1
 else
     "$out/golden" || fail=1
 fi
