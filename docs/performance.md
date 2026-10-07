@@ -1,6 +1,11 @@
 # Performance measurements
 
 This file holds dated, versioned measurement rounds, newest first. The
+[render-as-a-library round](#the-render-as-a-library-2026-10-06-35c62b9-85-part-2)
+(2026-10-06, `35c62b9`, #85 part 2) made the render library API, returned
+the PNG without a copy, remeasured every case against main `231f5e0` on the
+same two machines, and measured the two-crate build again, which the CLI
+now is. The
 [parser-as-a-library round](#the-parser-as-a-library-2026-10-06-3c69f71-85-part-1)
 (2026-10-06, `3c69f71`, #85 part 1) moved the parser and the screen model
 out of `src/main.rs` into library modules, remeasured every case against
@@ -65,6 +70,196 @@ the size. `bench.py --slim FULL.json --output SLIM.json [--stage KEY]`
 slims an existing full file. Commit the slim form, with only the stages a
 section cites. The files from earlier rounds are full; slimming them is a
 possible follow-up.
+
+## The render as a library (2026-10-06, `35c62b9`, #85 part 2)
+
+#85's second part makes the render library API: `termshot::render` returns
+the PNG's bytes, every failure is an `Error`, the render's preparation of
+the cells (placeholders, the cursor, opaque backgrounds) moves from
+`src/main.rs` to `src/prepare.rs`, and the CLI becomes a thin layer over
+the public API. Nothing is meant to change in what the CLI makes or how
+fast. In the release build (fat LTO) no case is slower on macOS, and on
+Linux two large-image cases are 1-2.5% slower from code layout alone
+(below); the dev build is the same. The CLI is now a crate of its own that
+links the library (`two` below): measured against the one-unit build, it
+is never slower beyond noise, so it is the layout used.
+
+### Output
+
+- `./test.sh` writes the same 996 PNG, `--text` and `--json` files as main
+  `231f5e0`, byte for byte (sha256), on macOS.
+- `tests/library.rs` draws all 68 pixel goldens' cases through
+  `termshot::render`, and each PNG is the CLI's, byte for byte.
+- `bench/c-vs-rust/run.sh full 1`: 4,135 renders byte-identical to the CLI
+  at `48192f6`, with the same exit codes and stderr (macOS).
+- Every case below gave the same output bytes from every binary
+  (`--verify-identical`), dev and fat LTO builds alike.
+
+### The PNG, returned without a copy
+
+The first build of this round (`8d23873`) copied the PNG out of
+stb_image_write's buffer into a `Vec` of its own, which cost the renders
+with a large PNG on Linux, in both batches: dev `reply-128px` 0.978 /
+0.972, `image-below` 0.976 / 0.984, `image-under` 0.981 / 0.982; fat LTO
+`large` 0.971 / 0.971, `large-sparse` 0.971 / 0.960, `reply-128px` 0.967 /
+0.977, `geometry-all` 0.979 / 0.977 (paired against main). A buffer the
+PNG's size (1 to 6 MB here) is mapped fresh, its pages are faulted in, and
+the bytes copied: 0.35 to 0.5 ms on a 20 ms render. `35c62b9` makes
+`termshot_png_alloc`, the `STBIW_MALLOC` of the one buffer stb asks for, a
+`Vec`'s (`try_reserve_exact`), and returns that `Vec` as it is. The
+results below are `35c62b9`'s.
+
+### What is left on Linux: code layout
+
+In `35c62b9`, the cases slower in both batches are Linux's large images:
+dev `large` 0.979 / 0.985 and `rounded-128px` 0.981 / 0.984, fat LTO
+`large-color` 0.976 / 0.987 and `geometry-all` 0.991 / 0.990. A profiled
+probe (`TERMSHOT_PROFILE`, fat LTO, 30 rounds) puts the difference in
+`deflate_match_emit_ms`, the compressor's main loop: `large-color` 99.2 ms
+on main, 100.1 ms on the branch, every other stage within 0.15 ms or
+faster. The compressor is unchanged, and so is its machine code:
+`termshot_zlib_compress` is 6,283 bytes in both binaries, but starts at
+`0xca440` in main's (64-byte aligned) and `0xd45b0` in the branch's (48
+past a 64-byte line). Built with every function 64-byte aligned
+(`RUSTFLAGS='-C lto=fat -C llvm-args=-align-all-functions=6'`), the branch
+is within noise of main on all of them, 40 rounds: `large` 0.994 [0.981,
+1.013], `large-color` 1.007 [0.996, 1.018], `geometry-all` 0.993 [0.981,
+1.004], `rounded-128px` 0.995 [0.981, 1.003], `reply-sent` 1.019 [0.992,
+1.061] (95% intervals). That probe and the profiled one are not kept.
+
+### Two crates or one compilation unit
+
+#92 kept the CLI and the library in one compilation unit because, with the
+CLI using the render's internals, two crates painted 1.6-2.6% slower with
+fat LTO on macOS. With the CLI thin, `two` (`35c62b9`'s CLI as a crate of
+its own, linking `libtermshot.rlib` with `--extern termshot`, every other
+byte the same) was measured in every batch beside `branch` (one unit):
+
+- against main, `two` is slower in both batches on one case of 192
+  (Linux dev `large` 0.976 / 0.985, which `branch` shares), and `branch`
+  on four;
+- against `branch`, `two` is never slower in both batches: its paired
+  speedup over `branch`'s ranges 0.974 to 1.033 (macOS dev), 0.977 to
+  1.021 (macOS fat LTO), 0.943 to 1.085 (Linux dev) and 0.960 to 1.058
+  (Linux fat LTO), and no case has both batches' intervals apart.
+
+So the CLI is a crate of its own now (`62f0165`): build.sh builds the rlib
+first, and the CLI links it, as an embedder does. The rlib is the
+embedder's artifact either way.
+
+### Results
+
+Paired wall speedup of each binary against main (main's wall time / the
+binary's, per interleaved round; above 1 is faster), batches A / B. "In
+both" means the bootstrap 95% interval lies past 1 in both batches. Every
+suite ran: 48 cases, the system Noto CJK collection included. "Every case"
+is the range of all 96 medians.
+
+`branch` (`35c62b9`, one compilation unit):
+
+| case | macOS dev | macOS fat LTO | Linux dev | Linux fat LTO |
+| --- | ---: | ---: | ---: | ---: |
+| `ansi-replay` | 1.008 / 1.001 | 0.999 / 1.008 | 1.012 / 1.002 | 1.039 / 1.050 |
+| `dense-sgr` | 1.007 / 1.002 | 1.009 / 1.002 | 1.021 / 1.015 | 0.993 / 0.992 |
+| `thai-combining` | 1.023 / 1.024 | 1.016 / 1.024 | 1.038 / 1.038 | 1.018 / 1.018 |
+| `cursor-moves` | 1.009 / 1.004 | 1.007 / 1.005 | 1.000 / 0.971 | 0.991 / 0.993 |
+| `mixed-unicode` | 1.013 / 1.011 | 1.011 / 1.012 | 1.029 / 1.029 | 0.997 / 0.998 |
+| `text-mixed-unicode` | 1.010 / 1.013 | 1.011 / 1.014 | 1.023 / 1.032 | 0.993 / 0.998 |
+| `reply-sent` | 1.006 / 0.996 | 0.994 / 1.004 | 0.992 / 0.972 | 0.975 / 0.982 |
+| `reply-128px` | 0.998 / 1.004 | 1.001 / 1.006 | 0.997 / 0.985 | 1.006 / 0.994 |
+| `large` | 1.001 / 1.007 | 0.991 / 1.002 | 0.979 / 0.985 | 0.987 / 0.986 |
+| `large-color` | 1.003 / 1.001 | 1.006 / 0.997 | 0.999 / 0.989 | 0.976 / 0.987 |
+| `geometry-all` | 1.005 / 0.997 | 1.001 / 1.002 | 0.988 / 0.997 | 0.991 / 0.990 |
+| `image-under` | 1.004 / 0.999 | 1.005 / 0.990 | 1.001 / 0.977 | 1.001 / 0.991 |
+| `image-below` | 0.992 / 0.996 | 1.005 / 1.002 | 0.995 / 0.985 | 1.008 / 1.000 |
+| `cjk-full` | 1.003 / 0.995 | 1.010 / 1.007 | 1.021 / 0.978 | 1.021 / 1.010 |
+| slower in both | none | none | `large`, `rounded-128px` 0.981 / 0.984 | `geometry-all`, `large-color` |
+| faster in both | `rounded-128px` 1.011 / 1.020, `mixed-unicode`, `thai-combining`, `text-mixed-unicode` | `thai-combining`, `text-ansi-replay` 1.010 / 1.014, `text-mixed-unicode` | `mixed-unicode`, `thai-combining`, `text-mixed-unicode` | `text-ansi-replay` 1.072 / 1.072 |
+| every case | 0.987 to 1.024 | 0.982 to 1.024 | 0.952 to 1.039 | 0.956 to 1.072 |
+
+`two` (`35c62b9` as two crates, the layout adopted):
+
+| case | macOS dev | macOS fat LTO | Linux dev | Linux fat LTO |
+| --- | ---: | ---: | ---: | ---: |
+| `ansi-replay` | 1.008 / 1.012 | 1.002 / 1.007 | 1.011 / 0.988 | 1.031 / 1.054 |
+| `dense-sgr` | 1.003 / 1.005 | 1.005 / 1.003 | 1.007 / 1.011 | 1.007 / 0.998 |
+| `thai-combining` | 1.054 / 1.057 | 1.017 / 1.017 | 1.032 / 1.025 | 1.023 / 1.015 |
+| `cursor-moves` | 1.005 / 1.005 | 0.996 / 0.999 | 1.018 / 1.002 | 0.995 / 0.994 |
+| `mixed-unicode` | 1.017 / 1.013 | 0.998 / 0.996 | 1.007 / 1.007 | 0.978 / 0.993 |
+| `text-mixed-unicode` | 1.019 / 1.018 | 1.000 / 0.991 | 1.007 / 1.023 | 0.984 / 0.998 |
+| `reply-sent` | 1.001 / 0.992 | 1.002 / 1.002 | 0.972 / 0.992 | 0.979 / 0.994 |
+| `reply-128px` | 1.001 / 1.002 | 1.004 / 1.001 | 0.996 / 0.985 | 0.994 / 0.999 |
+| `large` | 0.999 / 1.007 | 0.997 / 1.001 | 0.976 / 0.985 | 0.985 / 0.990 |
+| `large-color` | 0.997 / 0.999 | 1.002 / 1.001 | 0.997 / 0.998 | 0.979 / 0.990 |
+| `geometry-all` | 1.004 / 1.001 | 0.998 / 1.003 | 0.989 / 0.991 | 0.995 / 0.993 |
+| `image-under` | 0.996 / 1.003 | 1.005 / 0.998 | 1.009 / 0.991 | 0.997 / 1.000 |
+| `image-below` | 1.008 / 0.997 | 0.997 / 0.993 | 0.998 / 0.979 | 0.991 / 0.982 |
+| `cjk-full` | 1.007 / 0.998 | 1.010 / 1.009 | 1.016 / 0.957 | 1.026 / 1.022 |
+| slower in both | none | none | `large` | none |
+| faster in both | `mixed-unicode`, `thai-combining`, `text-mixed-unicode` | `thai-combining`, `text-ansi-replay` 1.020 / 1.016 | `thai-combining`, `text-dense-sgr` 1.031 / 1.038 | `ansi-replay`, `text-ansi-replay` 1.058 / 1.053 |
+| every case | 0.984 to 1.057 | 0.989 to 1.022 | 0.957 to 1.073 | 0.959 to 1.058 |
+
+Peak RSS against main's ranges from 0.935 to 1.079 over every case,
+build and binary. The extremes are cases whose five peak-RSS runs land on
+one of two levels about 0.7 MB apart, as main's own do (`color-grid` 8.0
+or 8.7 MB, `image-below` 15.5 or 16.3 MB, macOS dev).
+
+### The profile record
+
+`TERMSHOT_PROFILE` prints the same keys as before, but `face_ms` (the
+faces built for the render, the CFF tables parsed again) is in the
+render's record now, beside `output_write_ms`, which the CLI measures and
+adds to it: the render is the library's. A run without a PNG prints only
+the CLI's record, with `face_ms` 0, as before (`tests/profile.rs`).
+
+### What was measured
+
+| | macOS arm64 | Linux x86-64 |
+| --- | --- | --- |
+| host | `lawrences-mac-studio`, Apple M2 Max, macOS 26.6.2 | `starship`, Ryzen 7 8745HS, governor `performance` |
+| built with | rustc 1.98.1 (Homebrew), Apple clang 21.0.0 | rustc 1.98.1 (Arch), GCC 16.2.1 |
+| load average (1 min), start → end | dev: A 6.84 → 5.13, B 5.04 → 5.12; fat: A 5.12 → 3.81, B 3.81 → 4.57 | dev: A 2.92 → 1.16, B 1.16 → 1.34; fat: A 1.34 → 1.03, B 1.03 → 1.13 |
+
+The binaries: `main` is main `231f5e0`, `branch` is `35c62b9`, `two` is
+`35c62b9` as two crates (`src/main.rs` without its module list, built with
+`--extern termshot=libtermshot.rlib`), each with `build.sh`'s flags (dev)
+and with `RUSTFLAGS='-C lto=fat'` added, as `scripts/release.sh` builds
+them (fat LTO). Their sha256 values are in each file's `binary_sha256`.
+`scripts/bench.py` ran 40 rounds and 5 warmups per batch, and 5 peak-RSS
+runs, with seeds 71 (A) and 89 (B). The macOS host is a shared desktop
+(other sessions kept its load near 4-5); the paired, interleaved rounds
+are what make its numbers comparable. The first round (`8d23873`) is
+quoted above and not kept. What changed after `35c62b9` (the parse's rows
+and tab stops allocated as its cells are, two errors' variants,
+stb_image_write's functions made static, and the two-crate layout itself,
+`62f0165`) does not touch a hot path.
+
+The files are slim, with no profile stage kept: dev
+[A](performance-2026-10-06-lib-render-dev-macos-a.json) and
+[B](performance-2026-10-06-lib-render-dev-macos-b.json), fat
+[A](performance-2026-10-06-lib-render-fat-macos-a.json) and
+[B](performance-2026-10-06-lib-render-fat-macos-b.json) on macOS; dev
+[A](performance-2026-10-06-lib-render-dev-linux-a.json) and
+[B](performance-2026-10-06-lib-render-dev-linux-b.json), fat
+[A](performance-2026-10-06-lib-render-fat-linux-a.json) and
+[B](performance-2026-10-06-lib-render-fat-linux-b.json) on Linux.
+
+### Reproduce
+
+```sh
+# main, branch and two, dev and fat LTO; two is the branch's src/main.rs
+# without its module list, linking the rlib build.sh makes:
+#   rustc --edition 2021 main2.rs -o two-$flavor -C opt-level=2 $flags --extern termshot=libtermshot.rlib
+cjk=/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc   # on macOS, a copy (same sha256)
+for flavor in dev fat; do
+  for batch in a:71 b:89; do
+    python3 scripts/bench.py --binary main=/tmp/main-$flavor --binary branch=/tmp/branch-$flavor \
+      --binary two=/tmp/two-$flavor --reference main --runs 40 --warmups 5 --memory-runs 5 \
+      --verify-identical --cjk-font "$cjk" --seed "${batch#*:}" \
+      --output "/tmp/lib-render-$flavor-${batch%%:*}.json"
+  done
+done
+```
 
 ## The parser as a library (2026-10-06, `3c69f71`, #85 part 1)
 

@@ -213,16 +213,21 @@ pub(crate) fn replay(data: &[u8], cols: usize, rows: usize, lf: Lf) -> Grid {
 /// replay_with the default palette.
 #[cfg(test)]
 pub(crate) fn replay_sized(data: &[u8], cols: usize, rows: usize, lf: Lf, cell_size: (i32, i32)) -> Grid {
-    replay_with(data, cols, rows, &ParseOptions { lf, palette: Palette::DEFAULT }, cell_size)
+    replay_with(data, cols, rows, &ParseOptions { lf, palette: Palette::DEFAULT }, cell_size).unwrap()
 }
 
-pub(crate) fn replay_with(data: &[u8], cols: usize, rows: usize, options: &ParseOptions, cell_size: (i32, i32)) -> Grid {
+/// Replay `data` on a `cols` x `rows` screen with cells of `cell_size`
+/// pixels: the grid it leaves, or None when memory for the screen ran out
+/// (the allocations src/screen.rs's `reserved` makes).
+pub(crate) fn replay_with(data: &[u8], cols: usize, rows: usize, options: &ParseOptions, cell_size: (i32, i32))
+    -> Option<Grid> {
     let lf = options.lf;
     let data = match lf {
         Lf::Newline => strip_final_bare_lf(data),
         Lf::Index => data,
     };
-    let mut screen = Screen::with(cols, rows, options);
+    crate::screen::faults::start();
+    let mut screen = Screen::with(cols, rows, options)?;
     screen.cell_size = cell_size;
     // Reuse the fixed parameter buffer across sequences; only len needs resetting.
     let mut params = Params { list: [Param::default(); MAX_PARAMS], len: 0 };
@@ -310,8 +315,10 @@ pub(crate) fn replay_with(data: &[u8], cols: usize, rows: usize, options: &Parse
                         graphics.abort();
                         graphics.clear();
                     }
-                    screen = Screen::with(cols, rows, options);
+                    let out_of_memory = screen.out_of_memory;
+                    screen = Screen::with(cols, rows, options)?;
                     screen.cell_size = cell_size;
+                    screen.out_of_memory = out_of_memory;
                     [screen.graphics, screen.other_graphics] = kept;
                 },
                 // CAN and SUB cancel the escape.
@@ -341,13 +348,18 @@ pub(crate) fn replay_with(data: &[u8], cols: usize, rows: usize, options: &Parse
     // With a wrap pending the cursor stays on the last column, where
     // terminals draw it.
     let cursor = screen.cursor_shown.then_some((screen.row, screen.col));
+    // Memory ran out for the marks or the ids: fail now, before the work
+    // below allocates more.
+    if screen.out_of_memory {
+        return None;
+    }
     // Placeholder cells show nothing without a virtual placement to name.
-    let placeholders = if screen.graphics.has_virtual() { screen.placeholders() } else { Vec::new() };
-    let images = std::mem::take(&mut screen.graphics).finish(&placeholders, cell_size, rows);
+    let placeholders = if screen.graphics.has_virtual() { screen.placeholders()? } else { Vec::new() };
+    let images = std::mem::take(&mut screen.graphics).finish(&placeholders, cell_size, rows)?;
     let cursor_shape = screen.cursor_shape;
-    let marks = screen.screen_marks();
-    let background = options.palette.background;
-    Grid { cells: screen.into_cells(), marks, cursor, cursor_shape, images, cols, rows, background }
+    let marks = screen.screen_marks()?;
+    let (foreground, background) = (options.palette.foreground, options.palette.background);
+    Some(Grid { cells: screen.into_cells()?, marks, cursor, cursor_shape, images, cols, rows, foreground, background })
 }
 
 /// Parse one CSI sequence whose parameters start at i, apply it, and return

@@ -11,8 +11,10 @@
      read outlines for a TrueType face only;
    - termshot_png_encode: the PNG of the canvas's filtered scanlines, with
      Rust's compressor (src/deflate.rs) behind STBIW_ZLIB_COMPRESS.
-   main.rs asks draw_face_cell_size for the cell before replaying the log.
-   Everything here exists because it touches stb's internals or its types. */
+   The library asks draw_face_cell_size for the cell before replaying the
+   log (Font::cell_size, src/api_render.rs). Nothing here prints: failures
+   are return values, which the Rust says. Everything here exists because it
+   touches stb's internals or its types. */
 
 #include <limits.h>
 #include <math.h>
@@ -40,15 +42,25 @@ static double now_ms(void) {
    when memory runs out. */
 unsigned char *termshot_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality);
 #define STBIW_ZLIB_COMPRESS termshot_zlib_compress
-/* The PNG's own buffer comes from malloc through Rust (src/render.rs), so
-   the fault tests can fail it as they fail the compressor's; the
-   compressor's buffer, which stb frees, is malloc's too. */
+/* The PNG's own buffer, the only one stbiw__write_png_from_filtered asks
+   STBIW_MALLOC for, is a Rust Vec's (src/render.rs), which the render
+   returns as it is, and which the fault tests can fail as they fail the
+   compressor's; stb never frees it. The compressor's buffer, which stb
+   frees, is malloc's. stb's functions that would STBIW_FREE or
+   STBIW_REALLOC a buffer of STBIW_MALLOC's (its own zlib compressor, the
+   file writers) are static (STB_IMAGE_WRITE_STATIC, below) and never
+   called. */
 void *termshot_png_alloc(size_t size);
 #define STBIW_MALLOC(size) termshot_png_alloc(size)
 #define STBIW_REALLOC(p, size) realloc(p, size)
 #define STBIW_FREE(p) free(p)
 #include "png_crc.h"
 #define STBIW_CRC32 termshot_png_crc
+/* Every stb_image_write function is this file's own: nothing outside it
+   (an embedder linking libtermshot.rlib included) can call the generic
+   writers, which would STBIW_MALLOC more than the one buffer and
+   STBIW_FREE it. */
+#define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -171,10 +183,7 @@ static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double fon
     int ascent, descent, line_gap;
     face_v_metrics(font, face, &ascent, &descent, &line_gap);
     int adv = face_advance(font, face, stbtt_FindGlyphIndex(font, 'M'));
-    if (adv <= 0 || ascent <= descent) {
-        fprintf(stderr, "termshot: font metrics unusable\n");
-        return 0;
-    }
+    if (adv <= 0 || ascent <= descent) return 0;
     float scale = face_scale(font, face, (float)font_px);
     int cell_w = to_px(adv * scale + 0.5f);
     if (cell_w < 1) cell_w = 1;
@@ -281,18 +290,15 @@ _Static_assert(sizeof(CellMetrics) == 28, "CellMetrics ABI must match the Rust s
 _Static_assert(sizeof(FontSetup) == 504, "FontSetup ABI must match the Rust side");
 
 /* Set up the fonts of a render in s: font_face to draw with, and
-   fallback_face, or NULL, for the characters it lacks. 1, having said why,
-   when a face can't be used or the font's metrics are unusable; 0 when
-   done. */
+   fallback_face, or NULL, for the characters it lacks. 0 when done; 1 when
+   a face can't be used, 2 when the font's metrics are unusable. It prints
+   nothing: src/render.rs says why (FontFailure there). */
 int termshot_font_setup(const Face *font_face, const Face *fallback_face, double font_px, FontSetup *s) {
     stbtt_fontinfo *font = &s->font, *fallback = &s->fallback;
-    if (!init_face(font, font_face) || (fallback_face && !init_face(fallback, fallback_face))) {
-        fprintf(stderr, "termshot: font init failed\n");
-        return 1;
-    }
+    if (!init_face(font, font_face) || (fallback_face && !init_face(fallback, fallback_face))) return 1;
 
     CellMetrics metrics;
-    if (!cell_metrics(font, font_face, font_px, &metrics)) return 1;
+    if (!cell_metrics(font, font_face, font_px, &metrics)) return 2;
     /* The fallback is sized to the same ascent-to-descent height and shares
        the baseline. */
     float fallback_scale = fallback_face ? face_scale(fallback, fallback_face, (float)metrics.body) : 0;
@@ -307,8 +313,10 @@ int termshot_font_setup(const Face *font_face, const Face *fallback_face, double
 }
 
 /* The PNG of w x h RGB pixels, h filtered scanlines (a filter byte, then
-   the row) stride 3 * w + 1 apart, from stb_image_write: malloc'd, *len
-   bytes long, or NULL when an allocation failed, stb's or the compressor's.
+   the row) stride 3 * w + 1 apart, from stb_image_write: *len bytes in the
+   buffer termshot_png_alloc made, a Rust Vec's, which only src/render.rs's
+   png_bytes may take back (never free() it), or NULL when an allocation
+   failed, stb's or the compressor's.
    With profiling, marks gets the clock (CLOCK_MONOTONIC, in ms) when it
    began, began compressing, began packing and was done. */
 unsigned char *termshot_png_encode(unsigned char *filtered, int w, int h, int profile, double marks[4], int *len) {

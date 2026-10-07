@@ -129,9 +129,13 @@ fn a_font_without_glyf_is_refused_for_what_it_has_instead() {
 }
 
 /// Render with the vendored font, as both fonts when fallback is set, and
-/// return what the render reports about empty glyphs.
+/// return what the render reports about empty glyphs. Each text has a PNG
+/// of its own: the tests that call this run at once, and one file would
+/// hold whichever finished last.
 fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
     let font = font::prepare(fs::read(FONT).unwrap()).unwrap();
+    let name: String = text.chars().map(|c| format!("{:x}", u32::from(c))).collect::<Vec<_>>().join("-");
+    let path = format!("target/test/empty-glyphs-{name}{}.png", if fallback { "-fallback" } else { "" });
     let cells = parse(text.as_bytes(), cols, 2);
     // Not zeroed: the render must clear it.
     let mut empty = EmptyGlyphs { cp: 1, fonts: 9, col: 9, row: 9, cells: 9 };
@@ -140,7 +144,7 @@ fn empty_glyphs(text: &str, cols: usize, fallback: bool) -> EmptyGlyphs {
             let fallback = fallback.then_some(face.ffi());
             unsafe {
                 render::draw_png_images(&cells, &[], cols, 2, face.ffi(), fallback, 16.0,
-                    "target/test/empty-glyphs.png", false, &[], Some(&mut empty))
+                    &path, false, &[], Some(&mut empty))
             }
         })
         .unwrap();
@@ -193,23 +197,19 @@ fn draw_png_reports_nothing_for_glyphs_it_draws_or_lacks() {
     }
 }
 
-fn warning(args: &[&str], empty: &EmptyGlyphs, font: &[u8], fallback: Option<&[u8]>) -> Option<String> {
-    let Ok(Command::Render(options)) = parse_args(args.iter().map(|a| a.to_string())) else { panic!("{args:?}") };
-    let font = font::prepare(font.to_vec()).unwrap();
-    let fallback = fallback.map(|f| font::prepare(f.to_vec()).unwrap());
-    empty_glyph_warning(empty, &options, &font, fallback.as_ref())
-}
-
+/// A face's color bitmap table is the face's own: a font with one beside
+/// its outlines, as Apple Color Emoji has, and in a collection only the
+/// face drawn with (the CLI's empty-glyph warning names it,
+/// src/cli_tests.rs).
 #[test]
-fn the_empty_glyph_warning_names_the_cell_the_fonts_and_the_fix() {
+fn a_color_bitmap_table_is_the_face_s_own() {
     let plain = fs::read(FONT).unwrap();
-    // A font with a color bitmap table beside its outlines, as Apple Color Emoji has.
     let mut color = plain.clone();
     let tables = u16::from_be_bytes([color[4], color[5]]) as usize;
     let record = (0..tables).map(|i| 12 + 16 * i).find(|&r| &color[r..r + 4] == b"name").unwrap();
     color[record..record + 4].copy_from_slice(b"sbix");
     assert_eq!(font::color_bitmap(&font::prepare(plain.clone()).unwrap()), None);
-    assert_eq!(font::color_bitmap(&font::prepare(color.clone()).unwrap()), Some("sbix"));
+    assert_eq!(font::color_bitmap(&font::prepare(color).unwrap()), Some("sbix"));
 
     // In a collection, only the face drawn with counts. ("name" is the
     // collection's own, so another table becomes sbix.)
@@ -219,39 +219,6 @@ fn the_empty_glyph_warning_names_the_cell_the_fonts_and_the_fix() {
     let ttc = font::tests::collection(&[(&plain, "Plain"), (&color_face, "Color")]);
     assert_eq!(font::color_bitmap(&font::tests::choose_padded(ttc.clone(), "0")), None);
     assert_eq!(font::color_bitmap(&font::tests::choose_padded(ttc, "1")), Some("sbix"));
-
-    let one = EmptyGlyphs { cp: 0x1F600, fonts: EMPTY_IN_FONT, col: 3, row: 1, cells: 1 };
-    assert_eq!(warning(&["log", "out.png"], &EmptyGlyphs::default(), &plain, None), None);
-    assert_eq!(
-        warning(&["log", "out.png"], &one, &plain, None).unwrap(),
-        "warning: U+1F600 at column 3, row 1 (from 0) is drawn as a box: the built-in font maps it to an \
-         empty glyph; pass --fallback-font with an outline font that has it"
-    );
-    let many = EmptyGlyphs { cells: 4, ..one };
-    assert_eq!(
-        warning(&["--font", "c.ttf", "log", "out.png"], &many, &color, None).unwrap(),
-        "warning: U+1F600 at column 3, row 1 (from 0) is drawn as a box (the first of 4 such cells): \
-         --font c.ttf (a color bitmap font, sbix, which termshot cannot draw) maps it to an empty glyph; \
-         pass --fallback-font with an outline font that has it, such as Noto Emoji"
-    );
-    // Only the fallback: the font lacks the character outright.
-    let fallback = EmptyGlyphs { fonts: EMPTY_IN_FALLBACK, ..one };
-    assert_eq!(
-        warning(&["--fallback-font", "c.ttf", "log", "out.png"], &fallback, &plain, Some(&color)).unwrap(),
-        "warning: U+1F600 at column 3, row 1 (from 0) is drawn as a box: --fallback-font c.ttf (a color \
-         bitmap font, sbix, which termshot cannot draw) maps it to an empty glyph; pass a --fallback-font \
-         with an outline for it, such as Noto Emoji"
-    );
-    // A face of a collection is named as it was given.
-    assert!(warning(&["--font", "a.ttc#Color", "log", "out.png"], &one, &plain, None)
-        .unwrap()
-        .contains(": --font a.ttc#Color maps it to an empty glyph;"));
-    let both = EmptyGlyphs { fonts: EMPTY_IN_FONT | EMPTY_IN_FALLBACK, ..one };
-    assert_eq!(
-        warning(&["--font", "a.ttf", "--fallback-font", "b.ttf", "log", "out.png"], &both, &plain, Some(&plain)).unwrap(),
-        "warning: U+1F600 at column 3, row 1 (from 0) is drawn as a box: --font a.ttf and --fallback-font \
-         b.ttf map it to empty glyphs; pass a --fallback-font with an outline for it"
-    );
 }
 
 /// Seeds where stock stb_truetype read out of bounds, hit an assert, or
@@ -309,7 +276,7 @@ fn draw_png_is_reentrant() {
     let paddings = [(0, 0), (7, 3), (0, 0), (1, 12)];
     let screens: Vec<(Vec<Cell>, Vec<CellMarks>)> = logs.iter().zip(palettes).map(|(log, palette)| {
         let log = format!("\x1b[41m \x1b[49m{log}");
-        let g = replay_with(log.as_bytes(), 20, 2, &ParseOptions { lf: Lf::Index, palette }, (1, 1));
+        let g = replay_with(log.as_bytes(), 20, 2, &ParseOptions { lf: Lf::Index, palette }, (1, 1)).unwrap();
         (g.cells, g.marks)
     }).collect();
     let draw = |k: usize, out: &str| {
@@ -372,9 +339,9 @@ fn a_failed_glyph_allocation_fails_the_render() {
 }
 
 /// The render's own allocations, the canvas and the PNG's buffer (which
-/// stb_image_write asks for through termshot_png_alloc), fail it each in
-/// turn: the render returns 2, which main makes exit 2, and writes no PNG.
-/// tests/run.sh fails them through the CLI too.
+/// stb_image_write asks for through termshot_png_alloc, and the render
+/// returns), fail it each in turn: the render returns 2, which main makes
+/// exit 2, and writes no PNG. tests/run.sh fails them through the CLI too.
 #[test]
 fn a_failed_render_allocation_fails_the_render() {
     use render::faults::{Faults, FAILED, FAULTS};

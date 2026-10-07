@@ -144,10 +144,18 @@ A C compiler and rustc 1.70 or newer are enough.
 
 The binary links libc and libm.
 
-`build.sh` also builds `libtermshot.rlib`, the parser as a Rust library with no
-dependencies (#85; drawing PNGs is the CLI's only, for now). `termshot::parse` replays a
-log into a `Grid` (or a `termshot::Error` for a grid size it can't hold), which gives its
-cells, the cursor, and the same text and JSON as `--text` and `--json`:
+### Use as a Rust library
+
+`build.sh` also builds `libtermshot.rlib`: termshot as a Rust library, with no
+dependencies and the C it needs bundled inside (#85). `termshot::parse` replays a log
+into a `Grid`, with its cells, the cursor, and the same text and JSON as `--text` and
+`--json`; `termshot::render` draws the grid and returns the PNG's bytes, the same bytes
+the CLI writes. Errors are values (`termshot::Error`, with the CLI's messages): the
+library prints nothing of its own and never exits. Where an allocation grows with the
+input (the parser's screens, the render's canvas, cells and PNG, a font file) it returns
+`Error::OutOfMemory` rather than abort; allocations bounded otherwise (image buffers
+under kitty's quota, a font check's tables, a cast's output, the text and JSON strings)
+still abort if memory runs out, as the crate docs list.
 
 ```rust
 // app.rs
@@ -155,15 +163,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log = std::fs::read("session.pty")?;
     let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default())?;
     print!("{}", grid.to_text());
+    let png = termshot::render(&grid, &termshot::RenderOptions::default())?;
+    std::fs::write("session.png", &png.png)?;
     Ok(())
 }
 ```
 
 ```sh
+./build.sh
 rustc --edition 2021 app.rs --extern termshot=libtermshot.rlib
 ```
 
-Its documentation: `rustdoc --edition 2021 --crate-name termshot src/lib.rs -o target/doc`.
+No Cargo is needed: link the rlib with `--extern`, build your program with the same
+rustc that built it, and pass `-L` with the rlib's directory if it is not the current
+one. `RenderOptions` takes the font (`termshot::Font::open`, `Font::from_bytes`, or
+the built-in one), a fallback font, the pixel size, padding and the cursor;
+`Font::cell_size` gives the cell to parse a log whose images move the cursor by pixels
+with (`parse_with_cell_size`). `render_rgba` returns the pixels instead of a PNG.
+Grids, fonts and renders can be used from many threads at once. Its documentation:
+`rustdoc --edition 2021 --crate-name termshot src/lib.rs -o target/doc`.
 
 ## Test
 

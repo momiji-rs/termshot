@@ -114,6 +114,27 @@ fn font_parts(profile: &Record) -> Result<(), String> {
     ensure(parts <= font_load + 0.00001, format!("font parts {parts} exceed font_load_ms {font_load}"))
 }
 
+/// A run without a PNG: one record, the CLI's, with every key it has with a
+/// PNG, face_ms (which a render's record carries) 0.
+fn text_only() -> Result<(), String> {
+    let text = format!("{OUT}/profile-text.txt");
+    let output = Command::new("./termshot")
+        .args(["--text", &text, LOG])
+        .env("TERMSHOT_PROFILE", "1")
+        .output()
+        .map_err(|error| format!("./termshot: {error}"))?;
+    ensure(output.status.success(), format!("./termshot --text {LOG}: {}", output.status))?;
+    let found = records(&output.stderr)?;
+    ensure(found.len() == 1, format!("want 1 record without a PNG, got {}", found.len()))?;
+    let record = &found[0];
+    for key in ["input_read_ms", "parse_ms", "font_load_ms", "font_builtin", "total_ms", "input_bytes"] {
+        get(record, key)?;
+    }
+    ensure(get(record, "face_ms")? == 0.0, "face_ms without a render".into())?;
+    println!("a text-only run reports the CLI's record, face_ms 0");
+    Ok(())
+}
+
 /// The built-in font with a CFF fallback: the fallback's own timers, and
 /// counters showing its glyphs were drawn.
 fn fallback_render() -> Result<(), String> {
@@ -193,7 +214,7 @@ fn main() -> ExitCode {
         eprintln!("{OUT}: {error}");
         return ExitCode::FAILURE;
     }
-    match single_render().and_then(|()| fallback_render()).and_then(|()| concurrent_renders(&unit)) {
+    match single_render().and_then(|()| text_only()).and_then(|()| fallback_render()).and_then(|()| concurrent_renders(&unit)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("FAIL {error}");

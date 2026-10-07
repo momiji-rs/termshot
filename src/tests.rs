@@ -111,7 +111,7 @@ fn ascii_scroll_batches_match_individual_prints() {
                         fast.combine(0x0301);
                         reference.combine(0x0301);
                         assert_eq!(fast.screen_marks(), reference.screen_marks());
-                        for (a, b) in fast.into_cells().iter().zip(reference.into_cells()) {
+                        for (a, b) in fast.into_cells().unwrap().iter().zip(reference.into_cells().unwrap()) {
                             assert_eq!((a.ch, fg(a), bg(a), a.attrs), (b.ch, fg(&b), bg(&b), b.attrs));
                         }
                     }
@@ -441,22 +441,6 @@ fn underline_and_bar_cursors_cover_the_cell() {
     // On a background the default foreground colour, the default background.
     let (r, g, b) = DEFAULT_BG;
     assert_eq!(mark("\x1b[48;2;219;231;247mx\x1b[H", CursorShape::Bar).1, [r, g, b, 255]);
-}
-
-#[test]
-fn cursor_option_counts_from_0_as_tmux_does() {
-    assert_eq!(parse_cursor("4,2", 10, 4), Ok(Some((2, 4))));
-    assert_eq!(parse_cursor("0,0", 10, 4), Ok(Some((0, 0))));
-    assert_eq!(parse_cursor("none", 10, 4), Ok(None));
-    // tmux reports a pending wrap as one past the last column.
-    assert_eq!(parse_cursor("10,3", 10, 4), Ok(Some((3, 9))));
-    for bad in ["11,0", "0,4", "4", "4,", ",2", "-1,0", "4,2,1", "4;2", "", "None"] {
-        assert!(parse_cursor(bad, 10, 4).is_err(), "{bad:?} accepted");
-    }
-    // The message gives the range that is accepted, pending wrap included.
-    let message = parse_cursor("11,0", 10, 4).unwrap_err();
-    assert!(message.contains("columns go from 0 to 10 (10 is a pending wrap"), "{message}");
-    assert!(message.contains("rows from 0 to 3"), "{message}");
 }
 
 #[test]
@@ -1558,4 +1542,49 @@ fn rep_and_attributes_cover_both_halves() {
 #[test]
 fn printf_decoding() {
     assert_eq!(printf_bytes(r"a\tb\033[1m\0337\\%%\n"), b"a\tb\x1b[1m\x1b7\\%\n");
+}
+
+/// Each of a parse's allocations that grow with the grid (both screens'
+/// cells and rows, the tab stops, the marks, the placeholder ids, the
+/// cells and the marks in screen order, and a reset's fresh screens) fails
+/// it in turn: replay_with
+/// returns None, which the library makes Error::OutOfMemory and the CLI
+/// exit 2, and with nothing left to fail it gives the grid it gives
+/// without faults. tests/run.sh and tests/library.rs fail them through the
+/// CLI and the library too.
+#[test]
+fn a_failed_parse_allocation_fails_the_parse() {
+    use crate::screen::faults::FAULTS;
+    // A placeholder with a colour (ids), a combining mark (marks), a reset
+    // (two screens again), another mark, a scroll (cells in screen order),
+    // and a virtual placement with its placeholder (ids again, and the
+    // placeholder cells).
+    let log = concat!(
+        "\x1b[38;5;1m\u{10EEEE}e\u{301}q\u{302}\x1bcq\u{301}\r\n\r\nx\u{303}",
+        "\x1b_Ga=T,U=1,i=7,f=24,s=1,v=1,q=2;/wAA\x1b\\\x1b[38;5;7m\u{10EEEE}"
+    )
+    .as_bytes();
+    let options = ParseOptions::default();
+    let want = replay_with(log, 4, 2, &options, (1, 1)).unwrap();
+    let mut fail = 1;
+    loop {
+        FAULTS.with(|f| f.set((0, fail)));
+        let grid = replay_with(log, 4, 2, &options, (1, 1));
+        let calls = FAULTS.with(|f| f.get().0);
+        FAULTS.with(|f| f.set((0, 0)));
+        match grid {
+            None => fail += 1,
+            Some(grid) => {
+                assert!(fail > calls, "allocation {fail} of {calls} failed, and the parse went on");
+                assert_eq!((grid.to_text(), grid.to_json()), (want.to_text(), want.to_json()));
+                break;
+            }
+        }
+    }
+    // Both screens' cells and rows and the tab stops, the ids, the marks,
+    // all five again after the reset, the marks again, the ids again, then
+    // the placeholder cells, their runs, the two maps of them, the
+    // placement they show, its slice and the list it joins, and the marks
+    // and the cells in screen order.
+    assert_eq!(fail - 1, 23, "{} allocations failed", fail - 1);
 }

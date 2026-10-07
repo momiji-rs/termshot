@@ -312,18 +312,3 @@ fn the_fixtures_replay_their_raw_log() {
         assert_eq!(cast.output, raw, "{path}");
     }
 }
-
-#[test]
-fn a_bad_cursor_is_refused_before_the_log_is_read() {
-    let args = |list: &[&str]| parse_args(list.iter().map(|s| s.to_string()));
-    assert!(matches!(args(&["--cursor", "nonsense", "-", "out.png"]), Err(e) if e.contains("must look like 4,2")));
-    // With the size given, its bounds are checked at once too.
-    assert!(matches!(args(&["--size", "10x4", "--cursor", "10,4", "-", "out.png"]), Err(e) if e.contains("off the 10x4 grid")));
-    // Without it, a cast may give the size: the bounds wait for it.
-    assert!(matches!(args(&["--cursor", "300,100", "-", "out.png"]), Ok(Command::Render(_))));
-    // Under --raw no cast can, so the default size bounds it at once.
-    assert!(matches!(args(&["--raw", "--cursor", "300,100", "-", "out.png"]), Err(e) if e.contains("off the 100x30 grid")));
-    assert!(matches!(args(&["--raw", "--cursor", "99,29", "-", "out.png"]), Ok(Command::Render(_))));
-    let legacy = args(&["--raw", "--cursor", "41,29", "-", "out.png", "font.ttf", "48", "40"]);
-    assert!(matches!(legacy, Err(e) if e.contains("off the 40x30 grid")));
-}

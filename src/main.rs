@@ -1,9 +1,11 @@
-//! Replay a PTY log into a cell grid and paint it: the CLI.
-//! No crates. The parser is vt.rs and screen.rs, and the grid it leaves
-//! grid.rs, the modules src/lib.rs makes a library of. The render is render.rs, with box drawing and blocks in
-//! geometry.rs, the images in composite.rs, the text in glyphs.rs and the
-//! compressor in deflate.rs; vendored stb (no window, no system font) does the
-//! font tables, the rasterizing and the PNG, through stb_glue.c.
+//! Replay a PTY log into a cell grid and paint it: the CLI. No crates.
+//! It reads the arguments, the files and stdin, writes the outputs (or
+//! stdout), removes what it created when a run fails, and words every
+//! message and exit status; the work is the library's, libtermshot.rlib
+//! (src/lib.rs), which this crate links (`--extern termshot`) and calls
+//! through its public API alone: `termshot::parse_with_cell_size`,
+//! `termshot::render`, and the `#[doc(hidden)]` `termshot::cli` hooks for
+//! the profile record and -v.
 
 use std::env;
 use std::fs;
@@ -11,154 +13,19 @@ use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use cell::{Cell, CellMarks, OPAQUE, TAIL, WIDE};
-use glyphs::{EmptyGlyphs, EMPTY_IN_FALLBACK, EMPTY_IN_FONT};
-use grid::Grid;
-use palette::Palette;
-use screen::{CursorShape, Lf};
-use vt::{lacks_cr, needs_cell_metrics, replay_with, ParseOptions};
+use termshot::{CursorShape, EmptyGlyph, Font, FontSpec, Lf, Palette, ParseOptions, RenderOptions};
 
-mod cast;
-mod cell;
-mod cff;
-mod composite;
-mod deflate;
-mod font;
-mod geometry;
-mod glyphs;
-mod graphics;
-mod grid;
-mod metrics;
-mod palette;
-mod render;
-#[rustfmt::skip]
-mod rowcolumn_diacritics;
-mod screen;
-mod sixel;
-mod unicode;
-mod variations;
-mod vt;
-#[rustfmt::skip]
-mod unicode_tables;
 #[cfg(test)]
-mod cast_tests;
-#[cfg(test)]
-mod cff_tests;
-#[cfg(test)]
-mod draw_tests;
-#[cfg(test)]
-mod metrics_tests;
-#[cfg(test)]
-mod palette_tests;
-#[cfg(test)]
-mod prescan_tests;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod variations_tests;
+mod cli_tests;
 
 const DEFAULT_COLS: usize = 100;
 const DEFAULT_ROWS: usize = 30;
-/// The default palette's colours, which the tests compare with.
-#[cfg(test)]
-const DEFAULT_FG: (u8, u8, u8) = Palette::DEFAULT.foreground;
-#[cfg(test)]
-const DEFAULT_BG: (u8, u8, u8) = Palette::DEFAULT.background;
 
 extern "C" {
-    fn draw_face_cell_size(font: *const font::Face, px: f64, w: *mut i32, h: *mut i32) -> i32;
-}
-
-/// kitty draws a Unicode placeholder (U+10EEEE) as a blank cell, its
-/// diacritics too: the image it shows comes from graphics::Graphics::finish.
-/// Make each one a space, with its colours and attributes, and drop its
-/// marks, for the render. --text and --json keep them.
-fn blank_placeholders(cells: &mut [Cell], mut marks: Vec<CellMarks>) -> Vec<CellMarks> {
-    marks.retain(|m| cells[m.cell as usize].ch != graphics::PLACEHOLDER);
-    for cell in cells.iter_mut().filter(|cell| cell.ch == graphics::PLACEHOLDER) {
-        cell.ch = ' ' as u32;
-    }
-    marks
-}
-
-/// Mark every background that is not the default colour, `background`
-/// (the palette's), OPAQUE, for the render. kitty compares the colour's
-/// value, so a background set to the default colour explicitly is a default
-/// one.
-fn opaque_backgrounds(cells: &mut [Cell], background: (u8, u8, u8)) {
-    for cell in cells {
-        if (cell.br, cell.bg, cell.bb) != background {
-            cell.attrs |= OPAQUE;
-        }
-    }
-}
-
-/// Draw the cursor as a block in reverse video over the cell at (row, col),
-/// or over both cells of the wide character it is on. Over concealed text it
-/// is a block of the palette's default foreground, or of its background on
-/// a cell already that colour.
-fn draw_cursor(cells: &mut [Cell], cols: usize, row: usize, col: usize, palette: &Palette) {
-    let under = cursor_cells(cells, cols, row, col);
-    for cell in &mut cells[under] {
-        let (fg, bg) = ((cell.fr, cell.fg, cell.fb), (cell.br, cell.bg, cell.bb));
-        // Concealed text (the colours alike) stays hidden in a block that
-        // still shows.
-        let (fg, bg) = if fg != bg {
-            (bg, fg)
-        } else {
-            let block = if bg == palette.foreground { palette.background } else { palette.foreground };
-            (block, block)
-        };
-        (cell.fr, cell.fg, cell.fb) = fg;
-        (cell.br, cell.bg, cell.bb) = bg;
-        cell.attrs |= OPAQUE;
-    }
-}
-
-/// The cells the cursor at (row, col) covers: both halves of a wide
-/// character, unless the line cuts it.
-fn cursor_cells(cells: &[Cell], cols: usize, row: usize, col: usize) -> std::ops::Range<usize> {
-    let line = row * cols..(row + 1) * cols;
-    let mut start = line.start + col;
-    if cells[start].attrs & TAIL != 0 && start > line.start {
-        start -= 1;
-    }
-    let end = if cells[start].attrs & WIDE != 0 { start + 2 } else { start + 1 };
-    start..end.min(line.end)
-}
-
-/// An underline or bar cursor at (row, col), in pixels for cells of
-/// cell_w x cell_h: the rectangle (x, y, w, h) and its colour. The underline
-/// runs along the bottom of the cells the cursor covers, the bar down the left
-/// edge of the first. Both are an eighth of a cell wide, at least a pixel, in
-/// the palette's default foreground; on a cell whose background is that
-/// colour, in its default background, so the cursor still shows.
-fn cursor_mark(
-    cells: &[Cell],
-    cols: usize,
-    (row, col): (usize, usize),
-    shape: CursorShape,
-    (cell_w, cell_h): (i32, i32),
-    palette: &Palette,
-) -> ((i64, i64, i64, i64), [u8; 4]) {
-    let under = cursor_cells(cells, cols, row, col);
-    let first = &cells[under.start];
-    let (fg, bg) = (palette.foreground, palette.background);
-    let (r, g, b) = if (first.br, first.bg, first.bb) == fg { bg } else { fg };
-    let (cell_w, cell_h) = (i64::from(cell_w), i64::from(cell_h));
-    let thick = (cell_w / 8).max(1);
-    let (x, y) = ((under.start - row * cols) as i64 * cell_w, row as i64 * cell_h);
-    let rect = match shape {
-        CursorShape::Underline => (x, y + cell_h - thick, under.len() as i64 * cell_w, thick),
-        CursorShape::Bar | CursorShape::Block => (x, y, thick, cell_h),
-    };
-    (rect, [r, g, b, 255])
+    fn close(fd: std::ffi::c_int) -> std::ffi::c_int;
 }
 
 const VERSION: &str = "0.2.0";
-
-/// The default font, built in so a lone binary works.
-static EMBEDDED_FONT: &[u8] = include_bytes!("../third_party/jetbrains-mono/JetBrainsMono-Regular.ttf");
 
 const USAGE: &str = "\
 usage: termshot [options] <log> <out.png>
@@ -242,8 +109,8 @@ struct Options {
     out: Option<String>,
     text: Option<String>,
     json: Option<String>,
-    font: Option<font::Spec>,
-    fallback_font: Option<font::Spec>,
+    font: Option<FontSpec>,
+    fallback_font: Option<FontSpec>,
     px: f64,
     /// The grid size given, by --size or the original form's cols and rows;
     /// what is missing comes from a cast's header, or the defaults.
@@ -260,8 +127,8 @@ struct Options {
     /// --palette's file, read once the outputs are known to be writable.
     palette: Option<String>,
     /// --fg and --bg, over the palette's.
-    fg: Option<palette::Rgb>,
-    bg: Option<palette::Rgb>,
+    fg: Option<termshot::Rgb>,
+    bg: Option<termshot::Rgb>,
     /// --padding: left and right, top and bottom.
     padding: (u32, u32),
     verbose: bool,
@@ -319,7 +186,7 @@ fn parse_cursor(value: &str, cols: usize, rows: usize) -> Result<Option<(usize, 
 
 /// --padding's value: N on every side, or X,Y (left and right, top and bottom).
 fn parse_padding(value: &str) -> Result<(u32, u32), String> {
-    let side = |v: &str| v.parse::<u32>().ok().filter(|&n| n <= render::MAX_PADDING);
+    let side = |v: &str| v.parse::<u32>().ok().filter(|&n| n <= termshot::MAX_PADDING);
     let parsed = match value.split_once(',') {
         Some((x, y)) => side(x).zip(side(y)),
         None => side(value).map(|n| (n, n)),
@@ -327,14 +194,14 @@ fn parse_padding(value: &str) -> Result<(u32, u32), String> {
     parsed.ok_or_else(|| {
         format!(
             "padding must be pixels from 0 to {}, as 16 or 32,16 (left and right, top and bottom), not {value:?}",
-            render::MAX_PADDING
+            termshot::MAX_PADDING
         )
     })
 }
 
 /// --fg's or --bg's value.
-fn parse_color_option(name: &str, value: &str) -> Result<palette::Rgb, String> {
-    palette::parse_color(value).map_err(|why| format!("{name}: {why}"))
+fn parse_color_option(name: &str, value: &str) -> Result<termshot::Rgb, String> {
+    termshot::parse_color(value).map_err(|why| format!("{name}: {why}"))
 }
 
 /// The palette a render asks for: the default, then --palette's file, then
@@ -343,7 +210,7 @@ fn load_palette(options: &Options) -> Result<Palette, (u8, String)> {
     let mut palette = Palette::DEFAULT;
     if let Some(path) = &options.palette {
         let mut file = Vec::new();
-        let limit = palette::MAX_FILE_BYTES as u64 + 1;
+        let limit = termshot::MAX_PALETTE_BYTES as u64 + 1;
         fs::File::open(path)
             .and_then(|f| f.take(limit).read_to_end(&mut file))
             .map_err(|error| (1, format!("--palette {path}: {error}")))?;
@@ -352,6 +219,11 @@ fn load_palette(options: &Options) -> Result<Palette, (u8, String)> {
     palette.foreground = options.fg.unwrap_or(palette.foreground);
     palette.background = options.bg.unwrap_or(palette.background);
     Ok(palette)
+}
+
+/// A --font or --fallback-font value: its file, face and instance.
+fn font_spec(value: &str) -> Result<FontSpec, String> {
+    FontSpec::parse(value).map_err(|error| error.to_string())
 }
 
 /// The value of an option: attached (--px=48, -p48) or the next argument.
@@ -410,7 +282,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "-s" | "--size" => size = Some(parse_size(&option_value(&name, attached, &mut args)?)?),
             // Checked once the grid size is known.
             "--cursor" => cursor = Some(option_value(&name, attached, &mut args)?),
-            "--cursor-shape" => cursor_shape = Some(CursorShape::parse(&option_value(&name, attached, &mut args)?)?),
+            "--cursor-shape" => {
+                let value = option_value(&name, attached, &mut args)?;
+                cursor_shape = Some(value.parse::<CursorShape>().map_err(|error| error.to_string())?);
+            }
             "--text" => text = Some(option_value(&name, attached, &mut args)?),
             "--json" => json = Some(option_value(&name, attached, &mut args)?),
             "--palette" => palette = Some(option_value(&name, attached, &mut args)?),
@@ -471,8 +346,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         out,
         text,
         json,
-        font: font.as_deref().map(font::Spec::parse).transpose()?,
-        fallback_font: fallback_font.as_deref().map(font::Spec::parse).transpose()?,
+        font: font.as_deref().map(font_spec).transpose()?,
+        fallback_font: fallback_font.as_deref().map(font_spec).transpose()?,
         px: px.unwrap_or(48.0),
         cols,
         rows,
@@ -489,46 +364,57 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
 }
 
 /// The font and fallback font a render asks for, checked and padded.
-/// Each font's load is timed on the same boundaries (font::LoadTimings),
-/// whether it is built in or a file.
+/// Each font's load is timed on the same boundaries (LoadTimings), whether
+/// it is built in or a file.
 fn load_fonts(
     options: &Options,
-    timings: &mut [font::LoadTimings; 2],
-) -> Result<(font::Font, Option<font::Font>), String> {
+    timings: &mut [termshot::cli::LoadTimings; 2],
+) -> Result<(Font, Option<Font>), termshot::Error> {
     let [font_timings, fallback_timings] = timings;
     let font = match &options.font {
-        Some(path) => font::load_timed(path, font_timings)?,
-        None => font::prepare_timed(EMBEDDED_FONT, font_timings).map_err(|reason| format!("built-in font: {reason}"))?,
+        Some(spec) => Font::open_timed(spec, font_timings)?,
+        None => Font::embedded_timed(font_timings)?,
     };
-    let fallback = options.fallback_font.as_ref().map(|path| font::load_timed(path, fallback_timings)).transpose()?;
+    let fallback = options.fallback_font.as_ref().map(|spec| Font::open_timed(spec, fallback_timings)).transpose()?;
     Ok((font, fallback))
+}
+
+/// What the empty-glyph warning says: a render's EmptyGlyph (which only
+/// the library can make), or a test's.
+#[derive(Clone, Copy)]
+struct Empty {
+    ch: char,
+    row: usize,
+    col: usize,
+    cells: usize,
+    in_font: bool,
+    in_fallback: bool,
+}
+
+impl From<&EmptyGlyph> for Empty {
+    fn from(empty: &EmptyGlyph) -> Empty {
+        let &EmptyGlyph { ch, row, col, cells, in_font, in_fallback, .. } = empty;
+        Empty { ch, row, col, cells, in_font, in_fallback }
+    }
 }
 
 /// The warning for characters drawn as boxes because a font maps them to
 /// empty glyphs: which cell, which fonts, and what to pass instead.
-fn empty_glyph_warning(
-    empty: &EmptyGlyphs,
-    options: &Options,
-    font: &font::Font,
-    fallback: Option<&font::Font>,
-) -> Option<String> {
-    if empty.cells == 0 {
-        return None;
-    }
+fn empty_glyph_warning(empty: &Empty, options: &Options, font: &Font, fallback: Option<&Font>) -> String {
     let mut color = false;
-    let mut name = |flag: &str, spec: Option<&font::Spec>, font: &font::Font| {
+    let mut name = |flag: &str, spec: Option<&FontSpec>, font: &Font| {
         let mut name = spec.map_or("the built-in font".to_owned(), |spec| format!("{flag} {}", spec.name()));
-        if let Some(tag) = font::color_bitmap(font) {
+        if let Some(tag) = font.color_bitmap() {
             color = true;
             name += &format!(" (a color bitmap font, {tag}, which termshot cannot draw)");
         }
         name
     };
     let mut blamed = Vec::new();
-    if empty.fonts & EMPTY_IN_FONT != 0 {
+    if empty.in_font {
         blamed.push(name("--font", options.font.as_ref(), font));
     }
-    if let (true, Some(fallback)) = (empty.fonts & EMPTY_IN_FALLBACK != 0, fallback) {
+    if let (true, Some(fallback)) = (empty.in_fallback, fallback) {
         blamed.push(name("--fallback-font", options.fallback_font.as_ref(), fallback));
     }
     let blamed = match blamed.len() {
@@ -543,13 +429,13 @@ fn empty_glyph_warning(
         None => "pass --fallback-font with an outline font that has it",
         Some(_) => "pass a --fallback-font with an outline for it",
     };
-    Some(format!(
+    format!(
         "warning: U+{:04X} at column {}, row {} (from 0) is drawn as a box{cells}: {blamed}; {instead}{}",
-        empty.cp,
+        u32::from(empty.ch),
         empty.col,
         empty.row,
         if color { ", such as Noto Emoji" } else { "" }
-    ))
+    )
 }
 
 /// Resolve symlinks component by component, including a dangling final link.
@@ -595,17 +481,17 @@ fn output_clash(options: &Options) -> Option<String> {
         }
         output_target(a) == output_target(b)
     };
-    fn named<'a, const N: usize>(pairs: [(&'static str, Option<&'a String>); N]) -> Vec<(&'static str, &'a String)> {
+    fn named<'a, const N: usize>(pairs: [(&'static str, Option<&'a str>); N]) -> Vec<(&'static str, &'a str)> {
         pairs.into_iter().filter_map(|(name, path)| Some((name, path.filter(|p| *p != "-")?))).collect()
     }
-    let outputs = named([("<out.png>", options.out.as_ref()), ("--text", options.text.as_ref()), ("--json", options.json.as_ref())]);
-    fn font_file(spec: &Option<font::Spec>) -> Option<&String> {
-        spec.as_ref().map(|spec| &spec.path)
+    let outputs = named([("<out.png>", options.out.as_deref()), ("--text", options.text.as_deref()), ("--json", options.json.as_deref())]);
+    fn font_file(spec: &Option<FontSpec>) -> Option<&str> {
+        spec.as_ref().map(FontSpec::path)
     }
     // Only the log reads - as stdin; a font or palette named - is that file.
-    let mut inputs = named([("<log>", Some(&options.log))]);
+    let mut inputs = named([("<log>", Some(options.log.as_str()))]);
     let files = [("--font", font_file(&options.font)), ("--fallback-font", font_file(&options.fallback_font)),
-                 ("--palette", options.palette.as_ref())];
+                 ("--palette", options.palette.as_deref())];
     inputs.extend(files.into_iter().filter_map(|(name, path)| Some((name, path?))));
     for (i, (name, path)) in outputs.iter().enumerate() {
         if let Some((other, ..)) = outputs[..i].iter().find(|(_, earlier)| same_file(path, earlier)) {
@@ -625,6 +511,27 @@ fn write_output(path: &str, bytes: &[u8]) -> std::io::Result<()> {
         stdout.flush()
     } else {
         fs::write(path, bytes)
+    }
+}
+
+/// Write the PNG to `path` (stdout is /dev/stdout), and say whether it all
+/// reached the file: File's drop ignores close's result, where a
+/// filesystem may report a write it deferred, so close is checked too.
+fn write_png(path: &str, png: &[u8]) -> bool {
+    use std::os::unix::io::IntoRawFd;
+    let Ok(mut file) = fs::File::create(path) else { return false };
+    let written = file.write_all(png).is_ok();
+    // SAFETY: the descriptor is the file's, closed once, here.
+    written & (unsafe { close(file.into_raw_fd()) } == 0)
+}
+
+/// The exit status for a library error: 1 for a file that can't be read
+/// or used (a cast, a font), 2 for the rest (a size or option out of
+/// range, an image too large, memory run out, a bug).
+fn status(error: &termshot::Error) -> u8 {
+    match error {
+        termshot::Error::Cast(_) | termshot::Error::Font(_) => 1,
+        _ => 2,
     }
 }
 
@@ -688,7 +595,6 @@ fn main() -> ExitCode {
         Err((code, message)) => return cleanup(code, message),
     };
     let parse_options = ParseOptions { lf: options.lf, palette };
-    let render_options = render::RenderOptions { padding: options.padding, background: palette.background };
 
     let read_started = Instant::now();
     let data = if options.log == "-" {
@@ -706,8 +612,8 @@ fn main() -> ExitCode {
     // An asciinema recording replays its output events; its header gives
     // the grid size that --size and the original form's cols and rows don't.
     // Decoding it is part of reading the log, in the profile too.
-    let (data, cast_size) = if options.cast.unwrap_or_else(|| cast::detect(&data)) {
-        match cast::decode(data) {
+    let (data, cast_size) = if options.cast.unwrap_or_else(|| termshot::is_cast(&data)) {
+        match termshot::decode_cast(data) {
             Ok(cast) => (cast.output, Some((cast.final_size, cast.resized))),
             Err(reason) => {
                 let raw = if options.cast.is_none() { "; if it is raw PTY output, pass --raw" } else { "" };
@@ -744,7 +650,7 @@ fn main() -> ExitCode {
     };
     // The image would still be made, with each line starting where the
     // last one ended; say why, and what fixes it.
-    if options.lf == Lf::Index && lacks_cr(&data) {
+    if options.lf == Lf::Index && termshot::lacks_cr(&data) {
         eprintln!(
             "termshot: hint: {name} has line feeds but no CR, so each line starts where the last ended; \
              if it was not captured through a PTY (a text file, cmd > out.log, tmux capture-pane), pass --lf-newline"
@@ -752,48 +658,52 @@ fn main() -> ExitCode {
     }
 
     let font_started = Instant::now();
-    let mut font_timings = [font::LoadTimings::default(); 2];
+    let mut font_timings = [termshot::cli::LoadTimings::default(); 2];
     // Plain text/JSON logs need no fonts. Graphics also need cell metrics,
     // even without a PNG, because placement can move the text cursor.
-    let needs_fonts = options.out.is_some() || needs_cell_metrics(&data);
+    let needs_fonts = options.out.is_some() || termshot::needs_cell_size(&data);
     let fonts = match needs_fonts.then(|| load_fonts(&options, &mut font_timings)).transpose() {
         Ok(fonts) => fonts,
-        Err(error) => return cleanup(1, error),
+        Err(error) => return cleanup(status(&error), error.to_string()),
     };
     let font_load_ms = font_started.elapsed().as_secs_f64() * 1000.0;
     // A collection given without a face draws with its first, which may be
     // the wrong script (Noto CJK's is Japanese): say which, and what the others are.
     for (flag, font) in fonts.iter().flat_map(|(font, fallback)| [("--font", Some(font)), ("--fallback-font", fallback.as_ref())]) {
         let Some(font) = font else { continue };
-        if let Some(hint) = &font.hint {
+        if let Some(hint) = font.hint() {
             eprintln!("termshot: hint: {flag} {hint}");
         }
-        if let (true, Some((index, name))) = (options.verbose, &font.face) {
+        if let (true, Some((index, name))) = (options.verbose, font.face()) {
             eprintln!("{flag} face #{index} {name}");
         }
-        if let (true, Some(instance)) = (options.verbose, &font.instance) {
+        if let (true, Some(instance)) = (options.verbose, font.instance()) {
             eprintln!("{flag} instance {instance}");
         }
     }
 
     let parse_started = Instant::now();
-    let (mut cell_w, mut cell_h) = (1, 1);
-    if let Some((font, _)) = &fonts {
-        let sized = font.with_metrics(|face| unsafe { draw_face_cell_size(face, options.px, &mut cell_w, &mut cell_h) });
-        match sized {
-            Ok(1) => {}
-            Ok(_) => return cleanup(1, "font metrics unusable".into()),
-            Err(message) => return cleanup(1, message),
-        }
-    }
-    let mut grid = replay_with(&data, cols, rows, &parse_options, (cell_w, cell_h));
-    let mut image_views: Vec<_> = grid.images.iter().flat_map(graphics::Placement::views).collect();
+    let cell = match &fonts {
+        Some((font, _)) => font.cell_size(options.px),
+        None => Ok((1, 1)),
+    };
+    let grid = cell.and_then(|cell| termshot::parse_with_cell_size(&data, cols, rows, &parse_options, cell));
+    let mut grid = match grid {
+        Ok(grid) => grid,
+        Err(error) => return cleanup(status(&error), error.to_string()),
+    };
     // Rendering needs only the final grid. Release potentially large logs before
     // allocating the raster and compressor buffers.
     drop(data);
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
-    grid.cursor = cursor_option.unwrap_or(grid.cursor);
-    grid.cursor_shape = options.cursor_shape.unwrap_or(grid.cursor_shape);
+    // parse_cursor has put it on the grid.
+    let cursor = cursor_option.map_or(Ok(()), |cursor| grid.set_cursor(cursor));
+    if let Err(error) = cursor {
+        return cleanup(status(&error), error.to_string());
+    }
+    if let Some(shape) = options.cursor_shape {
+        grid.set_cursor_shape(shape);
+    }
     let write = |path: &String, output: String| {
         write_output(path, output.as_bytes())
             .map_err(|error| format!("{}: {error}", if path == "-" { "stdout" } else { path }))
@@ -804,66 +714,42 @@ fn main() -> ExitCode {
     if let Err(message) = written {
         return cleanup(1, message);
     }
-    // image_views points into the placements' pixels, so they stay bound to
-    // the end of main.
-    let Grid { mut cells, marks, cursor, cursor_shape, images: _placements, .. } = grid;
-    let mut empty = EmptyGlyphs::default();
-    // The underline or bar cursor's colour; its view borrows it.
-    let mark_pixel;
-    let mut face_ms = 0.0;
-    let code = match (&options.out, &fonts) {
-        (Some(out), Some((font, fallback))) => {
-            let marks = blank_placeholders(&mut cells, marks);
-            match (cursor, cursor_shape) {
-                (None, _) => {}
-                (Some((row, col)), CursorShape::Block) => draw_cursor(&mut cells, cols, row, col, &palette),
-                // As kitty draws it, with the text: over the images under
-                // the text, under those of z-index 0 and up, so it goes first
-                // among the views drawn after the text.
-                (Some(at), shape) => {
-                    let ((x, y, w, h), pixel) = cursor_mark(&cells, cols, at, shape, (cell_w, cell_h), &palette);
-                    mark_pixel = pixel;
-                    image_views.insert(0, graphics::ImageView::solid(&mark_pixel, x, y, w, h));
-                }
-            }
-            opaque_backgrounds(&mut cells, palette.background);
-            let out = if out == "-" { "/dev/stdout" } else { out };
-            if out.contains('\0') {
-                return cleanup(2, "output path contains a nul byte".into());
-            }
-            // with_face parses a CFF table again; that is face_ms.
-            let face_started = Instant::now();
-            let mut draw = |font: &font::Face, fallback: Option<&font::Face>| unsafe {
-                face_ms = face_started.elapsed().as_secs_f64() * 1000.0;
-                render::draw_png_with(
-                    &cells,
-                    &marks,
-                    cols,
-                    rows,
-                    font.ffi(),
-                    fallback.map(font::Face::ffi),
-                    options.px,
-                    out,
-                    options.verbose,
-                    &image_views,
-                    Some(&mut empty),
-                    &render_options,
-                )
-            };
-            let drawn = font.with_face(|font| match &fallback {
-                None => Ok(draw(font, None)),
-                Some(fallback) => fallback.with_face(|fallback| draw(font, Some(fallback))),
-            });
-            match drawn.and_then(|code| code) {
-                Ok(code) => code,
-                Err(message) => return cleanup(1, message),
+    let mut rendered = false;
+    if let (Some(out), Some((font, fallback))) = (&options.out, &fonts) {
+        rendered = true;
+        let out = if out == "-" { "/dev/stdout" } else { out };
+        if out.contains('\0') {
+            return cleanup(2, "output path contains a nul byte".into());
+        }
+        let render_options = RenderOptions {
+            px: options.px,
+            font: Some(font),
+            fallback: fallback.as_ref(),
+            padding: options.padding,
+            profile,
+            ..RenderOptions::default()
+        };
+        if options.verbose {
+            match termshot::cli::verbose_line(font, fallback.as_ref(), options.px, cols, rows, options.padding) {
+                Ok(line) => eprintln!("{line}"),
+                Err(error) => return cleanup(status(&error), error.to_string()),
             }
         }
-        _ => 0,
-    };
-    if let (0, Some((font, fallback))) = (code, &fonts) {
-        if let Some(warning) = empty_glyph_warning(&empty, &options, font, fallback.as_ref()) {
-            eprintln!("termshot: {warning}");
+        let rendered = match termshot::render(&grid, &render_options) {
+            Ok(rendered) => rendered,
+            Err(error) => return cleanup(status(&error), error.to_string()),
+        };
+        let write_started = Instant::now();
+        let written = write_png(out, &rendered.png);
+        let write_ms = write_started.elapsed().as_secs_f64() * 1000.0;
+        if let Some(fields) = &rendered.profile {
+            eprintln!("termshot-profile {{{fields},\"output_write_ms\":{write_ms:.6}}}");
+        }
+        if !written {
+            return cleanup(1, format!("png write failed: {out}"));
+        }
+        if let Some(empty) = &rendered.empty_glyph {
+            eprintln!("termshot: {}", empty_glyph_warning(&empty.into(), &options, font, fallback.as_ref()));
         }
     }
     if profile {
@@ -878,17 +764,15 @@ fn main() -> ExitCode {
             );
         }
         let builtin = u8::from(needs_fonts && options.font.is_none());
+        // A render's record has face_ms; a run without one reports 0, as
+        // every run did when the CLI timed it.
+        if !rendered {
+            fields += ",\"face_ms\":0.000000";
+        }
         eprintln!(
-            "termshot-profile {{{fields},\"font_builtin\":{builtin},\"face_ms\":{face_ms:.6},\"total_ms\":{:.6},\"input_bytes\":{input_bytes}}}",
+            "termshot-profile {{{fields},\"font_builtin\":{builtin},\"total_ms\":{:.6},\"input_bytes\":{input_bytes}}}",
             started.elapsed().as_secs_f64() * 1000.0
         );
     }
-    // The render has already said what went wrong.
-    match code {
-        0 => ExitCode::SUCCESS,
-        code => {
-            remove_created(&created);
-            ExitCode::from(if code == 2 { 2 } else { 1 })
-        }
-    }
+    ExitCode::SUCCESS
 }

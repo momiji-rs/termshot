@@ -64,7 +64,7 @@ fn current(g: &Graphics, id: u32) -> usize {
 
 /// The placements' pixels after `finish`, as the render gets them.
 fn drawn(g: Graphics) -> Vec<Vec<u8>> {
-    g.finish(&[], (10, 20), 10).iter().map(|p| p.pixels.to_vec()).collect()
+    g.finish(&[], (10, 20), 10).unwrap().iter().map(|p| p.pixels.to_vec()).collect()
 }
 
 /// a over b as the render blends, for an opaque b.

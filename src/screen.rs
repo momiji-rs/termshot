@@ -137,6 +137,103 @@ impl CursorShape {
     }
 }
 
+/// An empty Vec with room for `len` items, or None when memory runs out:
+/// the parser's allocations that grow with the grid (up to MAX_CELLS
+/// cells) are made this way, so a parse fails rather than abort.
+pub(crate) fn reserved<T>(len: usize) -> Option<Vec<T>> {
+    let mut v = Vec::new();
+    (faults::allowed() && v.try_reserve_exact(len).is_ok()).then_some(v)
+}
+
+/// Room for one more item in `v`, which grows as push would grow it, or
+/// None when memory runs out: for a Vec whose length isn't known ahead.
+pub(crate) fn grow<T>(v: &mut Vec<T>) -> Option<()> {
+    if v.len() < v.capacity() {
+        return Some(());
+    }
+    (faults::allowed() && v.try_reserve(v.len().max(16)).is_ok()).then_some(())
+}
+
+/// Room for `extra` more items in `v`, exactly, or None when memory runs
+/// out.
+pub(crate) fn reserve<T>(v: &mut Vec<T>, extra: usize) -> Option<()> {
+    (faults::allowed() && v.try_reserve_exact(extra).is_ok()).then_some(())
+}
+
+/// Room for one more entry in `map`, or None when memory runs out: as
+/// grow, for a HashMap.
+pub(crate) fn grow_map<K: Eq + std::hash::Hash, V>(map: &mut std::collections::HashMap<K, V>) -> Option<()> {
+    if map.len() < map.capacity() {
+        return Some(());
+    }
+    (faults::allowed() && map.try_reserve(1).is_ok()).then_some(())
+}
+
+/// `len` copies of `value`, as vec! makes them, or None when memory runs
+/// out.
+fn filled<T: Clone>(len: usize, value: T) -> Option<Vec<T>> {
+    let mut v = reserved(len)?;
+    v.resize(len, value);
+    Some(v)
+}
+
+/// 0, 1, ..., len - 1, or None when memory runs out.
+fn counted(len: usize) -> Option<Vec<usize>> {
+    let mut v = reserved(len)?;
+    v.extend(0..len);
+    Some(v)
+}
+
+/// Allocation failure injection for the parser: the shipped binary has
+/// none. Unit tests set it per thread; a build with `--cfg
+/// termshot_alloc_faults` reads TERMSHOT_PARSE_FAIL_AT=n and fails the nth
+/// of a parse's allocations that `reserved` makes (tests/run.sh checks that
+/// the CLI exits 2 and leaves no output, and tests/library.rs that parse
+/// returns Error::OutOfMemory).
+#[cfg(any(test, termshot_alloc_faults))]
+pub(crate) mod faults {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Allocations so far, and the one to fail (0 for none).
+        pub(crate) static FAULTS: Cell<(u32, u32)> = Cell::new((0, 0));
+    }
+
+    /// Starts a parse: count from zero, and fail where asked.
+    pub(crate) fn start() {
+        #[cfg(not(test))]
+        let fail_at = std::env::var("TERMSHOT_PARSE_FAIL_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        #[cfg(test)]
+        let fail_at = FAULTS.with(|f| f.get().1);
+        FAULTS.with(|f| f.set((0, fail_at)));
+    }
+
+    /// Whether this allocation may go ahead.
+    pub(crate) fn allowed() -> bool {
+        FAULTS.with(|f| {
+            let (calls, fail_at) = f.get();
+            f.set((calls + 1, fail_at));
+            let fail = calls + 1 == fail_at;
+            // So tests/run.sh knows when it has failed them all.
+            #[cfg(not(test))]
+            if fail {
+                eprintln!("termshot: parse allocation {} fails", calls + 1);
+            }
+            !fail
+        })
+    }
+}
+
+#[cfg(not(any(test, termshot_alloc_faults)))]
+pub(crate) mod faults {
+    pub(crate) fn start() {}
+
+    #[inline(always)]
+    pub(crate) fn allowed() -> bool {
+        true
+    }
+}
+
 /// The grid and the terminal state that writes to it.
 ///
 /// The cursor is always on the grid. After a character is printed in the
@@ -204,6 +301,10 @@ pub(crate) struct Screen {
     /// DECSDM (mode 80): Sixel images go to the top left corner and neither
     /// scroll nor move the cursor.
     pub(crate) sixel_display: bool,
+    /// Set when memory ran out for the marks or the placeholder Ids, which
+    /// are allocated with the screen's first: the parse then fails
+    /// (Error::OutOfMemory) rather than abort.
+    pub(crate) out_of_memory: bool,
     /// Not terminal state: RIS keeps it, as a reset keeps the tty's settings.
     pub(crate) lf: Lf,
     /// The colours SGR's default and named colours stand for. RIS keeps
@@ -214,21 +315,23 @@ pub(crate) struct Screen {
 impl Screen {
     #[cfg(test)]
     pub(crate) fn new(cols: usize, rows: usize, lf: Lf) -> Self {
-        Self::with(cols, rows, &ParseOptions { lf, palette: Palette::DEFAULT })
+        Self::with(cols, rows, &ParseOptions { lf, palette: Palette::DEFAULT }).unwrap()
     }
 
-    pub(crate) fn with(cols: usize, rows: usize, options: &ParseOptions) -> Self {
+    /// A blank screen, or None when memory for its cells runs out: both
+    /// screens' are allocated up front.
+    pub(crate) fn with(cols: usize, rows: usize, options: &ParseOptions) -> Option<Self> {
         let (lf, palette) = (options.lf, options.palette);
-        Self {
+        Some(Self {
             graphics: graphics::Graphics::default(),
             other_graphics: graphics::Graphics::default(),
             cell_size: (1, 1),
-            cells: vec![blank_cell(&palette); cols * rows],
-            map: (0..rows).collect(),
+            cells: filled(cols * rows, blank_cell(&palette))?,
+            map: counted(rows)?,
             marks: Vec::new(),
             ids: Vec::new(),
-            other: vec![blank_cell(&palette); cols * rows],
-            other_map: (0..rows).collect(),
+            other: filled(cols * rows, blank_cell(&palette))?,
+            other_map: counted(rows)?,
             other_marks: Vec::new(),
             other_ids: Vec::new(),
             on_alternate: false,
@@ -244,7 +347,11 @@ impl Screen {
             saved: [Saved::home(&palette); 2],
             pen: Pen::reset(&palette),
             pen_cell: Pen::reset(&palette).cell(),
-            tabs: (0..cols).map(|c| c % 8 == 0).collect(),
+            tabs: {
+                let mut tabs = reserved(cols)?;
+                tabs.extend((0..cols).map(|c| c % 8 == 0));
+                tabs
+            },
             charsets: [Charset::Ascii; 2],
             shifted: false,
             last: None,
@@ -252,9 +359,10 @@ impl Screen {
             cursor_shown: true,
             cursor_shape: CursorShape::Block,
             sixel_display: false,
+            out_of_memory: false,
             lf,
             palette,
-        }
+        })
     }
 
     pub(crate) fn save_cursor(&mut self) {
@@ -329,26 +437,32 @@ impl Screen {
         }
     }
 
-    /// The cells in screen order.
+    /// The cells in screen order, or None when memory for them runs out.
     #[inline]
-    pub(crate) fn into_cells(self) -> Vec<Cell> {
+    pub(crate) fn into_cells(self) -> Option<Vec<Cell>> {
         if self.map.iter().enumerate().all(|(r, &stored)| r == stored) {
-            return self.cells;
+            return Some(self.cells);
         }
-        (0..self.rows).flat_map(|r| self.cells[self.line(r)].iter().copied()).collect()
+        let mut cells = reserved(self.cells.len())?;
+        cells.extend((0..self.rows).flat_map(|r| self.cells[self.line(r)].iter().copied()));
+        Some(cells)
     }
 
     /// The cells that have marks, in screen order, as CellMarks.
     #[inline]
-    pub(crate) fn screen_marks(&self) -> Vec<CellMarks> {
+    pub(crate) fn screen_marks(&self) -> Option<Vec<CellMarks>> {
         if self.marks.is_empty() {
-            return Vec::new();
+            return Some(Vec::new());
         }
         let line = |r: usize| self.marks[self.line(r)].iter().enumerate();
-        (0..self.rows)
-            .flat_map(|r| line(r).filter(|(_, m)| m[0] != 0).map(move |(c, &marks)| (r * self.cols + c, marks)))
-            .map(|(cell, marks)| CellMarks { cell: cell as u32, marks })
-            .collect()
+        let marked = |r: usize| line(r).filter(|(_, m)| m[0] != 0);
+        let mut marks = reserved((0..self.rows).map(|r| marked(r).count()).sum())?;
+        marks.extend(
+            (0..self.rows)
+                .flat_map(|r| marked(r).map(move |(c, &marks)| (r * self.cols + c, marks)))
+                .map(|(cell, marks)| CellMarks { cell: cell as u32, marks }),
+        );
+        Some(marks)
     }
 
     /// Forget the marks (and placeholder Ids) of storage cells [from, to),
@@ -365,8 +479,10 @@ impl Screen {
 
     /// The placeholder cells on the screen, in screen order.
     #[inline]
-    pub(crate) fn placeholders(&self) -> Vec<graphics::PlaceholderCell> {
-        let mut found = Vec::new();
+    /// None when memory for them runs out.
+    pub(crate) fn placeholders(&self) -> Option<Vec<graphics::PlaceholderCell>> {
+        let count = self.cells.iter().filter(|cell| cell.ch == graphics::PLACEHOLDER).count();
+        let mut found = reserved(count)?;
         for r in 0..self.rows {
             let line = self.line(r);
             for (c, cell) in self.cells[line.clone()].iter().enumerate() {
@@ -385,7 +501,7 @@ impl Screen {
                 });
             }
         }
-        found
+        Some(found)
     }
 
     /// Before ICH or DCH moves storage cells [at, end) n to the right or
@@ -695,9 +811,14 @@ impl Screen {
         self.clear_marks(at, at + width);
         if ch == graphics::PLACEHOLDER && self.pen.ids != [0, 0] {
             if self.ids.is_empty() {
-                self.ids = vec![[0, 0]; self.cells.len()];
+                match filled(self.cells.len(), [0, 0]) {
+                    Some(ids) => self.ids = ids,
+                    None => self.out_of_memory = true,
+                }
             }
-            self.ids[at] = self.pen.ids;
+            if let Some(ids) = self.ids.get_mut(at) {
+                *ids = self.pen.ids;
+            }
         }
         self.last_at = Some(at);
         self.clear_sixel(self.row, self.col, 1, width);
@@ -725,7 +846,13 @@ impl Screen {
             }
         }
         if self.marks.is_empty() {
-            self.marks = vec![NO_MARKS; self.cells.len()];
+            match filled(self.cells.len(), NO_MARKS) {
+                Some(marks) => self.marks = marks,
+                None => {
+                    self.out_of_memory = true;
+                    return;
+                }
+            }
         }
         if let Some(slot) = self.marks[at].iter_mut().find(|m| **m == 0) {
             *slot = mark;

@@ -1,280 +1,133 @@
 //! termshot as a library: replay a raw PTY log (bytes with ANSI escapes)
-//! into the grid of cells a terminal would show at its end, and read that
-//! grid cell by cell, as text, or as JSON. The text and the JSON are byte for
-//! byte what the CLI's `--text` and `--json` write.
+//! into the grid of cells a terminal would show at its end, read that grid
+//! cell by cell, as text or as JSON, and draw it as a PNG. The text, the
+//! JSON and the PNG are byte for byte what the CLI's `--text`, `--json`
+//! and `<out.png>` write.
 //!
 //! ```no_run
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let log = std::fs::read("session.pty")?;
 //!     let grid = termshot::parse(&log, 100, 30, &termshot::ParseOptions::default())?;
 //!     print!("{}", grid.to_text());
+//!     let png = termshot::render(&grid, &termshot::RenderOptions::default())?;
+//!     std::fs::write("session.png", &png.png)?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! Drawing the grid as a PNG is the CLI's only, for now (#85).
+//! A log whose kitty or Sixel images move the cursor by pixels
+//! ([`needs_cell_size`]) parses as the CLI parses it with the font's cell:
+//!
+//! ```no_run
+//! # fn main() -> Result<(), termshot::Error> {
+//! # let log = Vec::new();
+//! let font = termshot::Font::embedded()?;
+//! let options = termshot::RenderOptions { px: 24.0, font: Some(&font), ..Default::default() };
+//! let cell = font.cell_size(options.px)?;
+//! let grid = termshot::parse_with_cell_size(&log, 80, 24, &termshot::ParseOptions::default(), cell)?;
+//! let png = termshot::render(&grid, &options)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Errors are values ([`Error`]): the library prints nothing of its own,
+//! never exits, and returns [`Error::OutOfMemory`] instead of aborting
+//! where an allocation grows with the input: the parser's screens, rows,
+//! tab stops, marks, placeholder ids and placeholder cells (up to
+//! [`MAX_CELLS`] cells), the render's copies of them, its canvas, glyphs
+//! and PNG encoder and the bytes it returns, and a font file's bytes and
+//! padding, and the placements Unicode placeholders show. What still
+//! aborts if memory runs out, as any `Vec` does, is bounded otherwise: a
+//! kitty or Sixel image's buffers and the other placements' layout (by
+//! kitty's 16 MiB quota, its limits on images and placements, and the
+//! Sixel budget), a font check's
+//! tables (by the font's size and its 16-bit counts), an asciicast's
+//! output (by the recording's size), and the strings of
+//! [`Grid::to_text`] and [`Grid::to_json`] (by the grid's). A panic in a
+//! render, which is a bug, is caught and returned as [`Error::Internal`];
+//! the process's panic hook still sees it first, and Rust's default hook
+//! prints it to stderr (set one with `std::panic::set_hook` to keep that
+//! quiet too).
 //!
 //! The crate has no dependencies and builds with plain rustc (1.70 or
 //! later), after `./build.sh`, which makes `libtermshot.rlib` with the C it
-//! links (the PNG decoder kitty images use) inside it:
+//! links (stb_truetype, the PNG writer, the PNG decoder kitty images use)
+//! inside it:
 //!
 //! ```text
 //! rustc --edition 2021 app.rs --extern termshot=path/to/libtermshot.rlib
 //! ```
 //!
-//! The binary (src/main.rs) does not link this library: it compiles the same
-//! modules itself, with the render, which is not part of the library yet.
+//! The CLI (src/main.rs) is a crate of its own that links this library
+//! the same way and uses only its public API, with no cost in speed
+//! (docs/performance.md, "Two crates or one compilation unit").
 
-// The modules the parser needs. A few of their items are only the binary's
-// (the render's, and --cursor-shape's parsing): allowed dead here.
+mod api;
+mod api_render;
 mod cast;
 mod cell;
-// The image layers: the parser keeps kitty images as composite::ImageView
-// and composes animation frames with its blending.
-#[allow(dead_code)]
+mod cff;
 mod composite;
+mod deflate;
+mod font;
 mod geometry;
-#[allow(dead_code)]
+mod glyphs;
 mod graphics;
 mod grid;
+mod metrics;
 mod palette;
+mod prepare;
+mod render;
 #[rustfmt::skip]
 mod rowcolumn_diacritics;
-#[allow(dead_code)]
 mod screen;
 mod sixel;
 mod unicode;
 #[rustfmt::skip]
 mod unicode_tables;
+mod variations;
 mod vt;
 
-use cell::{Cell, BOLD, DOUBLE_UNDERLINE, ITALIC, STRIKE, TAIL, UNDERLINE, WIDE};
+// The unit tests (`rustc --test src/lib.rs`, test.sh's target/test/unit);
+// the CLI's own are src/cli_tests.rs. What they take from here with
+// `use super::*`:
+#[cfg(test)]
+mod cast_tests;
+#[cfg(test)]
+mod cff_tests;
+#[cfg(test)]
+mod draw_tests;
+#[cfg(test)]
+mod metrics_tests;
+#[cfg(test)]
+mod palette_tests;
+#[cfg(test)]
+mod prescan_tests;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod variations_tests;
+#[cfg(test)]
+use {
+    cell::{Cell, CellMarks, OPAQUE, TAIL, WIDE},
+    glyphs::{EmptyGlyphs, EMPTY_IN_FALLBACK, EMPTY_IN_FONT},
+    prepare::{cursor_mark, draw_cursor, opaque_backgrounds},
+    std::fs,
+    vt::{needs_cell_metrics, replay_with},
+};
+/// The default palette's colours, which the tests compare with.
+#[cfg(test)]
+const DEFAULT_FG: Rgb = Palette::DEFAULT.foreground;
+#[cfg(test)]
+const DEFAULT_BG: Rgb = Palette::DEFAULT.background;
 
-pub use cast::Cast;
-pub use grid::Grid;
-pub use palette::{Palette, Rgb};
-pub use screen::{CursorShape, Lf};
-pub use vt::ParseOptions;
-
-/// The most cells a grid may have, `cols * rows`: 4,194,304, 2048 x 2048. The
-/// CLI allows up to 500 x 200.
-pub const MAX_CELLS: usize = 1 << 22;
-
-/// The most columns, and the most rows, a grid may have: 65,535. The parser
-/// caps a control's count there, as the CLI always has, so on a grid no wider
-/// or taller a cursor move, an erase, an insert or a delete still reaches the
-/// edge; REP repeats a character at most that many times.
-pub const MAX_SIDE: usize = u16::MAX as usize;
-
-/// Why the library could not do what it was asked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Error {
-    /// A grid size with no cells, a side over [`MAX_SIDE`], or more than
-    /// [`MAX_CELLS`] cells.
-    GridSize {
-        /// The columns asked for.
-        cols: usize,
-        /// The rows asked for.
-        rows: usize,
-    },
-    /// A recording that is not a readable asciicast: which line is
-    /// malformed, and how, as the CLI reports it.
-    Cast(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::GridSize { cols, rows } => write!(
-                f,
-                "a {cols}x{rows} grid: it needs 1 to {MAX_SIDE} columns and rows, and at most {MAX_CELLS} cells"
-            ),
-            Error::Cast(reason) => f.write_str(reason),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Replay `log` on a terminal of `cols` x `rows` cells and return the screen
-/// it leaves, as the CLI does without a font: cells 1 pixel square, which
-/// only matters to an image placed by pixels (see [`needs_cell_size`]).
-///
-/// A grid of 0 cells, wider or taller than [`MAX_SIDE`], or of more than
-/// [`MAX_CELLS`] cells is an [`Error::GridSize`].
-/// The two screens' cells are allocated up front, 24 bytes a cell; like any
-/// `Vec`, a failed allocation aborts (errors for that come with the render,
-/// #85).
-pub fn parse(log: &[u8], cols: usize, rows: usize, options: &ParseOptions) -> Result<Grid, Error> {
-    parse_with_cell_size(log, cols, rows, options, (1, 1))
-}
-
-/// [`parse`] with cells of `cell_size` (width, height) pixels, the font's,
-/// as the CLI does when it reads one. A kitty image sized in pixels, or a
-/// Sixel image, moves the text cursor by the cells it covers, so the cursor
-/// and the cells written after it depend on this. A size of 0 counts as 1.
-pub fn parse_with_cell_size(
-    log: &[u8],
-    cols: usize,
-    rows: usize,
-    options: &ParseOptions,
-    cell_size: (u16, u16),
-) -> Result<Grid, Error> {
-    let sides = (1..=MAX_SIDE).contains(&cols) && (1..=MAX_SIDE).contains(&rows);
-    if !sides || cols.checked_mul(rows).map_or(true, |cells| cells > MAX_CELLS) {
-        return Err(Error::GridSize { cols, rows });
-    }
-    let (w, h) = cell_size;
-    Ok(vt::replay_with(log, cols, rows, options, (i32::from(w.max(1)), i32::from(h.max(1)))))
-}
-
-/// Whether the screen `log` leaves may depend on the cell size: it has a
-/// kitty command or a Sixel image that may move the text cursor by cells of
-/// the font's size. False means the cell size cannot matter. The scan does
-/// not decode images, so true does not promise a difference: a transmission
-/// that fails, or a malformed image, still counts. The CLI reads a font for
-/// `--text` and `--json` only when this is true.
-pub fn needs_cell_size(log: &[u8]) -> bool {
-    vt::needs_cell_metrics(log)
-}
-
-/// Whether `log` looks like it never went through a PTY: it has line feeds
-/// but no CR at all, which a terminal's `onlcr` would have added. Such a log
-/// (a text file, `tmux capture-pane`) wants `Lf::Newline`; the CLI hints at
-/// `--lf-newline` then.
-pub fn lacks_cr(log: &[u8]) -> bool {
-    vt::lacks_cr(log)
-}
-
-/// Whether `log` should be read as an asciinema recording: its first line is
-/// a JSON object with a `"version"` member. This is how the CLI decides
-/// without `--cast` or `--raw`. It is not a check that the recording is
-/// valid: an unsupported version or a malformed header still reads as a
-/// cast, and [`decode_cast`] says what is wrong with it.
-pub fn is_cast(log: &[u8]) -> bool {
-    cast::detect(log)
-}
-
-/// Decode an asciinema v2 or v3 recording: its output events, in order,
-/// which [`parse`] replays, and the terminal size it ends at. A malformed
-/// recording is an [`Error::Cast`].
-pub fn decode_cast(log: Vec<u8>) -> Result<Cast, Error> {
-    cast::decode(log).map_err(Error::Cast)
-}
-
-impl Grid {
-    /// The number of columns.
-    pub fn cols(&self) -> usize {
-        self.cols
-    }
-
-    /// The number of rows.
-    pub fn rows(&self) -> usize {
-        self.rows
-    }
-
-    /// The cursor as (row, col), from 0, or None when the log hid it
-    /// (DECTCEM). With a wrap pending it is on the last column.
-    pub fn cursor(&self) -> Option<(usize, usize)> {
-        self.cursor
-    }
-
-    /// The cursor's shape, as the log last set it (DECSCUSR).
-    pub fn cursor_shape(&self) -> CursorShape {
-        self.cursor_shape
-    }
-
-    /// The cell at (row, col), from 0, or None outside the grid.
-    pub fn cell(&self, row: usize, col: usize) -> Option<GridCell<'_>> {
-        if row >= self.rows || col >= self.cols {
-            return None;
-        }
-        let at = row * self.cols + col;
-        Some(GridCell { cell: &self.cells[at], marks: grid::marks_of(&self.marks, at) })
-    }
-}
-
-/// One cell of a [`Grid`]: its character and combining marks, the colours it
-/// was printed in (after reverse video, dim and conceal), and its attributes.
-#[derive(Clone, Copy)]
-pub struct GridCell<'a> {
-    cell: &'a Cell,
-    marks: &'a [u32],
-}
-
-impl<'a> GridCell<'a> {
-    /// The character: a space in a blank cell, and in the right half of a
-    /// wide character ([`GridCell::is_wide_tail`]). A kitty Unicode
-    /// placeholder cell holds U+10EEEE, as `--text` shows it.
-    pub fn ch(&self) -> char {
-        // The screen keeps a tail's character as 0.
-        if self.is_wide_tail() {
-            return ' ';
-        }
-        grid::to_char(self.cell.ch)
-    }
-
-    /// The combining marks that follow the character and have no
-    /// precomposed form with it, in order.
-    pub fn marks(&self) -> impl Iterator<Item = char> + 'a {
-        self.marks.iter().map(|&m| grid::to_char(m))
-    }
-
-    /// The text colour.
-    pub fn fg(&self) -> Rgb {
-        (self.cell.fr, self.cell.fg, self.cell.fb)
-    }
-
-    /// The background colour.
-    pub fn bg(&self) -> Rgb {
-        (self.cell.br, self.cell.bg, self.cell.bb)
-    }
-
-    /// SGR 1.
-    pub fn is_bold(&self) -> bool {
-        self.cell.attrs & BOLD != 0
-    }
-
-    /// SGR 3.
-    pub fn is_italic(&self) -> bool {
-        self.cell.attrs & ITALIC != 0
-    }
-
-    /// A single underline: SGR 4, or a 4:n style other than 4:0 and 4:2.
-    pub fn is_underlined(&self) -> bool {
-        self.cell.attrs & UNDERLINE != 0
-    }
-
-    /// SGR 21 or 4:2.
-    pub fn is_double_underlined(&self) -> bool {
-        self.cell.attrs & DOUBLE_UNDERLINE != 0
-    }
-
-    /// SGR 9.
-    pub fn is_struck(&self) -> bool {
-        self.cell.attrs & STRIKE != 0
-    }
-
-    /// The left half of a wide (two-column) character.
-    pub fn is_wide(&self) -> bool {
-        self.cell.attrs & WIDE != 0
-    }
-
-    /// The right half of a wide character, which the left half draws.
-    pub fn is_wide_tail(&self) -> bool {
-        self.cell.attrs & TAIL != 0
-    }
-}
-
-impl std::fmt::Debug for GridCell<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GridCell")
-            .field("ch", &self.ch())
-            .field("marks", &self.marks().collect::<String>())
-            .field("fg", &self.fg())
-            .field("bg", &self.bg())
-            .field("attrs", &self.cell.attrs)
-            .finish()
-    }
-}
+pub use api::{
+    decode_cast, is_cast, lacks_cr, needs_cell_size, parse, parse_color, parse_with_cell_size, Cast, CursorShape,
+    Error, Grid, GridCell, Lf, Palette, ParseOptions, Rgb, MAX_CELLS, MAX_PALETTE_BYTES, MAX_PIXELS, MAX_SIDE,
+};
+pub use api_render::{
+    render, render_rgba, Cursor, EmptyGlyph, FaceSelector, Font, FontSpec, Rendered, RenderOptions, RgbaImage,
+    MAX_PADDING,
+};
+#[doc(hidden)]
+pub use api_render::cli;

@@ -29,10 +29,15 @@ fi
 ./build.sh
 
 echo "== unit tests"
+# The library's (src/lib.rs, linking the C as build.sh does), then the CLI's
+# (src/main.rs, linking the library).
 # shellcheck disable=SC2086
-rustc --edition 2021 --test src/main.rs -o "$out/unit" \
+rustc --edition 2021 --test src/lib.rs -o "$out/unit" \
     -L native="$PWD" -l static=termshot_c ${RUSTC_LINK_ARGS:-}
 "$out/unit" -q
+# shellcheck disable=SC2086
+rustc --edition 2021 --test src/main.rs -o "$out/cli-unit" --extern termshot=libtermshot.rlib ${RUSTC_LINK_ARGS:-}
+"$out/cli-unit" -q
 
 echo "== deflate matches stb"
 # The C harnesses link the Rust they call (src/deflate.rs, src/geometry.rs
@@ -492,8 +497,20 @@ echo "== the library, linked as an embedder links it"
 # After the goldens, which check tests/grids/ against the CLI: the library
 # must write the same grids.
 # shellcheck disable=SC2086
-rustc --edition 2021 tests/library.rs -o "$out/library" --extern termshot=libtermshot.rlib ${RUSTC_LINK_ARGS:-}
+rustc --edition 2021 tests/library.rs -o "$out/library" --extern termshot=libtermshot.rlib \
+    -L native="$PWD/$out" -l static=png_read ${RUSTC_LINK_ARGS:-}
 "$out/library" || fail=1
+echo "== the crate docs' examples"
+# They are no_run (they read session.pty), so rustdoc compiles and links
+# each against the rlib without running it.
+# shellcheck disable=SC2086
+if rustdoc --edition 2021 --test src/lib.rs --crate-name termshot --extern termshot=libtermshot.rlib \
+    ${RUSTC_LINK_ARGS:-} > "$out/doctests.log" 2>&1; then
+    echo "ok, $(grep -c '\.\.\. ok$' "$out/doctests.log") examples compile"
+else
+    cat "$out/doctests.log"
+    fail=1
+fi
 echo "== kitty graphics pixels"
 rustc --edition 2021 tests/graphics.rs -o "$out/graphics" -L native="$out" -l static=png_read
 "$out/graphics"

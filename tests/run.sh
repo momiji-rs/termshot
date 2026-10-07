@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 ./build.sh
 scratch=$(mktemp -d)
-trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/render.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image"; rmdir "$scratch"' EXIT HUP INT TERM
+trap 'rm -f "$scratch/glyphs.pty" "$scratch/codec" "$scratch/codec-custom" "$scratch/rust.a" "$scratch/render.a" "$scratch/termshot-faults" "$scratch/fault.png" "$scratch/fault.txt" "$scratch/fault.err" "$scratch/strokes.pty" "$scratch/strokes.png" "$scratch/draw" "$scratch/draw.png" "$scratch/unit" "$scratch/profile" "$scratch/image" "$scratch/libtermshot-faults.rlib" "$scratch/library-faults" "$scratch/png_read.o" "$scratch/libpng_read.a"; rmdir "$scratch"' EXIT HUP INT TERM
 sanitize=''
 if [ "${SANITIZE:-0}" = 1 ]; then
     sanitize='-fsanitize=address,undefined -fno-omit-frame-pointer'
@@ -27,10 +27,12 @@ cc tests/draw.c "$scratch/render.a" -I third_party/stb -O2 -ffp-contract=off -Wn
 
 # Fail each compressor allocation in turn, in the CLI: the unit tests check
 # that each returns NULL and frees the rest; here the run must exit 2, say
-# so, and leave no output behind. A build with the fault hook, linked as
-# build.sh links termshot.
-rustc --edition 2021 src/main.rs -o "$scratch/termshot-faults" -C opt-level=2 --cfg termshot_alloc_faults \
-    -L native="$PWD" -l static=termshot_c
+# so, and leave no output behind. A build with the fault hook: the library
+# built with it, and the CLI linking it, as build.sh links termshot.
+rustc --edition 2021 --crate-type rlib --crate-name termshot src/lib.rs -o "$scratch/libtermshot-faults.rlib" \
+    -C opt-level=2 --cfg termshot_alloc_faults -L native="$PWD" -l static=termshot_c
+rustc --edition 2021 src/main.rs -o "$scratch/termshot-faults" -C opt-level=2 \
+    --extern termshot="$scratch/libtermshot-faults.rlib"
 n=1
 while :; do
     rm -f "$scratch/fault.png" "$scratch/fault.txt"
@@ -55,10 +57,11 @@ if [ "$n" -le 4 ]; then
 fi
 echo "ok, each of $((n - 1)) compressor allocation failures exits 2 and leaves no output"
 
-# Fail each of the render's own allocations in turn (src/render.rs: the
-# canvas, then the PNG's buffer, which stb_image_write asks for through
-# termshot_png_alloc): the run must exit 2, say which ran out, and leave no
-# output. The fault build says which allocation failed; when none does, all
+# Fail each of the render's own allocations in turn (src/api_render.rs: the
+# copies of the cells, the marks and the image views it prepares; then
+# src/render.rs: the canvas, then the PNG's buffer, which stb_image_write
+# asks for through termshot_png_alloc and the render returns): the run must
+# exit 2, say which ran out, and leave no output. The fault build says which allocation failed; when none does, all
 # have been.
 n=1
 while :; do
@@ -75,7 +78,10 @@ while :; do
         exit 1
     fi
     case $n in
-        1) want="out of memory for a 2200x1440 image" ;;
+        1) want="out of memory for the cells of a 100x30 grid" ;;
+        2) want="out of memory for the combining marks of a 100x30 grid" ;;
+        3) want="out of memory for the image views of a 100x30 grid" ;;
+        4) want="out of memory for a 2200x1440 image" ;;
         *) want="out of memory encoding a 2200x1440 PNG" ;;
     esac
     if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
@@ -86,11 +92,94 @@ while :; do
     fi
     n=$((n + 1))
 done
-if [ "$n" -ne 3 ]; then
-    echo "FAIL $((n - 1)) render allocations failed, want the canvas and the PNG's buffer" >&2
+if [ "$n" -ne 6 ]; then
+    echo "FAIL $((n - 1)) render allocations failed, want the three copies, the canvas and the PNG's buffer" >&2
     exit 1
 fi
 echo "ok, each of $((n - 1)) render allocation failures exits 2 and leaves no output"
+
+# Fail each of the parser's allocations that grow with the grid in turn
+# (src/screen.rs: both screens' cells and rows, the tab stops, the marks,
+# a placeholder's ids, the placeholder cells, and src/graphics.rs: their
+# runs, the two maps of them, the placement they show, its slice and the
+# list it joins; then the marks and the cells in screen order): the run
+# must exit 2, say so, and leave no output.
+{
+    printf 'e\314\201q\314\202\r\n%.0s' $(seq 40)
+    printf '\033_Ga=T,U=1,i=7,f=24,s=1,v=1,q=2;/wAA\033\\\033[38;5;7m\364\216\273\256\033[m'
+} > "$scratch/glyphs.pty"
+n=1
+while :; do
+    rm -f "$scratch/fault.png" "$scratch/fault.txt"
+    set +e
+    TERMSHOT_PARSE_FAIL_AT=$n "$scratch/termshot-faults" --text "$scratch/fault.txt" \
+        "$scratch/glyphs.pty" "$scratch/fault.png" 2>"$scratch/fault.err"
+    code=$?
+    set -e
+    if ! grep -q "parse allocation $n " "$scratch/fault.err"; then
+        [ "$code" -eq 0 ] && [ -e "$scratch/fault.png" ] && break
+        echo "FAIL with no parse allocation $n failing: exit $code" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
+        ! grep -q "out of memory replaying the log on a 100x30 grid" "$scratch/fault.err"; then
+        echo "FAIL parse allocation $n: exit $code, want 2 with no output left" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    n=$((n + 1))
+done
+# Five for the screens, the marks, the ids, the placeholder cells, six for
+# the placement they show, the marks and the cells in screen order.
+if [ "$n" -ne 17 ]; then
+    echo "FAIL $((n - 1)) parse allocations failed, want 16" >&2
+    exit 1
+fi
+echo "ok, each of $((n - 1)) parse allocation failures exits 2 and leaves no output"
+
+# Fail each of a font load's allocations in turn (src/font.rs: the file's
+# bytes, then the padding): the run must exit 2, say so, and leave no
+# output.
+n=1
+while :; do
+    rm -f "$scratch/fault.png" "$scratch/fault.txt"
+    set +e
+    TERMSHOT_FONT_FAIL_AT=$n "$scratch/termshot-faults" --text "$scratch/fault.txt" \
+        --font third_party/jetbrains-mono/JetBrainsMono-Regular.ttf examples/reply-sent.pty "$scratch/fault.png" \
+        2>"$scratch/fault.err"
+    code=$?
+    set -e
+    if ! grep -q "font allocation $n " "$scratch/fault.err"; then
+        [ "$code" -eq 0 ] && [ -e "$scratch/fault.png" ] && break
+        echo "FAIL with no font allocation $n failing: exit $code" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
+        ! grep -q "JetBrainsMono-Regular.ttf: out of memory loading the font" "$scratch/fault.err"; then
+        echo "FAIL font allocation $n: exit $code, want 2 with no output left" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    n=$((n + 1))
+done
+if [ "$n" -ne 3 ]; then
+    echo "FAIL $((n - 1)) font allocations failed, want the bytes and the padding" >&2
+    exit 1
+fi
+echo "ok, each of $((n - 1)) font allocation failures exits 2 and leaves no output"
+
+# The same faults through the library, as an embedder links it: the rlib
+# built with the fault hook (as the CLI above links it), and
+# tests/library.rs, which fails each of a parse's and a render's
+# allocations in turn (the render's, the compressor's and the glyphs') and
+# checks that each returns Error::OutOfMemory.
+cc -c tests/png_read.c -o "$scratch/png_read.o" -O2 -I third_party/stb
+ar rcs "$scratch/libpng_read.a" "$scratch/png_read.o"
+rustc --edition 2021 tests/library.rs -o "$scratch/library-faults" --extern termshot="$scratch/libtermshot-faults.rlib" \
+    -L native="$scratch" -l static=png_read
+"$scratch/library-faults" --faults 2>"$scratch/fault.err" || { cat "$scratch/fault.err" >&2; exit 1; }
 
 # Fail each allocation of the box-drawing caches in turn (the arcs' offsets
 # and the strokes reused): the strokes are stamped afresh, so the run
@@ -180,7 +269,7 @@ if [ "$(uname)" = Linux ]; then
     echo "ok, a raster allocation failure exits 2 and leaves no output"
 fi
 
-rustc --edition 2021 --test src/main.rs -o "$scratch/unit" \
+rustc --edition 2021 --test src/lib.rs -o "$scratch/unit" \
     -L native="$PWD" -l static=termshot_c
 rustc --edition 2021 tests/profile.rs -o "$scratch/profile"
 "$scratch/profile" "$scratch/unit"
