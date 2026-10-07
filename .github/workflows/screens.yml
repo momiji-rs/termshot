@@ -36,10 +36,10 @@ jobs:
           logs: examples/*.pty
           shots: |
             help: ./termshot --help | head -28
-            colors@48x1: for i in 0 1 2 3 4 5 6 7; do printf '\e[4%dm  \e[10%dm  ' $i $i; done; printf '\e[0m'
+            colors@48x1: for i in 0 1 2 3 4 5 6 7; do printf '\e[4%dm  \e[10%dm  ' $((7-i)) $i; done; printf '\e[0m'
             less@60x12: seq 1 200 | less
               wait-for 1
               snap top
               key space space
-              type /150
+              type /170
               key enter

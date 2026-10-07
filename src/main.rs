@@ -1426,7 +1426,7 @@ usage: termshot [options] <log> <out.png>
        termshot [options] --text FILE --json FILE <log> [<out.png>]
        termshot <log> <out.png> <font.ttf> [px] [cols] [rows]
 
-Render the final screen of a terminal log (raw PTY output) as a PNG.
+Render the last screen of a terminal log (raw PTY output) as a PNG image.
 Use - as <log> to read stdin, and - as an output to write stdout.
 
 options:
