@@ -6,12 +6,17 @@ branding:
   color: orange
 
 inputs:
+  mode:
+    description: run (capture and publish), publish (take a fork's screens from a workflow_run), or auto
+    default: auto
   shots:
     description: |
-      One screen per line, as `name: command`. Each command runs under bash in a real
-      PTY of `size`; one still running after `timeout` seconds is captured as it is.
+      One shot per line, as `name: command` or `name@COLSxROWS: command`. Each command
+      runs under bash in a real PTY; one still running after `timeout` seconds is
+      captured as it is. Indented lines below a shot drive it: `wait 0.5`,
+      `wait-for TEXT`, `type TEXT`, `key down enter ctrl-c`, `snap NAME`.
   logs:
-    description: Globs of PTY logs you already recorded (one screen each, named after the file)
+    description: Globs of PTY logs you already recorded, each optionally `@COLSxROWS`
   size:
     description: Terminal size, COLSxROWS
     default: 100x30
@@ -39,6 +44,13 @@ inputs:
   assets-branch:
     description: Orphan branch holding the images and the baselines
     default: termshot-assets
+  assets-repo:
+    description: Repository holding the assets branch (default this one)
+  assets-token:
+    description: Token for `assets-repo` (default `github-token`)
+  retention-days:
+    description: Prune screens of pull requests closed this many days ago (0 keeps them)
+    default: '30'
   fail-on-change:
     description: Fail when a screen differs from the base branch's baseline
     default: 'false'
@@ -101,6 +113,7 @@ runs:
       shell: bash
       env:
         INPUT_TERMSHOT: ${{ steps.install.outputs.bin }}
+        INPUT_MODE: ${{ inputs.mode }}
         INPUT_SHOTS: ${{ inputs.shots }}
         INPUT_LOGS: ${{ inputs.logs }}
         INPUT_SIZE: ${{ inputs.size }}
@@ -113,15 +126,19 @@ runs:
         INPUT_COMMENT: ${{ inputs.comment }}
         INPUT_PUBLISH: ${{ inputs.publish }}
         INPUT_ASSETS_BRANCH: ${{ inputs.assets-branch }}
+        INPUT_ASSETS_REPO: ${{ inputs.assets-repo }}
+        INPUT_ASSETS_TOKEN: ${{ inputs.assets-token }}
+        INPUT_RETENTION_DAYS: ${{ inputs.retention-days }}
         INPUT_FAIL_ON_CHANGE: ${{ inputs.fail-on-change }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_OUTPUT_DIR: ${{ runner.temp }}/termshot-${{ inputs.id }}
       run: python3 "$GITHUB_ACTION_PATH/termshot_action.py"
 
     - name: upload screens
-      if: always() && steps.run.outputs.dir != ''
+      if: always() && steps.run.outputs.dir != '' && github.event_name != 'workflow_run'
       uses: actions/upload-artifact@v4
       with:
         name: termshot-${{ inputs.id }}
         path: ${{ steps.run.outputs.dir }}
         if-no-files-found: ignore
+        include-hidden-files: true

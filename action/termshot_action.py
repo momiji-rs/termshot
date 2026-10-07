@@ -1,47 +1,53 @@
 #!/usr/bin/env python3
-"""termshot GitHub Action: capture terminal screens, render them, show them on the PR.
+"""termshot GitHub Action: screenshot terminal screens and show on the PR what changed.
 
 Standard library only, so it runs on any hosted runner without a setup step.
 
-  capture   run each shot's command in a real PTY of the given size and keep the bytes
-  render    termshot each log into a PNG and its --text
-  compare   against the baseline stored for the base branch (exact: termshot is
-            deterministic, so the same screen gives the same bytes), and draw a diff
-            image: termshot renders the new screen again with the changed cells lit
-  publish   push the PNGs to an orphan assets branch and upsert one sticky comment
+mode run (pull_request, push, anything but workflow_run):
+  capture   run each shot's command in a real PTY of its size, driven by its steps
+  render    termshot each log into a PNG, its --text and its --json
+  compare   against the baseline stored for the base branch. termshot is
+            deterministic, so the same screen gives the same bytes and a change
+            is exact. A changed screen gets a cell diff that termshot draws too.
+  publish   store the files on the assets branch and upsert one sticky comment.
+            A push stores the branch's baseline instead, and prunes.
+  When the token can't write (a fork, Dependabot), it only renders, and leaves the
+  logs in the artifact for mode publish.
 
-Inputs arrive as INPUT_* environment variables (set by action.yml). Run locally with
-TERMSHOT_DRY_RUN=1 to stop after rendering and print the comment it would post.
+mode publish (workflow_run, after the run above):
+  Takes the logs from that run's artifact as untrusted data: checks them, matches
+  the pull request through the API, renders them with its own termshot, then
+  compares and publishes as above. Nothing from the artifact is executed.
+
+Inputs arrive as INPUT_* environment variables (set by action.yml). Run locally
+with TERMSHOT_DRY_RUN=1 to stop after rendering and print the comment.
 """
 
-import base64
-import difflib
-import errno
-import fcntl
+import datetime
 import glob
 import hashlib
 import json
 import os
 import re
-import select
-import signal
-import struct
 import subprocess
 import sys
-import termios
-import time
-import unicodedata
-import urllib.error
-import urllib.request
+from urllib.parse import quote
 
-API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import capture  # noqa: E402
+import report  # noqa: E402
+from github import GitHub, HTTPError, Store  # noqa: E402
+
 SERVER = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-MARK = "<!-- termshot-action:{id} -->"
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+BUNDLE = ".termshot-bundle.json"  # starts with '.', so no screen name can be it
+ARTIFACT_LIMIT = 64 << 20
+MAX_SCREENS = 200
 
 
 def inp(name, default=""):
-    return os.environ.get("INPUT_" + name.upper().replace("-", "_"), default).strip()
+    v = os.environ.get("INPUT_" + name.upper().replace("-", "_"), "").strip()
+    return v or default
 
 
 def log(msg):
@@ -53,512 +59,368 @@ def fail(msg):
     sys.exit(1)
 
 
-# ---------------------------------------------------------------- capture
+def set_output(key, value):
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"{key}={value}\n")
 
 
-def capture(command, cols, rows, timeout, out_path):
-    """Run `command` under bash in a PTY of cols x rows and write what it printed.
-
-    A command still running at `timeout` is a TUI showing its screen: recording stops
-    first and the process group is killed after, so its exit cleanup (leaving the
-    alternate screen, clearing) never reaches the log. Returns (exit code or None if
-    it timed out, seconds).
-    """
-    master, slave = os.openpty()
-    # Size the terminal before the program starts, so its first query sees it.
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    env = dict(os.environ, TERM="xterm-256color", COLUMNS=str(cols), LINES=str(rows))
-
-    def child_setup():
-        os.setsid()
-        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-
-    start = time.monotonic()
-    proc = subprocess.Popen(
-        ["bash", "-c", command],
-        stdin=slave, stdout=slave, stderr=slave,
-        env=env, preexec_fn=child_setup, close_fds=True,
-    )
-    os.close(slave)
-    chunks, timed_out = [], False
-    while True:
-        left = start + timeout - time.monotonic()
-        if left <= 0:
-            timed_out = True
-            break
-        ready, _, _ = select.select([master], [], [], min(left, 0.25))
-        if not ready:
-            # The child may have exited while a grandchild keeps the PTY open.
-            if proc.poll() is not None and not select.select([master], [], [], 0.05)[0]:
-                break
-            continue
-        try:
-            data = os.read(master, 65536)
-        except OSError as e:
-            if e.errno == errno.EIO:  # Linux: every slave fd closed
-                break
-            raise
-        if not data:  # macOS
-            break
-        chunks.append(data)
-    if not timed_out:
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pass
-    if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-    code = proc.wait()
-    os.close(master)
-    with open(out_path, "wb") as f:
-        f.write(b"".join(chunks))
-    return (None if timed_out else code), time.monotonic() - start
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
 
 
-def parse_shots(text):
-    shots = []
-    for n, line in enumerate(text.splitlines(), 1):
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        name, sep, command = line.partition(":")
-        name, command = name.strip(), command.strip()
-        if not sep or not command or not NAME_RE.match(name):
-            fail(f"shots line {n}: expected 'name: command', got {line!r}")
-        shots.append((name, command))
-    return shots
+class Renderer:
+    def __init__(self, termshot, out_dir):
+        self.termshot, self.out_dir = termshot, out_dir
+        args = ["--px", inp("px", "28")]
+        if inp("font"):
+            args += ["--font", inp("font")]
+        if inp("fallback-font"):
+            args += ["--fallback-font", inp("fallback-font")]
+        self.args = args + inp("args").split()
+        r = subprocess.run([termshot, "--version"], capture_output=True, text=True)
+        self.version = r.stdout.split()[-1] if r.returncode == 0 else "?"
+
+    def render(self, screen, extra=()):
+        """Render screen['log'] (bytes) at screen['size'], filling png/text/json."""
+        cols, rows = screen["size"]
+        stem = os.path.join(self.out_dir, screen["name"])
+        with open(stem + ".pty", "wb") as f:
+            f.write(screen["log"])
+        r = subprocess.run([self.termshot, *self.args, "--size", f"{cols}x{rows}", *extra,
+                            "--text", stem + ".txt", "--json", stem + ".json",
+                            stem + ".pty", stem + ".png"], capture_output=True, text=True)
+        if r.stderr.strip():
+            log(f"{screen['name']}: {r.stderr.strip()}")
+        if r.returncode:
+            raise RuntimeError(f"termshot failed on {screen['name']} (exit {r.returncode})")
+        for key, ext in (("png", "png"), ("json", "json")):
+            with open(f"{stem}.{ext}", "rb") as f:
+                screen[key] = f.read()
+        with open(stem + ".txt", encoding="utf-8", errors="replace") as f:
+            screen["text"] = f.read().rstrip("\n")
+
+    def diff_png(self, screen, base_json):
+        data, changed = report.diff_log(json.loads(screen["json"]), json.loads(base_json))
+        d = {"name": screen["name"] + ".diff", "size": screen["size"], "log": data}
+        self.render(d, extra=("--cursor", "none"))
+        return d["png"], report.describe(changed)
 
 
-# ---------------------------------------------------------------- GitHub API
+# ---------------------------------------------------------------- gather screens
 
 
-class GitHub:
-    def __init__(self, token, repo):
-        self.token, self.repo = token, repo
-
-    def call(self, method, path, body=None, ok404=False):
-        url = path if path.startswith("http") else f"{API}/repos/{self.repo}{path}"
-        data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method, headers={
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "termshot-action",
-        })
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                raw = r.read()
-                return json.loads(raw) if raw else None
-        except urllib.error.HTTPError as e:
-            if ok404 and e.code == 404:
-                return None
-            detail = e.read().decode(errors="replace")[:500]
-            raise RuntimeError(f"{method} {path}: HTTP {e.code}: {detail}") from None
-
-    def file_at(self, ref, path):
-        r = self.call("GET", f"/contents/{path}?ref={ref}", ok404=True)
-        return base64.b64decode(r["content"]) if r and "content" in r else None
-
-    def head_of(self, branch):
-        r = self.call("GET", f"/git/ref/heads/{branch}", ok404=True)
-        return r["object"]["sha"] if r else None
-
-    def commit_files(self, branch, files, message):
-        """Add `files` ({path: bytes}) to `branch` in one commit, creating it as an
-        orphan if needed. Retries when another job moved the branch meanwhile."""
-        blobs = {}
-        for path, data in files.items():
-            b = self.call("POST", "/git/blobs",
-                          {"content": base64.b64encode(data).decode(), "encoding": "base64"})
-            blobs[path] = b["sha"]
-        tree = [{"path": p, "mode": "100644", "type": "blob", "sha": s} for p, s in blobs.items()]
-        for attempt in range(5):
-            parent = self.head_of(branch)
-            body = {"tree": tree}
-            if parent:
-                body["base_tree"] = self.call("GET", f"/git/commits/{parent}")["tree"]["sha"]
-            t = self.call("POST", "/git/trees", body)
-            c = self.call("POST", "/git/commits", {
-                "message": message, "tree": t["sha"], "parents": [parent] if parent else []})
-            try:
-                if parent:
-                    self.call("PATCH", f"/git/refs/heads/{branch}", {"sha": c["sha"]})
-                else:
-                    self.call("POST", "/git/refs", {"ref": f"refs/heads/{branch}", "sha": c["sha"]})
-                return c["sha"]
-            except RuntimeError as e:
-                if "HTTP 422" not in str(e) or attempt == 4:
-                    raise
-                time.sleep(1 + attempt)
-
-    def upsert_comment(self, number, marker, body):
-        page = 1
-        while True:
-            batch = self.call("GET", f"/issues/{number}/comments?per_page=100&page={page}")
-            for c in batch:
-                if marker in (c.get("body") or ""):
-                    return self.call("PATCH", f"/issues/comments/{c['id']}", {"body": body})
-            if len(batch) < 100:
-                return self.call("POST", f"/issues/{number}/comments", {"body": body})
-            page += 1
-
-
-# ---------------------------------------------------------------- cell diff
-
-DEFAULT_BG = "#111823"
-ATTRS = ("bold", "italic", "underline", "double_underline", "strike")
-SGR = {"bold": "1", "italic": "3", "underline": "4", "double_underline": "21", "strike": "9"}
-LIT_BG = "#8a1c4a"
-
-
-def cells(screen):
-    """{(row, col): (char, fg, bg, attrs)} from termshot --json; blank cells are left out."""
-    grid = {}
-    for row, runs in enumerate(screen["lines"]):
-        for run in runs:
-            col = run["col"]
-            attrs = tuple(a for a in ATTRS if run.get(a))
-            for ch in run["text"]:
-                fg = run["fg"]
-                if ch == " " and not set(attrs) & {"underline", "double_underline", "strike"}:
-                    fg = None  # a plain space looks the same in any foreground
-                if not (ch == " " and fg is None and run["bg"] == DEFAULT_BG):
-                    grid[(row, col)] = (ch, fg, run["bg"], attrs)
-                col += 2 if unicodedata.east_asian_width(ch) in "WF" else 1
-    return grid
-
-
-def rgb(hex_colour):
-    return tuple(int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
-
-
-def mix(a, b, t):
-    return tuple(round(x + (y - x) * t) for x, y in zip(rgb(a), rgb(b)))
-
-
-def diff_log(head, base):
-    """A PTY log of `head` with the cells that differ from `base` at full strength
-    and the rest dimmed, and the changed cells. termshot renders it like any other log."""
-    new, old = cells(head), cells(base)
-    changed = {k for k in set(new) | set(old) if new.get(k) != old.get(k)}
-    out = ["\x1b[?25l\x1b[2J"]
-    for (row, col) in sorted(set(new) | changed):
-        ch, fg, bg, attrs = new.get((row, col), (" ", None, DEFAULT_BG, ()))
-        fg = fg or "#dbe7f7"
-        if (row, col) in changed:
-            # Keep a changed cell's own colours, so a colour change shows as itself;
-            # only cells on the default background are lit.
-            f, b = rgb(fg), rgb(LIT_BG if bg == DEFAULT_BG else bg)
-        else:
-            f, b = mix(fg, bg, 0.7), mix(bg, DEFAULT_BG, 0.75)
-        sgr = ";".join(["0", *(SGR[a] for a in attrs), "38;2;%d;%d;%d" % f, "48;2;%d;%d;%d" % b])
-        out.append(f"\x1b[{row + 1};{col + 1}H\x1b[{sgr}m{ch}")
-    out.append("\x1b[0m")
-    return "".join(out).encode(), changed
-
-
-def describe(changed):
-    rows = sorted({r for r, _ in changed})
-    if not rows:
-        return "no cells changed (the images in the screen did)"
-    spans, start = [], rows[0]
-    for a, b in zip(rows, rows[1:] + [None]):
-        if b != a + 1:
-            spans.append(f"{start + 1}" if start == a else f"{start + 1}–{a + 1}")
-            start = b
-    n = len(changed)
-    return f"{n} cell{'s' * (n != 1)} changed, in row{'s' * (len(rows) != 1)} {', '.join(spans)}"
-
-
-# ---------------------------------------------------------------- report
-
-
-def text_diff(old, new, name):
-    lines = difflib.unified_diff(old.splitlines(), new.splitlines(),
-                                 f"base/{name}", f"head/{name}", lineterm="", n=1)
-    return "\n".join(list(lines)[2:])  # the ---/+++ header says nothing here
-
-
-def fence(text, lang=""):
-    ticks = "```"
-    while ticks in text:
-        ticks += "`"
-    return f"{ticks}{lang}\n{text}\n{ticks}"
-
-
-def img(url, alt, width=None):
-    w = f' width="{width}"' if width else ""
-    return f'<img src="{url}" alt="{alt}"{w}>'
-
-
-def report(ctx, shots, base, url_of):
-    """Markdown for the comment and the job summary. `url_of(kind, name)` gives the
-    image URL for 'head' or 'base', or None when images aren't published."""
-    changed = [s for s in shots if s["status"] == "changed"]
-    new = [s for s in shots if s["status"] == "new"]
-    same = [s for s in shots if s["status"] == "unchanged"]
-    removed = sorted(set(base) - {s["name"] for s in shots}) if base is not None else []
-
-    counts = [f"{len(shots)} screen{'s' * (len(shots) != 1)}"]
-    if base is not None:
-        counts += [f"{len(changed)} changed"] if changed else []
-        counts += [f"{len(new)} new"] if new else []
-        counts += [f"{len(removed)} removed"] if removed else []
-        if not changed and not new and not removed:
-            counts.append("no visual changes")
-    out = [MARK.format(id=ctx["id"]), f"### 📸 termshot · {' · '.join(counts)}", ""]
-    if base is None and ctx.get("base_ref"):
-        out += [f"_No baseline for `{ctx['base_ref']}` yet: it is stored when this "
-                f"workflow runs on a push to `{ctx['base_ref']}`._", ""]
-
-    def meta(s):
-        bits = [f"`{s['command']}`" if s.get("command") else f"`{s['source']}`"]
-        if s.get("exit") is None and s.get("command"):
-            bits.append(f"captured at {s['timeout']:g}s")
-        elif s.get("exit"):
-            bits.append(f"⚠️ exit {s['exit']}")
-        return " · ".join(bits)
-
-    def text_block(s):
-        return f"<details><summary>text</summary>\n\n{fence(s['text'])}\n\n</details>\n"
-
-    for s in changed:
-        out += [f"#### ✏️ `{s['name']}` changed", meta(s), ""]
-        hu, bu = url_of("head", s["name"]), url_of("base", s["name"])
-        if hu and bu:
-            out += ["| before | after |", "|---|---|",
-                    f"| {img(bu, s['name'] + ' before')} | {img(hu, s['name'] + ' after')} |", ""]
-        if "diff_desc" in s:
-            out += [f"**diff** · {s['diff_desc']}", ""]
-            du = url_of("diff", s["name"]) if "diff_png" in s else None
-            out += [img(du, s["name"] + " diff"), ""] if du else []
-        d = text_diff(s["base_text"], s["text"], s["name"])
-        if d:
-            out += ["<details open><summary>text diff</summary>", "", fence(d, "diff"),
-                    "", "</details>", ""]
-        else:
-            out += ["_Same text; colours or attributes changed._", ""]
-    for s in new:
-        title = "🆕" if base is not None else "🖥️"
-        out += [f"#### {title} `{s['name']}`", meta(s), ""]
-        u = url_of("head", s["name"])
-        out += [img(u, s["name"]), ""] if u else []
-        out += [text_block(s)]
-    if same:
-        out += [f"<details><summary>✅ {len(same)} unchanged: "
-                + ", ".join(f"<code>{s['name']}</code>" for s in same) + "</summary>", ""]
-        for s in same:
-            u = url_of("head", s["name"])
-            out += [f"**`{s['name']}`** · {meta(s)}", ""]
-            out += [img(u, s["name"], 480), ""] if u else [fence(s["text"]), ""]
-        out += ["</details>", ""]
-    if removed:
-        out += ["🗑️ removed: " + ", ".join(f"`{n}`" for n in removed), ""]
-    foot = f"<sub>Rendered by [termshot]({SERVER}/momiji-rs/termshot) {ctx['version']}"
-    if ctx.get("sha"):
-        foot += f" at {ctx['sha'][:7]}"
-    if ctx.get("run_url"):
-        foot += f" · [run]({ctx['run_url']})"
-    out.append(foot + "</sub>")
-    return "\n".join(out)
-
-
-# ---------------------------------------------------------------- main
-
-
-def main():
-    termshot = inp("termshot", "termshot")
-    size = inp("size", "100x30")
-    m = re.fullmatch(r"(\d+)x(\d+)", size)
-    if not m:
-        fail(f"size must be COLSxROWS, got {size!r}")
-    cols, rows = int(m[1]), int(m[2])
-    timeout = float(inp("timeout", "10") or 10)
-    out_dir = os.path.abspath(inp("output-dir", "termshot-out"))
-    shot_id = inp("id", "termshot")
-    if not NAME_RE.match(shot_id):
-        fail(f"id must match {NAME_RE.pattern}")
-    os.makedirs(out_dir, exist_ok=True)
-    set_output("dir", out_dir)
-
-    render_args = ["--size", size, "--px", inp("px", "28") or "28"]
-    if inp("font"):
-        render_args += ["--font", inp("font")]
-    if inp("fallback-font"):
-        render_args += ["--fallback-font", inp("fallback-font")]
-    render_args += inp("args").split()
-
-    shots = [{"name": n, "command": c, "timeout": timeout} for n, c in parse_shots(inp("shots"))]
-    for pattern in inp("logs").split():
+def gather(renderer, default_size, timeout):
+    screens = []
+    for shot in capture.parse_shots(inp("shots"), default_size):
+        got, code = capture.run(shot, timeout, renderer.termshot)
+        for g in got:
+            g.update(label=shot["command"], size=shot["size"], steps=len(shot["steps"]),
+                     exit=code)
+            log(f"captured {g['name']}: " + ("running" if code is None else f"exit {code}")
+                + (f", {g['note']}" if g["note"] else ""))
+        screens += got
+    for item in inp("logs").split():
+        pattern, _, size = item.partition("@")
+        size = capture.parse_size(size, default_size)
         matches = sorted(glob.glob(pattern, recursive=True))
         if not matches:
-            fail(f"logs: {pattern!r} matched nothing")
+            raise capture.SpecError(f"logs: {pattern!r} matched nothing")
         for path in matches:
             name = re.sub(r"[^A-Za-z0-9._-]", "-", os.path.splitext(os.path.basename(path))[0])
-            shots.append({"name": name, "source": path, "log": path})
-    if not shots:
-        fail("give at least one of `shots` or `logs`")
-    names = [s["name"] for s in shots]
-    if len(set(names)) != len(names):
-        fail("shot names must be unique: " + ", ".join(sorted({n for n in names if names.count(n) > 1})))
+            with open(path, "rb") as f:
+                screens.append({"name": name, "label": path, "size": size, "log": f.read(),
+                                "note": "", "steps": 0, "exit": None})
+    return screens
 
-    version = subprocess.run([termshot, "--version"], capture_output=True, text=True).stdout.split()[-1]
-    for s in shots:
-        if "command" in s:
-            s["log"] = os.path.join(out_dir, s["name"] + ".pty")
-            s["exit"], secs = capture(s["command"], cols, rows, timeout, s["log"])
-            state = "timed out (kept the screen)" if s["exit"] is None else f"exit {s['exit']}"
-            log(f"captured {s['name']}: {state}, {secs:.1f}s")
-        png = os.path.join(out_dir, s["name"] + ".png")
-        txt = os.path.join(out_dir, s["name"] + ".txt")
-        js = os.path.join(out_dir, s["name"] + ".json")
-        r = subprocess.run([termshot, *render_args, "--text", txt, "--json", js, s["log"], png],
-                           capture_output=True, text=True)
-        if r.stderr.strip():
-            log(r.stderr.strip())
-        if r.returncode:
-            fail(f"termshot failed on {s['name']} (exit {r.returncode})")
-        with open(png, "rb") as f:
-            s["png"] = f.read()
-        with open(txt, encoding="utf-8", errors="replace") as f:
-            s["text"] = f.read().rstrip("\n")
-        with open(js, "rb") as f:
-            s["json"] = f.read()
-        s["sha"] = hashlib.sha256(s["png"]).hexdigest()
 
-    event = os.environ.get("GITHUB_EVENT_NAME", "")
-    payload = {}
-    if os.environ.get("GITHUB_EVENT_PATH") and os.path.exists(os.environ["GITHUB_EVENT_PATH"]):
-        with open(os.environ["GITHUB_EVENT_PATH"]) as f:
-            payload = json.load(f)
-    pr = payload.get("pull_request")
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    run_url = (f"{SERVER}/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-               if os.environ.get("GITHUB_RUN_ID") else "")
-    ctx = {"id": shot_id, "version": version, "run_url": run_url,
-           "sha": pr["head"]["sha"] if pr else os.environ.get("GITHUB_SHA", ""),
-           "base_ref": pr["base"]["ref"] if pr else ""}
-    branch = inp("assets-branch", "termshot-assets")
-    private = (payload.get("repository") or {}).get("private", True)
-    token = inp("github-token")
-    gh = GitHub(token, repo) if token and repo and not os.environ.get("TERMSHOT_DRY_RUN") else None
+def check_names(screens):
+    if not screens:
+        raise capture.SpecError("give at least one of `shots` or `logs`")
+    names = [s["name"] for s in screens]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        raise capture.SpecError("screen names must be unique: " + ", ".join(dup))
 
-    # Compare against the baseline of the base branch (on a PR) or of this branch.
-    base_branch = ctx["base_ref"] or os.environ.get("GITHUB_REF_NAME", "")
-    base_dir = f"baseline/{shot_id}/{base_branch}"
-    base, base_commit = None, None
-    if gh and base_branch:
-        base_commit = gh.head_of(branch)
-        if base_commit:
-            raw = gh.file_at(base_commit, f"{base_dir}/manifest.json")
-            base = json.loads(raw)["shots"] if raw else None
-    for s in shots:
+
+# ---------------------------------------------------------------- compare and publish
+
+
+def raw_url(repo, branch, path, private):
+    # Public: raw.githubusercontent.com, fetched through GitHub's image proxy.
+    # Private: a github.com URL, which works for a signed-in viewer with access.
+    if private:
+        return f"{SERVER}/{repo}/raw/{branch}/{path}"
+    return f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
+
+
+def compare_and_publish(ctx, screens, renderer, gh, store, pr):
+    """Compare with the baseline, store everything, return the report's markdown."""
+    sid = ctx["id"]
+    base_branch = ctx["base_ref"] if pr else ctx["ref"]
+    base = None
+    if store:
+        raw = store.read(f"baseline/{sid}/{base_branch}.json")
+        base = json.loads(raw)["shots"] if raw else None
+    for s in screens:
         b = (base or {}).get(s["name"])
+        s["png_path"] = store.put_object(s["png"], "png") if store else None
+        if store:
+            s["txt_path"] = store.put_object(s["text"].encode(), "txt")
+            s["json_path"] = store.put_object(s["json"], "json")
         if not b:
             s["status"] = "new"
-        elif b["sha"] == s["sha"]:
+        elif b["png"] == s["png_path"]:
             s["status"] = "unchanged"
         else:
             s["status"] = "changed"
-            s["base_text"] = (gh.file_at(base_commit, f"{base_dir}/{s['name']}.txt") or b"").decode(
-                "utf-8", "replace")
-            base_json = gh.file_at(base_commit, f"{base_dir}/{s['name']}.json")
+            s["base_png"] = b["png"]
+            s["base_text"] = (store.read(b["txt"]) or b"").decode("utf-8", "replace")
+            base_json = store.read(b["json"])
             if base_json:
-                log_bytes, changed_cells = diff_log(json.loads(s["json"]), json.loads(base_json))
-                s["diff_desc"] = describe(changed_cells)
-                dlog = os.path.join(out_dir, s["name"] + ".diff.pty")
-                dpng = os.path.join(out_dir, s["name"] + ".diff.png")
-                with open(dlog, "wb") as f:
-                    f.write(log_bytes)
-                r = subprocess.run([termshot, *render_args, "--cursor", "none", dlog, dpng],
-                                   capture_output=True, text=True)
-                if r.returncode == 0:
-                    with open(dpng, "rb") as f:
-                        s["diff_png"] = f.read()
+                try:
+                    png, s["diff_desc"] = renderer.diff_png(s, base_json)
+                    s["diff_path"] = store.put_object(png, "png")
+                except (RuntimeError, ValueError, KeyError) as e:
+                    log(f"::warning::no diff image for {s['name']}: {e}")
 
-    def raw_url(commit, path):
-        # Public repos: raw.githubusercontent.com, proxied by camo. Private repos: a
-        # github.com URL, which the viewer's own session can open.
-        if private:
-            return f"{SERVER}/{repo}/raw/{commit}/{path}"
-        return f"https://raw.githubusercontent.com/{repo}/{commit}/{path}"
-
-    can_write = bool(gh) and not (pr and pr["head"]["repo"]["full_name"] != repo)
-    published = None
-    if can_write and inp("publish", "true") != "false":
-        files = {}
+    published = False
+    if store:
+        entry = lambda s: {k: s[k + "_path"] for k in ("png", "txt", "json")} | (
+            {"diff": s["diff_path"], "base_png": s["base_png"]} if s.get("diff_path") else {})
+        manifest = {"termshot": renderer.version, "commit": ctx["sha"],
+                    "updated": now().isoformat(), "shots": {s["name"]: entry(s) for s in screens}}
         if pr:
-            prefix = f"pr/{shot_id}/{pr['number']}/{ctx['sha'][:12]}"
+            manifest["base_ref"] = ctx["base_ref"]
+            store.put(f"pr/{sid}/{pr['number']}.json", json.dumps(manifest, indent=1).encode())
         else:
-            prefix = base_dir
-        for s in shots:
-            if pr and s["status"] == "unchanged":
-                continue  # the comment shows the baseline's copy
-            files[f"{prefix}/{s['name']}.png"] = s["png"]
-            files[f"{prefix}/{s['name']}.txt"] = s["text"].encode()
-            files[f"{prefix}/{s['name']}.json"] = s["json"]
-            if "diff_png" in s:
-                files[f"{prefix}/{s['name']}.diff.png"] = s["diff_png"]
+            store.put(f"baseline/{sid}/{base_branch}.json", json.dumps(manifest, indent=1).encode())
+        n = len(store.staged)
+        store.commit(f"termshot {sid}: {'#%d' % pr['number'] if pr else base_branch} "
+                     f"at {ctx['sha'][:12]}")
+        log(f"stored {n} files on {store.branch}")
+        published = True
         if not pr:
-            manifest = {"version": version, "commit": ctx["sha"],
-                        "shots": {s["name"]: {"sha": s["sha"]} for s in shots}}
-            files[f"{prefix}/manifest.json"] = json.dumps(manifest, indent=1).encode()
-        try:
-            if not files:
-                published = base_commit
+            prune(gh, store, int(inp("retention-days", "30")))
+
+    url = (lambda p: raw_url(store.gh.repo, store.branch, p, ctx["private"]) if p else None) \
+        if published else (lambda p: None)
+    return report.report(ctx, screens, set(base) if base is not None else None, url)
+
+
+def prune(gh, store, days):
+    """Drop the manifests of pull requests closed more than `days` ago, and of deleted
+    branches, then every object no manifest names. History is squashed only if
+    something went, which is what frees the space."""
+    if days <= 0 or store.truncated:
+        return
+    cutoff = now() - datetime.timedelta(days=days)
+    keep, dropped = set(), []
+    for path in store.tree:
+        m = re.fullmatch(r"pr/[^/]+/(\d+)\.json", path)
+        if m:
+            p = gh.call("GET", f"/pulls/{m[1]}", ok404=True)
+            closed = p and p["state"] == "closed" and p["closed_at"] and \
+                datetime.datetime.fromisoformat(p["closed_at"].replace("Z", "+00:00")) < cutoff
+            if closed or p is None:
+                dropped.append(path)
             else:
-                published = gh.commit_files(branch, files, f"termshot {shot_id}: {ctx['sha'][:12]}")
-                log(f"pushed {len(files)} files to {branch} at {published[:12]}")
-        except RuntimeError as e:
-            log(f"::warning::could not push screenshots to {branch} ({e}); "
-                "the action needs `permissions: contents: write`")
+                keep.add(path)
+            continue
+        m = re.fullmatch(r"baseline/[^/]+/(.+)\.json", path)
+        if m:
+            gone = gh.call("GET", f"/branches/{quote(m[1], safe='')}", ok404=True) is None
+            updated = json.loads(store.read(path)).get("updated", "")
+            old = not updated or datetime.datetime.fromisoformat(updated) < cutoff
+            if gone and old:
+                dropped.append(path)
+            else:
+                keep.add(path)
+    for path in list(keep):
+        for e in json.loads(store.read(path))["shots"].values():
+            keep.update(v for v in e.values() if v in store.tree)
+    if keep == set(store.tree):
+        return
+    removed = len(store.tree) - len(keep)
+    if store.replace(keep, f"termshot: prune {removed} files"):
+        log(f"pruned {removed} files ({len(dropped)} manifests) from {store.branch}")
 
-    def url_of(kind, name):
-        if kind == "head" and status[name] == "unchanged" and pr:
-            kind = "base"
-        if kind == "head" and published:
-            return raw_url(published, f"{prefix}/{name}.png")
-        if kind == "diff" and published:
-            return raw_url(published, f"{prefix}/{name}.diff.png")
-        if kind == "base" and base_commit:
-            return raw_url(base_commit, f"{base_dir}/{name}.png")
-        return None
 
-    status = {s["name"]: s["status"] for s in shots}
-    body = report(ctx, shots, base if (pr or not gh) else None, url_of)
+# ---------------------------------------------------------------- modes
 
+
+def payload():
+    path = os.environ.get("GITHUB_EVENT_PATH")
+    if path and os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+def make_ctx(renderer, sha, base_ref, private):
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run = os.environ.get("GITHUB_RUN_ID")
+    return {"id": inp("id", "termshot"), "version": renderer.version, "sha": sha,
+            "base_ref": base_ref, "ref": os.environ.get("GITHUB_REF_NAME", ""),
+            "private": private, "run_url": f"{SERVER}/{repo}/actions/runs/{run}" if run else ""}
+
+
+def finish(ctx, screens, renderer, pr, can_write):
+    """Compare, publish and comment when allowed. Returns whether a comment was posted."""
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    token = inp("github-token")
+    dry = bool(os.environ.get("TERMSHOT_DRY_RUN"))
+    gh = GitHub(token, repo) if token and repo and can_write and not dry else None
+    store = None
+    if gh and inp("publish", "true") != "false":
+        assets_repo = inp("assets-repo", repo)
+        try:
+            store = Store(GitHub(inp("assets-token", token), assets_repo),
+                          inp("assets-branch", "termshot-assets"))
+        except HTTPError as e:
+            log(f"::warning::cannot read {assets_repo}: {e}")
+    try:
+        body = compare_and_publish(ctx, screens, renderer, gh, store, pr)
+    except HTTPError as e:
+        if e.code not in (403, 404):
+            raise
+        log(f"::warning::could not store the screens ({e}). Give the job "
+            "`permissions: contents: write`, or see the README on forks.")
+        for s in screens:
+            s.setdefault("status", "new")
+        body = report.report(ctx, screens, None, lambda p: None)
+        store = None
+    summary(body)
+    commented = False
+    if pr and gh and inp("comment", "auto") != "never":
+        try:
+            c = gh.upsert_comment(pr["number"], report.MARK.format(id=ctx["id"]), body)
+            log(f"comment: {c['html_url']}")
+            set_output("comment-url", c["html_url"])
+            commented = True
+        except HTTPError as e:
+            log(f"::warning::could not comment ({e}). Give the job "
+                "`permissions: pull-requests: write`.")
+    n = sum(s["status"] == "changed" for s in screens)
+    set_output("changed", str(n))
+    return commented, n
+
+
+def summary(body):
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
             f.write(body + "\n")
     if os.environ.get("TERMSHOT_DRY_RUN"):
         print(body)
-    comment_mode = inp("comment", "auto")
-    if pr and gh and comment_mode != "never":
-        if can_write:
-            try:
-                c = gh.upsert_comment(pr["number"], MARK.format(id=shot_id), body)
-                log(f"comment: {c['html_url']}")
-                set_output("comment-url", c["html_url"])
-            except RuntimeError as e:
-                log(f"::warning::could not comment ({e}); the action needs "
-                    "`permissions: pull-requests: write`")
-        else:
-            log("::notice::pull request from a fork: the token cannot write, so the "
-                "screens are in the job summary and the artifact instead")
-
-    n_changed = sum(s["status"] == "changed" for s in shots)
-    set_output("changed", str(n_changed))
-    if n_changed and inp("fail-on-change") == "true":
-        fail(f"{n_changed} screen(s) changed")
 
 
-def set_output(key, value):
-    if os.environ.get("GITHUB_OUTPUT"):
-        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"{key}={value}\n")
+def mode_run(renderer, out_dir):
+    default_size = capture.parse_size(inp("size", "100x30"), None)
+    screens = gather(renderer, default_size, float(inp("timeout", "10")))
+    check_names(screens)
+    for s in screens:
+        renderer.render(s)
+    ev = payload()
+    pr = ev.get("pull_request")
+    private = (ev.get("repository") or {}).get("private", True)
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    fork = bool(pr) and pr["head"]["repo"]["full_name"] != repo
+    bot = os.environ.get("GITHUB_ACTOR") == "dependabot[bot]"
+    ctx = make_ctx(renderer, pr["head"]["sha"] if pr else os.environ.get("GITHUB_SHA", ""),
+                   pr["base"]["ref"] if pr else "", private)
+    if fork or bot:
+        log("::notice::the token here is read-only (" + ("a fork" if fork else "Dependabot")
+            + "), so the screens go to the artifact. A workflow_run workflow with this "
+            "action can publish them; see the README.")
+        for s in screens:
+            s["status"] = "new"
+        summary(report.report(ctx, screens, None, lambda p: None))
+        commented, n = False, 0
+    else:
+        commented, n = finish(ctx, screens, renderer, pr, can_write=True)
+    bundle = {"format": 1, "id": ctx["id"], "published": commented or not pr,
+              "pr": pr["number"] if pr else None, "head_sha": ctx["sha"],
+              "screens": [{"name": s["name"], "label": s["label"], "size": "%dx%d" % s["size"],
+                           "note": s["note"], "steps": s["steps"], "exit": s["exit"]}
+                          for s in screens]}
+    with open(os.path.join(out_dir, BUNDLE), "w") as f:
+        json.dump(bundle, f, indent=1)
+    return n
+
+
+def mode_publish(renderer):
+    run = payload().get("workflow_run")
+    if not run:
+        fail("mode publish runs on a workflow_run event")
+    if run["event"] != "pull_request":
+        log(f"::notice::nothing to publish for a {run['event']} run")
+        return 0
+    repo = os.environ["GITHUB_REPOSITORY"]
+    gh = GitHub(inp("github-token"), repo)
+    sid = inp("id", "termshot")
+    files = gh.artifact(run["id"], f"termshot-{sid}", ARTIFACT_LIMIT)
+    if files is None:
+        log(f"::notice::run {run['id']} left no termshot-{sid} artifact")
+        return 0
+    bundle = json.loads(files[BUNDLE])
+    if bundle.get("published"):
+        log("::notice::that run already published its screens")
+        return 0
+    # Everything below comes from code we did not review: check it all.
+    if bundle.get("format") != 1 or bundle.get("id") != sid or not isinstance(bundle.get("pr"), int):
+        fail("the artifact's bundle is not one this action wrote")
+    pr = gh.call("GET", f"/pulls/{bundle['pr']}", ok404=True)
+    if not pr or pr["head"]["sha"] != run["head_sha"] or \
+            pr["head"]["repo"]["full_name"] != (run.get("head_repository") or {}).get("full_name"):
+        fail(f"pull request #{bundle['pr']} is not the one run {run['id']} was for")
+    if pr["state"] != "open":
+        log("::notice::the pull request is closed")
+        return 0
+    items = bundle.get("screens")
+    if not isinstance(items, list) or not 0 < len(items) <= MAX_SCREENS:
+        fail("the bundle has no screens, or too many")
+    screens = []
+    for it in items:
+        name = it.get("name") if isinstance(it, dict) else None
+        if not isinstance(name, str) or not capture.NAME_RE.match(name) or len(name) > 100:
+            fail(f"bad screen name {name!r}")
+        size = capture.parse_size(str(it.get("size")), None)
+        logf = files.get(f"{name}.pty")
+        if logf is None or len(logf) > 16 << 20:
+            fail(f"no log, or too big a log, for {name}")
+        ex = it.get("exit")
+        screens.append({
+            "name": name, "size": size, "log": logf,
+            "label": str(it.get("label", ""))[:500], "note": str(it.get("note", ""))[:300],
+            "steps": it["steps"] if isinstance(it.get("steps"), int) else 0,
+            "exit": ex if isinstance(ex, int) and not isinstance(ex, bool) else None})
+    check_names(screens)
+    for s in screens:
+        renderer.render(s)
+    private = pr["base"]["repo"]["private"]
+    ctx = make_ctx(renderer, pr["head"]["sha"], pr["base"]["ref"], private)
+    ctx["run_url"] = run.get("html_url", "")
+    _, n = finish(ctx, screens, renderer, pr, can_write=True)
+    return n
+
+
+def main():
+    out_dir = os.path.abspath(inp("output-dir", "termshot-out"))
+    os.makedirs(out_dir, exist_ok=True)
+    set_output("dir", out_dir)
+    sid = inp("id", "termshot")
+    if not capture.NAME_RE.match(sid):
+        fail(f"id must match {capture.NAME_RE.pattern}")
+    renderer = Renderer(inp("termshot", "termshot"), out_dir)
+    mode = inp("mode", "auto")
+    if mode == "auto":
+        mode = "publish" if os.environ.get("GITHUB_EVENT_NAME") == "workflow_run" else "run"
+    try:
+        n = mode_publish(renderer) if mode == "publish" else mode_run(renderer, out_dir)
+    except (capture.SpecError, RuntimeError) as e:
+        fail(str(e))
+    if n and inp("fail-on-change") == "true":
+        fail(f"{n} screen{'s' * (n != 1)} changed")
 
 
 if __name__ == "__main__":
