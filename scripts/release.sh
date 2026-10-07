@@ -83,6 +83,9 @@ fi
 name=termshot-$version-$platform
 mkdir "$work/$name"
 cp "$work/termshot" LICENSE README.md CHANGELOG.md "$work/$name/"
+# The README links the CLI reference, so it ships beside it.
+mkdir "$work/$name/docs"
+cp docs/usage.md docs/images.md "$work/$name/docs/"
 # The built-in font ships inside the binary, so its license ships with it.
 cp third_party/jetbrains-mono/OFL.txt "$work/$name/LICENSE-JetBrains-Mono.txt"
 tar -czf "dist/$name.tar.gz" -C "$work" "$name"
