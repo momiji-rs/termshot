@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The README is shorter and starts with what termshot is for, a quick start, a comparison
+  with similar tools and the GitHub Action. The full CLI reference moved to `docs/usage.md`,
+  images to `docs/images.md`, and building and testing to `CONTRIBUTING.md`. Release archives
+  include `docs/usage.md` and `docs/images.md`, and their links to files an archive doesn't
+  hold point at the file in that version's tag.
+
 ## [0.3.0] - 2026-10-06
 
 termshot 0.3.0 can be used as a Rust library: `termshot::parse` replays a
