@@ -313,8 +313,10 @@ int termshot_font_setup(const Face *font_face, const Face *fallback_face, double
 }
 
 /* The PNG of w x h RGB pixels, h filtered scanlines (a filter byte, then
-   the row) stride 3 * w + 1 apart, from stb_image_write: malloc'd, *len
-   bytes long, or NULL when an allocation failed, stb's or the compressor's.
+   the row) stride 3 * w + 1 apart, from stb_image_write: *len bytes in the
+   buffer termshot_png_alloc made, a Rust Vec's, which only src/render.rs's
+   png_bytes may take back (never free() it), or NULL when an allocation
+   failed, stb's or the compressor's.
    With profiling, marks gets the clock (CLOCK_MONOTONIC, in ms) when it
    began, began compressing, began packing and was done. */
 unsigned char *termshot_png_encode(unsigned char *filtered, int w, int h, int profile, double marks[4], int *len) {

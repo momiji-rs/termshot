@@ -692,6 +692,25 @@ fn faults() -> Result<(), String> {
         }
         report.push(format!("{} at {site}", n - 1));
     }
+    // render_rgba's: the copies, the canvas, then the pixels it returns.
+    let want = termshot::render_rgba(&grid, &options).map_err(|error| format!("faults: {error}"))?.rgba;
+    let mut n = 1;
+    loop {
+        std::env::set_var("TERMSHOT_RENDER_FAIL_AT", n.to_string());
+        let result = catch_unwind(AssertUnwindSafe(|| termshot::render_rgba(&grid, &options)));
+        std::env::remove_var("TERMSHOT_RENDER_FAIL_AT");
+        match result {
+            Err(_) => return Err(format!("faults: render_rgba, TERMSHOT_RENDER_FAIL_AT={n} panicked")),
+            Ok(Err(Error::OutOfMemory(_))) => n += 1,
+            Ok(Err(error)) => return Err(format!("faults: render_rgba, TERMSHOT_RENDER_FAIL_AT={n}: {error:?}")),
+            Ok(Ok(image)) if image.rgba == want => break,
+            Ok(Ok(_)) => return Err(format!("faults: render_rgba, TERMSHOT_RENDER_FAIL_AT={n} drew other pixels")),
+        }
+    }
+    if n - 1 < 5 {
+        return Err(format!("faults: only {} render_rgba allocations failed", n - 1));
+    }
+    report.push(format!("{} at TERMSHOT_RENDER_FAIL_AT for render_rgba", n - 1));
     println!("ok, each of {} allocation failures returns Error::OutOfMemory", report.join(", "));
     Ok(())
 }

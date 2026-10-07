@@ -110,9 +110,10 @@ extern "C" {
     /// cell metrics at `px` and TextFonts, in `setup`: 0 done, 1 a face
     /// can't be used, 2 the font's metrics are unusable. It prints nothing.
     fn termshot_font_setup(font: *const Face, fallback: *const Face, px: f64, setup: *mut FontSetup) -> c_int;
-    /// stb_glue.c: the PNG of `h` filtered scanlines of `w` RGB pixels, a
-    /// malloc'd buffer of `*len` bytes, or null when an allocation failed;
-    /// with `profile`, the clock at its four stages in `marks`.
+    /// stb_glue.c: the PNG of `h` filtered scanlines of `w` RGB pixels,
+    /// `*len` bytes in the buffer termshot_png_alloc made (a Vec's, which
+    /// png_bytes takes back; never free it), or null when an allocation
+    /// failed; with `profile`, the clock at its four stages in `marks`.
     fn termshot_png_encode(filtered: *mut u8, w: c_int, h: c_int, profile: c_int, marks: *mut [f64; 4],
                            len: *mut c_int) -> *mut u8;
 }
