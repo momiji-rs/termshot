@@ -240,8 +240,8 @@ def mix(a, b, t):
 
 
 def diff_log(head, base):
-    """A PTY log of `head` with the cells that differ from `base` lit and the rest
-    dimmed, and the changed cells. termshot renders it like any other log."""
+    """A PTY log of `head` with the cells that differ from `base` at full strength
+    and the rest dimmed, and the changed cells. termshot renders it like any other log."""
     new, old = cells(head), cells(base)
     changed = {k for k in set(new) | set(old) if new.get(k) != old.get(k)}
     out = ["\x1b[?25l\x1b[2J"]
@@ -249,9 +249,11 @@ def diff_log(head, base):
         ch, fg, bg, attrs = new.get((row, col), (" ", None, DEFAULT_BG, ()))
         fg = fg or "#dbe7f7"
         if (row, col) in changed:
-            f, b = rgb("#ffffff") if ch == " " else rgb(fg), rgb(LIT_BG)
+            # Keep a changed cell's own colours, so a colour change shows as itself;
+            # only cells on the default background are lit.
+            f, b = rgb(fg), rgb(LIT_BG if bg == DEFAULT_BG else bg)
         else:
-            f, b = mix(fg, bg, 0.65), mix(bg, DEFAULT_BG, 0.5)
+            f, b = mix(fg, bg, 0.7), mix(bg, DEFAULT_BG, 0.75)
         sgr = ";".join(["0", *(SGR[a] for a in attrs), "38;2;%d;%d;%d" % f, "48;2;%d;%d;%d" % b])
         out.append(f"\x1b[{row + 1};{col + 1}H\x1b[{sgr}m{ch}")
     out.append("\x1b[0m")
