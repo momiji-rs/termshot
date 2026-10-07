@@ -179,8 +179,9 @@ jobs:
           scripts/npm-stage.sh "$version" dist npm-out
       - name: publish
         run: |
-          # Trusted Publishing needs npm 11.5.1 or newer.
-          npm install -g npm@latest
+          # Trusted Publishing needs npm 11.5.1 or newer. Pinned, as the
+          # actions are: it runs with the OIDC token.
+          npm install -g npm@11.19.1
           # The platform packages go first: the main one depends on them. A
           # version npm already has is skipped, so a failed run can be rerun.
           for dir in npm-out/termshot-* npm-out/termshot; do
