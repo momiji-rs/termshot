@@ -1,7 +1,7 @@
 {
- "termshot": "0.3.0",
- "commit": "9623c5f4bd8d23be72d905c71ce593efd392a0d9",
- "updated": "2026-10-07T19:31:17+00:00",
+ "termshot": "0.3.1",
+ "commit": "877beb9321177225cd48a4031307b6bdfbbeaac3",
+ "updated": "2026-10-07T20:09:38+00:00",
  "shots": {
   "help": {
    "png": "objects/b3/b3ed65d2382e60ac117f7ee194965d8cc2fd07a848ebceb86dad5cf24d5af4e6.png",
