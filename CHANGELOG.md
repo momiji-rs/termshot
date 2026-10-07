@@ -17,9 +17,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checks that `src/crc32_table.h` and `tests/perf/` are what their generators
   write, and, where the HarfBuzz the fixtures name is installed, records the
   metrics fixtures again. The benchmark scripts are still Python.
-
-### Changed
-
 - The README is shorter and starts with what termshot is for, a quick start, a comparison
   with similar tools and the GitHub Action. The full CLI reference moved to `docs/usage.md`,
   images to `docs/images.md`, and building and testing to `CONTRIBUTING.md`. Release archives
