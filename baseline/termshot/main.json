@@ -1,5 +1,5 @@
 {
- "commit": "5c64e12b634cc7453572147189b926c813fbc558",
+ "commit": "b5f1be233c480a13c62aaca6b8d46ed59db8895d",
  "shots": {
   "colors": {
    "json": "objects/fb/fb04f6d8e4d64bbfa7b916cc868ec6e1229912fdcbf7316bea767319ff7b2075.json",
@@ -32,6 +32,6 @@
    "txt": "objects/c2/c25d6a51f01633f6efd1163306a2e3fd866e69a25d15d5883d109b0f8357a0e2.txt"
   }
  },
- "termshot": "0.3.1",
- "updated": "2026-10-07T21:29:46+00:00"
+ "termshot": "0.3.2",
+ "updated": "2026-10-07T21:46:22+00:00"
 }
