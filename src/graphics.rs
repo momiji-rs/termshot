@@ -1443,7 +1443,8 @@ impl Graphics {
     ///
     /// None when memory runs out for what grows with the placeholder
     /// cells: their runs, the placements they show and the maps of them
-    /// (try_reserve, through crate::screen::reserved for the fault tests).
+    /// (try_reserve, through crate::screen's helpers, which the parse's
+    /// fault tests fail).
     pub fn finish(mut self, cells: &[PlaceholderCell], cell: (i32, i32), screen_rows: usize) -> Option<Vec<Placement>> {
         self.show_frames();
         let (cw, ch) = (i64::from(cell.0), i64::from(cell.1));
@@ -1466,7 +1467,7 @@ impl Graphics {
             if id == 0 {
                 continue;
             }
-            named.try_reserve(1).ok()?;
+            crate::screen::grow_map(&mut named)?;
             let found = *named.entry((id, run.placement)).or_insert_with(|| {
                 (0..out.len())
                     .filter(|&i| out[i].is_virtual && out[i].id == id)
@@ -1492,7 +1493,7 @@ impl Graphics {
             if left >= right || top >= bottom {
                 continue;
             }
-            shown.try_reserve(1).ok()?;
+            crate::screen::grow_map(&mut shown)?;
             let at = shown.entry(v.key).or_insert((row, i64::MAX));
             at.0 = at.0.min(row);
             at.1 = at.1.min(left / cw);
@@ -1536,7 +1537,7 @@ impl Graphics {
             append_slice(&mut p.slices, y, y.max(0), (y + p.h).min(bottom));
             true
         });
-        out.try_reserve_exact(cell_images.len()).ok()?;
+        crate::screen::reserve(&mut out, cell_images.len())?;
         out.append(&mut cell_images);
         // Every key is its own (the clock), so an unstable sort, which
         // allocates nothing, orders them as a stable one would.

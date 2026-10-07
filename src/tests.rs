@@ -1583,7 +1583,8 @@ fn a_failed_parse_allocation_fails_the_parse() {
     }
     // Both screens' cells and rows and the tab stops, the ids, the marks,
     // all five again after the reset, the marks again, the ids again, then
-    // the placeholder cells, their runs, the placement they show and its
-    // slice, and the marks and the cells in screen order.
-    assert_eq!(fail - 1, 20, "{} allocations failed", fail - 1);
+    // the placeholder cells, their runs, the two maps of them, the
+    // placement they show, its slice and the list it joins, and the marks
+    // and the cells in screen order.
+    assert_eq!(fail - 1, 23, "{} allocations failed", fail - 1);
 }

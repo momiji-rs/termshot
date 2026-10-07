@@ -154,6 +154,21 @@ pub(crate) fn grow<T>(v: &mut Vec<T>) -> Option<()> {
     (faults::allowed() && v.try_reserve(v.len().max(16)).is_ok()).then_some(())
 }
 
+/// Room for `extra` more items in `v`, exactly, or None when memory runs
+/// out.
+pub(crate) fn reserve<T>(v: &mut Vec<T>, extra: usize) -> Option<()> {
+    (faults::allowed() && v.try_reserve_exact(extra).is_ok()).then_some(())
+}
+
+/// Room for one more entry in `map`, or None when memory runs out: as
+/// grow, for a HashMap.
+pub(crate) fn grow_map<K: Eq + std::hash::Hash, V>(map: &mut std::collections::HashMap<K, V>) -> Option<()> {
+    if map.len() < map.capacity() {
+        return Some(());
+    }
+    (faults::allowed() && map.try_reserve(1).is_ok()).then_some(())
+}
+
 /// `len` copies of `value`, as vec! makes them, or None when memory runs
 /// out.
 fn filled<T: Clone>(len: usize, value: T) -> Option<Vec<T>> {
