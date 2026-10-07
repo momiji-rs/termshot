@@ -67,8 +67,8 @@ SC and JP, so zh-TW users want face 3.
   implementation in its own child process, under ASan and UBSan, with a 3 s limit. cff.rs runs
   there with overflow checks and debug assertions, and a panic counts as a failure. For a
   mutant on which all three run to the end, a hash of every outline and box shows whether
-  they drew the same thing. `craft.py` writes eight hostile fonts, one defect each, plus a
-  well-formed control.
+  they drew the same thing. `craft.py` wrote eight hostile fonts, one defect each, plus a
+  well-formed control; `craft.rs` now writes the same bytes.
 
 ## Results
 
@@ -102,7 +102,7 @@ at load: 137 µs on the CJK font, and it refused a whole font over one bad offse
 
 ### Robustness
 
-Hand-made fonts (`craft.py`):
+Hand-made fonts (`craft.py` then, `craft.rs` now):
 
 | defect | stb | cff.c | cff.rs |
 |---|---|---|---|

@@ -531,5 +531,13 @@ echo "== generated files are what their generators write"
 rustc --edition 2021 -O tools/crc32-table.rs -o "$out/crc32-table"
 "$out/crc32-table" > "$out/crc32_table.h"
 check "src/crc32_table.h is what tools/crc32-table.rs writes" 'cmp -s "$out/crc32_table.h" src/crc32_table.h'
+# The CFF POC's fonts (src/cff_craft.rs, which the unit tests use too):
+# the control draws, a defect is refused.
+rustc --edition 2021 bench/cff-poc/craft.rs -o "$out/craft-fonts"
+mkdir -p "$out/craft"
+"$out/craft-fonts" "$out/craft"
+check "bench/cff-poc/craft.rs writes the POC's nine fonts" '[ "$(ls "$out/craft"/*.otf | wc -l)" -eq 9 ]'
+check "its control font draws" 'printf A | ./termshot --font "$out/craft/control.otf" - "$out/craft.png"'
+expect 1 --font "$out/craft/bad_offsize.otf" "$log" "$out/craft.png"
 
 exit "$fail"

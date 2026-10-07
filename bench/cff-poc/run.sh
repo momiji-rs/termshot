@@ -19,7 +19,8 @@ sh bench/cff-poc/build.sh
 hb-subset "$cjk" --face-index=3 --text="骨直角永東京台灣測試字型漢字中文繁體簡體龍鬱鑿齉" \
     --unicodes+=20-7e -o "$work/cjk-subset.otf"
 mkdir -p "$work/craft"
-python3 bench/cff-poc/craft.py "$work/craft"
+rustc --edition 2021 bench/cff-poc/craft.rs -o "$work/craft-fonts"
+"$work/craft-fonts" "$work/craft"
 
 echo "== every glyph, cff.rs and cff.c against stb"
 "$work/poc" check /usr/share/fonts/gsfonts/*.otf
