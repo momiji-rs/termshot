@@ -29,7 +29,7 @@ jobs:
         with:
           persist-credentials: false
       - run: ./build.sh
-      - uses: momiji-rs/termshot-action@b50c656c84bbd81e5e2e26a0ff724bbac3d655e8 # v0.4.0
+      - uses: momiji-rs/termshot-action@c0f334263e2ef7dc47d9761ec5ea85b9c3dc42a5 # v0.5.0
         with:
           mode: render
           termshot-path: ./termshot
@@ -55,7 +55,7 @@ jobs:
         with:
           name: termshot-termshot
           path: ${{ runner.temp }}/screens
-      - uses: momiji-rs/termshot-action@b50c656c84bbd81e5e2e26a0ff724bbac3d655e8 # v0.4.0
+      - uses: momiji-rs/termshot-action@c0f334263e2ef7dc47d9761ec5ea85b9c3dc42a5 # v0.5.0
         with:
           bundle-dir: ${{ runner.temp }}/screens
           images: bundle
