@@ -8,7 +8,11 @@ name: release
 # To release 1.2.3: set VERSION in src/main.rs to "1.2.3", rename
 # CHANGELOG.md's [Unreleased] to "[1.2.3] - <date>", merge, then push tag
 # v1.2.3. The build fails if the tag and --version differ, and publish fails
-# if CHANGELOG.md has no section for the version.
+# if CHANGELOG.md has no section for the version. After the GitHub release,
+# the npm job publishes @momiji-rs/termshot and its three platform packages
+# from the same archives (scripts/npm-stage.sh), by npm Trusted Publishing:
+# no token. Each of the four packages names this repo and release.yml as its
+# trusted publisher on npmjs.com.
 on:
   push:
     tags: ['v*']
@@ -17,6 +21,8 @@ on:
       - .github/workflows/release.yml
       - build.sh
       - scripts/release.sh
+      - scripts/npm-stage.sh
+      - 'npm/**'
       - 'src/**'
   workflow_dispatch:
 
@@ -94,3 +100,59 @@ jobs:
           gh release create "$GITHUB_REF_NAME" *.tar.gz SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "termshot ${GITHUB_REF_NAME#v}" --notes-file ../notes.md
+
+  # Pull requests stage the packages and run the Linux one; tags also publish.
+  npm:
+    needs: [build, publish]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.publish.result != 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: stage
+        run: |
+          version=$(ls dist/termshot-*-linux-x86_64-musl.tar.gz | sed 's/.*termshot-\(.*\)-linux-x86_64-musl.tar.gz/\1/')
+          if [ -n "$RELEASE_TAG" ] && [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "the archives are $version, the tag is $RELEASE_TAG" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
+          scripts/npm-stage.sh "$version" dist npm-out
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+      - name: install and run
+        run: |
+          mkdir smoke
+          for dir in npm-out/*; do (cd smoke && npm pack "../$dir"); done
+          cd smoke
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "./momiji-rs-termshot-linux-x64-$version.tgz" "./momiji-rs-termshot-$version.tgz"
+          test "$(npx termshot --version)" = "termshot $version"
+          printf 'ok\r\n' | npx termshot --text - --size 10x2 - | grep -qx ok
+          rc=0; npx termshot --bogus 2> /dev/null || rc=$?
+          test "$rc" = 2
+      - name: publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # Trusted Publishing needs npm 11.5.1 or newer.
+          npm install -g npm@latest
+          # The platform packages go first: the main one depends on them. A
+          # version npm already has is skipped, so a failed run can be rerun.
+          for dir in npm-out/termshot-* npm-out/termshot; do
+            name=$(node -p "require('./$dir/package.json').name")
+            if npm view "$name@$version" version > /dev/null 2>&1; then
+              echo "$name@$version is already published"
+            else
+              npm publish "./$dir" --access public
+            fi
+          done

@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **termshot is on npm**, as `@momiji-rs/termshot`: `npx -y @momiji-rs/termshot
+  session.pty session.png`. It runs the release binary for macOS or Linux, which
+  npm installs from `@momiji-rs/termshot-darwin-universal`, `-linux-x64` or
+  `-linux-arm64`. The release workflow publishes them from the release archives.
+
 ### Changed
 
 - **The tests and the development tools no longer use Python.** The
