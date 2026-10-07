@@ -449,7 +449,13 @@ const PARSER_CASES: [&str; 5] = ["dense-sgr", "cursor-moves", "scrolling", "mixe
 /// Long logs for the parser (#21), each about 4-5 MB so parsing is a large
 /// part of the run. Deterministic: the same bytes on every host. The logs
 /// share one random sequence, so they are made together, in order.
-fn parser_logs() -> Vec<(&'static str, Vec<u8>)> {
+fn parser_logs() -> &'static [(&'static str, Vec<u8>)] {
+    // The parser and text suites both use them; bench.py made them twice.
+    static LOGS: std::sync::OnceLock<Vec<(&'static str, Vec<u8>)>> = std::sync::OnceLock::new();
+    LOGS.get_or_init(make_parser_logs)
+}
+
+fn make_parser_logs() -> Vec<(&'static str, Vec<u8>)> {
     let mut rng = PyRandom::new(21);
 
     // Every character in its own SGR: palette, 256-colour, truecolour in
@@ -609,7 +615,7 @@ fn parser_workloads(directory: &str, wanted: &[String]) -> Vec<Case> {
     }
     let mut cases = Vec::new();
     for (name, data) in parser_logs() {
-        let path = write(directory, name, &data);
+        let path = write(directory, name, data);
         cases.push(Case::new(name, &path, 24, 100, 30).legacy().group("parser"));
     }
     cases
@@ -645,9 +651,9 @@ fn text_workloads(paths: &Paths, directory: &str, wanted: &[String]) -> Vec<Case
         ("text-sixel", read(&paths.at("tests/fixtures/sixel-magick.pty")), FONT),
     ];
     if wanted.is_empty() || names_any(wanted, &["text-dense-sgr", "text-mixed-unicode"]) {
-        let mut parser = parser_logs();
-        let mixed = parser.remove(3).1;
-        let dense = parser.remove(0).1;
+        let parser = parser_logs();
+        let mixed = parser[3].1.clone();
+        let dense = parser[0].1.clone();
         logs.push(("text-dense-sgr", dense, NO_FONT));
         logs.push(("text-mixed-unicode", mixed, NO_FONT));
     }
