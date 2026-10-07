@@ -57,8 +57,8 @@
 //! rustc --edition 2021 app.rs --extern termshot=path/to/libtermshot.rlib
 //! ```
 //!
-//! The binary (src/main.rs) does not link this library: it compiles the same
-//! modules itself, as one crate, which is as fast as main was
+//! The CLI (src/main.rs) is a crate of its own that links this library
+//! the same way and uses only its public API, with no cost in speed
 //! (docs/performance.md, "Two crates or one compilation unit").
 
 mod api;
@@ -86,6 +86,39 @@ mod unicode;
 mod unicode_tables;
 mod variations;
 mod vt;
+
+// The unit tests (`rustc --test src/lib.rs`, test.sh's target/test/unit);
+// the CLI's own are src/cli_tests.rs. What they take from here with
+// `use super::*`:
+#[cfg(test)]
+mod cast_tests;
+#[cfg(test)]
+mod cff_tests;
+#[cfg(test)]
+mod draw_tests;
+#[cfg(test)]
+mod metrics_tests;
+#[cfg(test)]
+mod palette_tests;
+#[cfg(test)]
+mod prescan_tests;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod variations_tests;
+#[cfg(test)]
+use {
+    cell::{Cell, CellMarks, OPAQUE, TAIL, WIDE},
+    glyphs::{EmptyGlyphs, EMPTY_IN_FALLBACK, EMPTY_IN_FONT},
+    prepare::{cursor_mark, draw_cursor, opaque_backgrounds},
+    std::fs,
+    vt::{needs_cell_metrics, replay_with},
+};
+/// The default palette's colours, which the tests compare with.
+#[cfg(test)]
+const DEFAULT_FG: Rgb = Palette::DEFAULT.foreground;
+#[cfg(test)]
+const DEFAULT_BG: Rgb = Palette::DEFAULT.background;
 
 pub use api::{
     decode_cast, is_cast, lacks_cr, needs_cell_size, parse, parse_color, parse_with_cell_size, Cast, CursorShape,

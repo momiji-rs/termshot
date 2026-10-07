@@ -444,22 +444,6 @@ fn underline_and_bar_cursors_cover_the_cell() {
 }
 
 #[test]
-fn cursor_option_counts_from_0_as_tmux_does() {
-    assert_eq!(parse_cursor("4,2", 10, 4), Ok(Some((2, 4))));
-    assert_eq!(parse_cursor("0,0", 10, 4), Ok(Some((0, 0))));
-    assert_eq!(parse_cursor("none", 10, 4), Ok(None));
-    // tmux reports a pending wrap as one past the last column.
-    assert_eq!(parse_cursor("10,3", 10, 4), Ok(Some((3, 9))));
-    for bad in ["11,0", "0,4", "4", "4,", ",2", "-1,0", "4,2,1", "4;2", "", "None"] {
-        assert!(parse_cursor(bad, 10, 4).is_err(), "{bad:?} accepted");
-    }
-    // The message gives the range that is accepted, pending wrap included.
-    let message = parse_cursor("11,0", 10, 4).unwrap_err();
-    assert!(message.contains("columns go from 0 to 10 (10 is a pending wrap"), "{message}");
-    assert!(message.contains("rows from 0 to 3"), "{message}");
-}
-
-#[test]
 fn json_has_runs_of_alike_cells_and_the_cursor() {
     let log = "\x1b[1;31mab\x1b[m c\x1b[4m \x1b[m\r\n中\x1b[32mx\x1b[44m  \x1b[m\r\n\"\\";
     let g = replay(log.as_bytes(), 8, 4, Lf::Index);

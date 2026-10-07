@@ -29,10 +29,15 @@ fi
 ./build.sh
 
 echo "== unit tests"
+# The library's (src/lib.rs, linking the C as build.sh does), then the CLI's
+# (src/main.rs, linking the library).
 # shellcheck disable=SC2086
-rustc --edition 2021 --test src/main.rs -o "$out/unit" \
+rustc --edition 2021 --test src/lib.rs -o "$out/unit" \
     -L native="$PWD" -l static=termshot_c ${RUSTC_LINK_ARGS:-}
 "$out/unit" -q
+# shellcheck disable=SC2086
+rustc --edition 2021 --test src/main.rs -o "$out/cli-unit" --extern termshot=libtermshot.rlib ${RUSTC_LINK_ARGS:-}
+"$out/cli-unit" -q
 
 echo "== deflate matches stb"
 # The C harnesses link the Rust they call (src/deflate.rs, src/geometry.rs

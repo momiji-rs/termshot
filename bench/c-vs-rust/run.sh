@@ -84,7 +84,7 @@ newer_feature() {
 # current C in libtermshot_c.a; link it the way test.sh does.
 workloads() {
     ./build.sh
-    rustc --edition 2021 --test src/main.rs -o "$1/unit" \
+    rustc --edition 2021 --test src/lib.rs -o "$1/unit" \
         -L native="$PWD" -l static=termshot_c
     TERMSHOT_POC_DIR="$2" "$1/unit" --ignored --exact tests::poc_workloads -q > /dev/null
 }

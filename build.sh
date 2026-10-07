@@ -21,13 +21,16 @@ $cc -c src/image.c -o image.o -O2 -Wall -Wextra -Wno-unused-function -I third_pa
 # --as-needed). libm itself comes with std on Linux and libSystem on macOS.
 rm -f libtermshot_c.a
 ar rcs libtermshot_c.a stb_glue.o image.o
-# shellcheck disable=SC2086
-rustc --edition 2021 src/main.rs -o termshot -C opt-level=2 $target \
-  ${RUSTFLAGS:-} -L native="$PWD" -l static=termshot_c ${RUSTC_LINK_ARGS:-}
-# The library (src/lib.rs: the parser, for embedders; see its docs), from the
-# same modules main.rs compiles. The static library goes inside the rlib, so
-# an embedder's link needs only --extern termshot=libtermshot.rlib, and the C
-# still comes before libc and libm.
+# The library (src/lib.rs: the parser and the render; see its docs). The
+# static library goes inside the rlib, so a link needs only
+# --extern termshot=libtermshot.rlib, and the C still comes before libc and
+# libm.
 # shellcheck disable=SC2086
 rustc --edition 2021 --crate-type rlib --crate-name termshot src/lib.rs -o libtermshot.rlib \
   -C opt-level=2 $target ${RUSTFLAGS:-} -L native="$PWD" -l static=termshot_c
+# The CLI (src/main.rs), a crate of its own that links the library as an
+# embedder does; with RUSTFLAGS='-C lto=fat' (scripts/release.sh) the two are
+# optimized as one.
+# shellcheck disable=SC2086
+rustc --edition 2021 src/main.rs -o termshot -C opt-level=2 $target \
+  ${RUSTFLAGS:-} --extern termshot=libtermshot.rlib ${RUSTC_LINK_ARGS:-}

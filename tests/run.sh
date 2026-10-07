@@ -27,10 +27,12 @@ cc tests/draw.c "$scratch/render.a" -I third_party/stb -O2 -ffp-contract=off -Wn
 
 # Fail each compressor allocation in turn, in the CLI: the unit tests check
 # that each returns NULL and frees the rest; here the run must exit 2, say
-# so, and leave no output behind. A build with the fault hook, linked as
-# build.sh links termshot.
-rustc --edition 2021 src/main.rs -o "$scratch/termshot-faults" -C opt-level=2 --cfg termshot_alloc_faults \
-    -L native="$PWD" -l static=termshot_c
+# so, and leave no output behind. A build with the fault hook: the library
+# built with it, and the CLI linking it, as build.sh links termshot.
+rustc --edition 2021 --crate-type rlib --crate-name termshot src/lib.rs -o "$scratch/libtermshot-faults.rlib" \
+    -C opt-level=2 --cfg termshot_alloc_faults -L native="$PWD" -l static=termshot_c
+rustc --edition 2021 src/main.rs -o "$scratch/termshot-faults" -C opt-level=2 \
+    --extern termshot="$scratch/libtermshot-faults.rlib"
 n=1
 while :; do
     rm -f "$scratch/fault.png" "$scratch/fault.txt"
@@ -131,11 +133,10 @@ fi
 echo "ok, each of $((n - 1)) parse allocation failures exits 2 and leaves no output"
 
 # The same faults through the library, as an embedder links it: the rlib
-# built with the fault hook, and tests/library.rs, which fails each of a
-# render's allocations in turn (the render's, the compressor's and the
-# glyphs') and checks that each render returns Error::OutOfMemory.
-rustc --edition 2021 --crate-type rlib --crate-name termshot src/lib.rs -o "$scratch/libtermshot-faults.rlib" \
-    -C opt-level=2 --cfg termshot_alloc_faults -L native="$PWD" -l static=termshot_c
+# built with the fault hook (as the CLI above links it), and
+# tests/library.rs, which fails each of a parse's and a render's
+# allocations in turn (the render's, the compressor's and the glyphs') and
+# checks that each returns Error::OutOfMemory.
 rustc --edition 2021 tests/library.rs -o "$scratch/library-faults" --extern termshot="$scratch/libtermshot-faults.rlib"
 "$scratch/library-faults" --faults 2>"$scratch/fault.err" || { cat "$scratch/fault.err" >&2; exit 1; }
 
@@ -227,7 +228,7 @@ if [ "$(uname)" = Linux ]; then
     echo "ok, a raster allocation failure exits 2 and leaves no output"
 fi
 
-rustc --edition 2021 --test src/main.rs -o "$scratch/unit" \
+rustc --edition 2021 --test src/lib.rs -o "$scratch/unit" \
     -L native="$PWD" -l static=termshot_c
 rustc --edition 2021 tests/profile.rs -o "$scratch/profile"
 "$scratch/profile" "$scratch/unit"

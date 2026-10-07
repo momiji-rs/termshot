@@ -1,14 +1,11 @@
 //! Replay a PTY log into a cell grid and paint it: the CLI. No crates.
 //! It reads the arguments, the files and stdin, writes the outputs (or
 //! stdout), removes what it created when a run fails, and words every
-//! message and exit status; the work is the library's (src/lib.rs), which
-//! it calls as `termshot::parse` and `termshot::render`, its public API.
-//!
-//! The binary compiles the library's modules itself, as one crate, rather
-//! than linking libtermshot.rlib: two crates measured slower
-//! (docs/performance.md, "Two crates or one compilation unit"). Their dead
-//! code is the library's to find (build.sh builds it), so it is allowed
-//! here, where the CLI uses only part of the API.
+//! message and exit status; the work is the library's, libtermshot.rlib
+//! (src/lib.rs), which this crate links (`--extern termshot`) and calls
+//! through its public API alone: `termshot::parse_with_cell_size`,
+//! `termshot::render`, and the `#[doc(hidden)]` `termshot::cli` hooks for
+//! the profile record and -v.
 
 use std::env;
 use std::fs;
@@ -18,94 +15,11 @@ use std::time::Instant;
 
 use termshot::{CursorShape, EmptyGlyph, Font, FontSpec, Lf, Palette, ParseOptions, RenderOptions};
 
-/// The library's API, as src/lib.rs exports it.
-mod termshot {
-    pub use crate::api::*;
-    pub use crate::api_render::*;
-}
-
-// The tests' (super::*), which build cells and grids.
 #[cfg(test)]
-use cell::{Cell, CellMarks, OPAQUE, TAIL, WIDE};
-#[cfg(test)]
-use glyphs::{EmptyGlyphs, EMPTY_IN_FALLBACK, EMPTY_IN_FONT};
-#[cfg(test)]
-use grid::Grid;
-#[cfg(test)]
-use prepare::{cursor_mark, draw_cursor, opaque_backgrounds};
-#[cfg(test)]
-use vt::{lacks_cr, needs_cell_metrics, replay_with};
-
-#[allow(dead_code)]
-mod api;
-#[allow(dead_code)]
-mod api_render;
-#[allow(dead_code)]
-mod cast;
-#[allow(dead_code)]
-mod cell;
-#[allow(dead_code)]
-mod cff;
-#[allow(dead_code)]
-mod composite;
-#[allow(dead_code)]
-mod deflate;
-#[allow(dead_code)]
-mod font;
-#[allow(dead_code)]
-mod geometry;
-#[allow(dead_code)]
-mod glyphs;
-#[allow(dead_code)]
-mod graphics;
-#[allow(dead_code)]
-mod grid;
-#[allow(dead_code)]
-mod metrics;
-#[allow(dead_code)]
-mod palette;
-#[allow(dead_code)]
-mod prepare;
-#[allow(dead_code)]
-mod render;
-#[rustfmt::skip]
-mod rowcolumn_diacritics;
-#[allow(dead_code)]
-mod screen;
-#[allow(dead_code)]
-mod sixel;
-#[allow(dead_code)]
-mod unicode;
-#[allow(dead_code)]
-mod variations;
-#[allow(dead_code)]
-mod vt;
-#[rustfmt::skip]
-mod unicode_tables;
-#[cfg(test)]
-mod cast_tests;
-#[cfg(test)]
-mod cff_tests;
-#[cfg(test)]
-mod draw_tests;
-#[cfg(test)]
-mod metrics_tests;
-#[cfg(test)]
-mod palette_tests;
-#[cfg(test)]
-mod prescan_tests;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod variations_tests;
+mod cli_tests;
 
 const DEFAULT_COLS: usize = 100;
 const DEFAULT_ROWS: usize = 30;
-/// The default palette's colours, which the tests compare with.
-#[cfg(test)]
-const DEFAULT_FG: (u8, u8, u8) = Palette::DEFAULT.foreground;
-#[cfg(test)]
-const DEFAULT_BG: (u8, u8, u8) = Palette::DEFAULT.background;
 
 extern "C" {
     fn close(fd: std::ffi::c_int) -> std::ffi::c_int;
@@ -465,9 +379,28 @@ fn load_fonts(
     Ok((font, fallback))
 }
 
+/// What the empty-glyph warning says: a render's EmptyGlyph (which only
+/// the library can make), or a test's.
+#[derive(Clone, Copy)]
+struct Empty {
+    ch: char,
+    row: usize,
+    col: usize,
+    cells: usize,
+    in_font: bool,
+    in_fallback: bool,
+}
+
+impl From<&EmptyGlyph> for Empty {
+    fn from(empty: &EmptyGlyph) -> Empty {
+        let &EmptyGlyph { ch, row, col, cells, in_font, in_fallback, .. } = empty;
+        Empty { ch, row, col, cells, in_font, in_fallback }
+    }
+}
+
 /// The warning for characters drawn as boxes because a font maps them to
 /// empty glyphs: which cell, which fonts, and what to pass instead.
-fn empty_glyph_warning(empty: &EmptyGlyph, options: &Options, font: &Font, fallback: Option<&Font>) -> String {
+fn empty_glyph_warning(empty: &Empty, options: &Options, font: &Font, fallback: Option<&Font>) -> String {
     let mut color = false;
     let mut name = |flag: &str, spec: Option<&FontSpec>, font: &Font| {
         let mut name = spec.map_or("the built-in font".to_owned(), |spec| format!("{flag} {}", spec.name()));
@@ -816,7 +749,7 @@ fn main() -> ExitCode {
             return cleanup(1, format!("png write failed: {out}"));
         }
         if let Some(empty) = &rendered.empty_glyph {
-            eprintln!("termshot: {}", empty_glyph_warning(empty, &options, font, fallback.as_ref()));
+            eprintln!("termshot: {}", empty_glyph_warning(&empty.into(), &options, font, fallback.as_ref()));
         }
     }
     if profile {
