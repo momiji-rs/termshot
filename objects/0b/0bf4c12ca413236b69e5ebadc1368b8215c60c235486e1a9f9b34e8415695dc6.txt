@@ -1,0 +1,28 @@
+usage: termshot [options] <log> <out.png>
+       termshot [options] --text FILE --json FILE <log> [<out.png>]
+       termshot <log> <out.png> <font.ttf> [px] [cols] [rows]
+
+Render the final screen of a terminal log (raw PTY output, or an
+asciinema v2 or v3 .cast recording) as a PNG. Use - as <log> to read
+stdin, and - as an output to write stdout.
+
+options:
+  -f, --font FILE   TrueType or OpenType (CFF, CFF2) font (default:
+                    built-in JetBrains Mono)
+      --fallback-font FILE
+                    a font for the characters the first lacks, such
+                    as CJK or emoji; others are drawn as an empty box
+  -p, --px N        font pixel height, above 0 and below 256 (default 48)
+  -s, --size CxR    grid size in columns x rows, up to 500x200 (default: a
+                    cast's size, else 100x30)
+      --cast        read <log> as an asciinema .cast; without it or --raw,
+                    a log whose first line is a JSON object with a
+                    "version" member is read as one
+      --raw         read <log> as raw PTY output, even if it starts as a
+                    cast does
+      --lf-newline  treat each bare LF as CR LF, for logs not captured
+                    through a PTY: text files, cmd > out.log, and
+                    tmux capture-pane -e -p; a final bare LF ends the
+                    last line instead of scrolling
+      --cursor COL,ROW|none
+                    draw the cursor there, counting from 0 as tmux's
