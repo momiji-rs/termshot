@@ -3,31 +3,35 @@ name: screens
 # Screens rendered by the termshot built from this commit, compared on every pull
 # request with main's by momiji-rs/termshot-action.
 #
-# One job renders and publishes, which is the action's simplest setup rather
-# than its least-privilege one. Its publish step re-renders logs with a released
-# termshot, so here, where the renderer is what changes, it would show the wrong
-# pixels. termshot has no dependencies to compromise the build, and the checkout
-# keeps no token for the build to use. A fork's pull request gets a read-only
-# token, so its screens go to the job summary and the artifact only.
+# The job that builds and runs this commit's code holds no permissions. The job
+# that publishes runs none of it: it takes the images the first job rendered
+# (images: bundle), which the action checks as untrusted data, because here the
+# renderer is what a pull request changes. A fork's pull request gets read-only
+# tokens in both jobs, so its screens go to the job summary and the artifact only.
 on:
   pull_request:
   push:
     branches: [main]
 
-permissions:
-  contents: write        # store the images on the termshot-assets branch
-  pull-requests: write   # post the comment
+permissions: {}
+
+# A newer push cancels the run it supersedes. The action also refuses to publish
+# for a commit that is no longer the head.
+concurrency:
+  group: screens-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  screens:
+  render:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - run: ./build.sh
-      - uses: momiji-rs/termshot-action@v0
+      - uses: momiji-rs/termshot-action@4e5457f61453569efc97d786a5dff5302863f691 # v0.3.0
         with:
+          mode: render
           termshot-path: ./termshot
           logs: examples/*.pty
           shots: |
@@ -39,3 +43,19 @@ jobs:
               key space space
               type /150
               key enter
+
+  publish:
+    needs: render
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # store the images on the termshot-assets branch
+      pull-requests: write   # post the comment
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: termshot-termshot
+          path: ${{ runner.temp }}/screens
+      - uses: momiji-rs/termshot-action@4e5457f61453569efc97d786a5dff5302863f691 # v0.3.0
+        with:
+          bundle-dir: ${{ runner.temp }}/screens
+          images: bundle
