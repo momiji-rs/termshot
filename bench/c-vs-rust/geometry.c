@@ -266,7 +266,7 @@ int main(int argc, char **argv) {
     /* TIME_ONLY=1 skips to the timing. */
     if (!getenv("TIME_ONLY") && check_pixels(font)) return 1;
 
-    /* Time: screens of bench.py's draw suite, painted by each. */
+    /* Time: screens of bench.rs's draw suite, painted by each. */
     int w48, h48, w128, h128;
     draw_cell_size(font, 0, 48, &w48, &h48);
     draw_cell_size(font, 0, 128, &w128, &h128);

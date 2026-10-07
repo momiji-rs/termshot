@@ -245,7 +245,7 @@ bar cursors all reach it as views, as before.
   paints 20,000 random scenes and 5 at CLI sizes with draw.c as of `431ed23`
   and with the Rust, byte for byte (386 million pixels), and renders every
   kitty, Sixel and cursor fixture at six sizes with the CLI built at
-  `431ed23` and now (132 PNGs, the same bytes). Rust ÷ C on bench.py's image
+  `431ed23` and now (132 PNGs, the same bytes). Rust ÷ C on bench.rs's image
   screens: 0.74-0.97 under Apple clang 21 and 0.68-0.99 under GCC 16. End
   to end no case is slower beyond noise on either host
   ([docs/performance.md](performance.md#image-layers-in-rust-2026-10-04-82c3f3d-12-step-2b)).
@@ -388,7 +388,7 @@ compiler.
   termshot's PNG. That is the filtered scanlines, rendered from the same logs by the current
   CLI with its defaults, cursor included, and inflated by the bench binary itself (`deflate.rs --inputs`;
   no Python). So `1-reply-px48` is exactly what
-  a plain `reply-sent` run compresses. The three `bench.py` logs are rebuilt in `deflate.rs`,
+  a plain `reply-sent` run compresses. The three `bench.rs` logs are rebuilt in `deflate.rs`,
   `color-grid` with a port of Python's `random.Random(13)`. The measurements below were taken
   with an earlier Python generator; the Rust one writes the same eight inputs, sha256 for
   sha256. There are also two seeded synthetic buffers. Quality 8, as termshot uses.
@@ -400,9 +400,9 @@ compiler.
 | 3-attrs-px24 | 456,336 | `poc_workloads`: 256 colours, every attribute |
 | 4-boxes-px48 | 9,505,440 | `poc_workloads`: rounded boxes |
 | 5-dense-200x60-px16 | 3,780,900 | `poc_workloads`: a different colour on every cell |
-| 6-blank | 9,505,440 | `scripts/bench.py`'s `blank`, nearly all Adler-32 (from the #20 round) |
-| 6-color-grid | 2,376,720 | `bench.py`'s `color-grid`: short matches |
-| 6-large | 60,829,440 | `bench.py`'s `large`: 240×80 at 48 px |
+| 6-blank | 9,505,440 | `scripts/bench.rs`'s `blank`, nearly all Adler-32 (from the #20 round) |
+| 6-color-grid | 2,376,720 | `bench.rs`'s `color-grid`: short matches |
+| 6-large | 60,829,440 | `bench.rs`'s `large`: 240×80 at 48 px |
 | 7-random-uniform | 2,376,720 | seeded uniform random bytes: nearly every position a literal |
 | 8-random-4sym-skewed | 2,376,720 | seeded, four symbols at 9/16, 4/16, 2/16, 1/16 |
 
