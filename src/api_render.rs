@@ -69,9 +69,9 @@ impl FaceSelector {
     /// The selector the CLI reads after a font's `#`: a face (`1`, `Name`),
     /// axis settings (`wght=700`), or both (`1#wght=700`); a last `#` part
     /// with a `=` in it is the axis settings. Malformed settings are an
-    /// [`Error::Font`].
+    /// [`Error::Options`], as the CLI's bad arguments are.
     pub fn parse(value: &str) -> Result<FaceSelector, Error> {
-        let (face, axes) = font::selector(value).map_err(|reason| Error::Font(format!("#{value}: {reason}")))?;
+        let (face, axes) = font::selector(value).map_err(|reason| Error::Options(format!("#{value}: {reason}")))?;
         Ok(FaceSelector { face: face.map(Into::into), axes: axes.map(Into::into) })
     }
 }
@@ -88,9 +88,11 @@ impl FontSpec {
     /// Read a `--font` value. A file named with a `#` in it is that file;
     /// otherwise the path is the part before a `#` that names a file, so
     /// this looks at the filesystem, once. A value that could name a face
-    /// of two files, or malformed axis settings, is an [`Error::Font`].
+    /// of two files, or malformed axis settings, is an [`Error::Options`],
+    /// as the CLI's bad arguments are; the file itself is read by
+    /// [`Font::open`].
     pub fn parse(value: &str) -> Result<FontSpec, Error> {
-        font::Spec::parse(value).map(|spec| FontSpec { spec }).map_err(Error::Font)
+        font::Spec::parse(value).map(|spec| FontSpec { spec }).map_err(Error::Options)
     }
 
     /// The file's path.

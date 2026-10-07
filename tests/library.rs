@@ -336,8 +336,14 @@ fn errors() -> Result<(), String> {
     let missing = FontSpec::parse("target/test/no-such-font.ttf").map_err(|error| format!("errors: {error}"))?;
     font_error(Font::open(&missing), "target/test/no-such-font.ttf: ")?;
     match FaceSelector::parse("wght=bold") {
-        Err(Error::Font(message)) if message.starts_with("#wght=bold: ") => {}
+        Err(Error::Options(message)) if message.starts_with("#wght=bold: ") => {}
         other => return fail(format!("FaceSelector::parse(\"wght=bold\"): {other:?}")),
+    }
+    // A --font value with bad axis settings is a bad argument too, as the
+    // CLI exits 2 for it.
+    match FontSpec::parse("target/test/no-such-font.otf#wght=bold") {
+        Err(Error::Options(message)) if message.starts_with("target/test/no-such-font.otf#wght=bold: ") => {}
+        other => return fail(format!("FontSpec::parse with bad axes: {other:?}")),
     }
     // An image over 2^27 pixels, with the CLI's message.
     let big = termshot::parse(b"x", 500, 200, &ParseOptions::default()).map_err(|error| format!("errors: {error}"))?;

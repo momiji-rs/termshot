@@ -47,8 +47,9 @@ pub enum Error {
     /// A font that can't be read or used, or can't draw at the size asked:
     /// why, with the file's name, as the CLI reports it (exit 1).
     Font(String),
-    /// An option out of its range: a pixel size, a padding or a cursor
-    /// position (exit 2, as a bad argument is).
+    /// An option out of its range, or one that can't be read: a pixel
+    /// size, a padding, a cursor position or shape, or a font selector
+    /// (exit 2, as a bad argument is).
     Options(String),
     /// The image, its padding included, would be more than [`MAX_PIXELS`]
     /// pixels (exit 2).
