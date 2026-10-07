@@ -100,9 +100,12 @@ echo "ok, each of $((n - 1)) render allocation failures exits 2 and leaves no ou
 
 # Fail each of the parser's allocations that grow with the grid in turn
 # (src/screen.rs: both screens' cells and rows, the tab stops, the marks,
-# the marks and the cells in screen order): the run must exit 2, say so,
-# and leave no output.
-printf 'e\314\201q\314\202\r\n%.0s' $(seq 40) > "$scratch/glyphs.pty"
+# a placeholder's ids, the placeholder cells, the marks and the cells in
+# screen order): the run must exit 2, say so, and leave no output.
+{
+    printf 'e\314\201q\314\202\r\n%.0s' $(seq 40)
+    printf '\033_Ga=T,U=1,i=7,f=24,s=1,v=1,q=2;/wAA\033\\\033[38;5;7m\364\216\273\256\033[m'
+} > "$scratch/glyphs.pty"
 n=1
 while :; do
     rm -f "$scratch/fault.png" "$scratch/fault.txt"
@@ -125,12 +128,45 @@ while :; do
     fi
     n=$((n + 1))
 done
-# Five for the screens, the marks, the marks and the cells in screen order.
-if [ "$n" -ne 9 ]; then
-    echo "FAIL $((n - 1)) parse allocations failed, want 8" >&2
+# Five for the screens, the marks, the ids, the placeholder cells, the
+# marks and the cells in screen order.
+if [ "$n" -ne 11 ]; then
+    echo "FAIL $((n - 1)) parse allocations failed, want 10" >&2
     exit 1
 fi
 echo "ok, each of $((n - 1)) parse allocation failures exits 2 and leaves no output"
+
+# Fail each of a font load's allocations in turn (src/font.rs: the file's
+# bytes, then the padding): the run must exit 2, say so, and leave no
+# output.
+n=1
+while :; do
+    rm -f "$scratch/fault.png" "$scratch/fault.txt"
+    set +e
+    TERMSHOT_FONT_FAIL_AT=$n "$scratch/termshot-faults" --text "$scratch/fault.txt" \
+        --font third_party/jetbrains-mono/JetBrainsMono-Regular.ttf examples/reply-sent.pty "$scratch/fault.png" \
+        2>"$scratch/fault.err"
+    code=$?
+    set -e
+    if ! grep -q "font allocation $n " "$scratch/fault.err"; then
+        [ "$code" -eq 0 ] && [ -e "$scratch/fault.png" ] && break
+        echo "FAIL with no font allocation $n failing: exit $code" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    if [ "$code" -ne 2 ] || [ -e "$scratch/fault.png" ] || [ -e "$scratch/fault.txt" ] ||
+        ! grep -q "JetBrainsMono-Regular.ttf: out of memory loading the font" "$scratch/fault.err"; then
+        echo "FAIL font allocation $n: exit $code, want 2 with no output left" >&2
+        cat "$scratch/fault.err" >&2
+        exit 1
+    fi
+    n=$((n + 1))
+done
+if [ "$n" -ne 3 ]; then
+    echo "FAIL $((n - 1)) font allocations failed, want the bytes and the padding" >&2
+    exit 1
+fi
+echo "ok, each of $((n - 1)) font allocation failures exits 2 and leaves no output"
 
 # The same faults through the library, as an embedder links it: the rlib
 # built with the fault hook (as the CLI above links it), and

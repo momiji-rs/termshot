@@ -1556,8 +1556,14 @@ fn printf_decoding() {
 fn a_failed_parse_allocation_fails_the_parse() {
     use crate::screen::faults::FAULTS;
     // A placeholder with a colour (ids), a combining mark (marks), a reset
-    // (two screens again), another mark, and a scroll (cells in screen order).
-    let log = "\x1b[38;5;1m\u{10EEEE}e\u{301}q\u{302}\x1bcq\u{301}\r\n\r\nx\u{303}".as_bytes();
+    // (two screens again), another mark, a scroll (cells in screen order),
+    // and a virtual placement with its placeholder (ids again, and the
+    // placeholder cells).
+    let log = concat!(
+        "\x1b[38;5;1m\u{10EEEE}e\u{301}q\u{302}\x1bcq\u{301}\r\n\r\nx\u{303}",
+        "\x1b_Ga=T,U=1,i=7,f=24,s=1,v=1,q=2;/wAA\x1b\\\x1b[38;5;7m\u{10EEEE}"
+    )
+    .as_bytes();
     let options = ParseOptions::default();
     let want = replay_with(log, 4, 2, &options, (1, 1)).unwrap();
     let mut fail = 1;
@@ -1576,7 +1582,7 @@ fn a_failed_parse_allocation_fails_the_parse() {
         }
     }
     // Both screens' cells and rows and the tab stops, the ids, the marks,
-    // all five again after the reset, the marks again, then the marks and
-    // the cells in screen order.
-    assert_eq!(fail - 1, 15, "{} allocations failed", fail - 1);
+    // all five again after the reset, the marks again, the ids again, then
+    // the placeholder cells, and the marks and the cells in screen order.
+    assert_eq!(fail - 1, 17, "{} allocations failed", fail - 1);
 }

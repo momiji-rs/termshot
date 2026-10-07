@@ -665,7 +665,13 @@ fn hostile() -> Result<(), String> {
 /// OutOfMemory, until one with nothing left to fail gives the same grid,
 /// or draws the same PNG, as without.
 fn faults() -> Result<(), String> {
-    let log = "ab \x1b[3mcd\x1b[0m \u{4e2d}q\u{301} \x1b[1m\u{2500}x\x1b[0m\r\n".as_bytes();
+    // A virtual placement and its placeholder too, so the parse allocates
+    // the placeholder cells.
+    let log = concat!(
+        "ab \x1b[3mcd\x1b[0m \u{4e2d}q\u{301} \x1b[1m\u{2500}x\x1b[0m\r\n",
+        "\x1b_Ga=T,U=1,i=7,f=24,s=1,v=1,q=2;/wAA\x1b\\\x1b[38;5;7m\u{10EEEE}\x1b[m"
+    )
+    .as_bytes();
     let cjk = open(golden_cases::CJK)?;
     let mono = Font::embedded().map_err(|error| format!("faults: {error}"))?;
     let options = RenderOptions { px: 24.0, font: Some(&cjk), fallback: Some(&mono), ..RenderOptions::default() };
@@ -677,7 +683,7 @@ fn faults() -> Result<(), String> {
     let want = termshot::render(&grid, &options).map_err(|error| format!("faults: {error}"))?.png;
     let mut report = Vec::new();
     // The parse's: both screens' cells and rows, the tab stops, the marks,
-    // and the marks in screen order.
+    // the ids, the placeholder cells, and the marks in screen order.
     let mut n = 1;
     loop {
         std::env::set_var("TERMSHOT_PARSE_FAIL_AT", n.to_string());
@@ -691,7 +697,7 @@ fn faults() -> Result<(), String> {
             Ok(Ok(_)) => return Err(format!("faults: TERMSHOT_PARSE_FAIL_AT={n} parsed another grid")),
         }
     }
-    if n - 1 < 7 {
+    if n - 1 < 9 {
         return Err(format!("faults: only {} parse allocations failed", n - 1));
     }
     report.push(format!("{} at TERMSHOT_PARSE_FAIL_AT", n - 1));
@@ -742,6 +748,33 @@ fn faults() -> Result<(), String> {
         return Err(format!("faults: only {} render_rgba allocations failed", n - 1));
     }
     report.push(format!("{} at TERMSHOT_RENDER_FAIL_AT for render_rgba", n - 1));
+    // A font's: its bytes (a file's, or the built-in font's copy) and the
+    // padding.
+    let spec = FontSpec::parse(FONT).map_err(|error| format!("faults: {error}"))?;
+    let bytes = fs::read(FONT).map_err(|error| format!("{FONT}: {error}"))?;
+    let loads: [(&str, usize, &dyn Fn() -> Result<Font, Error>); 3] = [
+        ("Font::open", 2, &|| Font::open(&spec)),
+        ("Font::embedded", 2, &Font::embedded),
+        ("Font::from_bytes", 1, &|| Font::from_bytes(bytes.clone(), &FaceSelector::default())),
+    ];
+    for (what, want, load) in loads {
+        let mut n = 1;
+        loop {
+            std::env::set_var("TERMSHOT_FONT_FAIL_AT", n.to_string());
+            let result = catch_unwind(AssertUnwindSafe(load));
+            std::env::remove_var("TERMSHOT_FONT_FAIL_AT");
+            match result {
+                Err(_) => return Err(format!("faults: {what}, TERMSHOT_FONT_FAIL_AT={n} panicked")),
+                Ok(Err(Error::OutOfMemory(_))) => n += 1,
+                Ok(Err(error)) => return Err(format!("faults: {what}, TERMSHOT_FONT_FAIL_AT={n}: {error:?}")),
+                Ok(Ok(_)) => break,
+            }
+        }
+        if n - 1 != want {
+            return Err(format!("faults: {} of {what}'s allocations failed, want {want}", n - 1));
+        }
+    }
+    report.push("2 of Font::open, 2 of Font::embedded and 1 of Font::from_bytes at TERMSHOT_FONT_FAIL_AT".into());
     println!("ok, each of {} allocation failures returns Error::OutOfMemory", report.join(", "));
     Ok(())
 }

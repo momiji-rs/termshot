@@ -179,6 +179,65 @@ fn out_of_memory(name: &str) -> LoadError {
     LoadError::OutOfMemory(format!("{name}: out of memory loading the font"))
 }
 
+/// Room for `extra` more bytes in `data`, exactly or with room to grow;
+/// false when memory runs out (or the fault tests say so).
+fn reserve(data: &mut Vec<u8>, extra: usize, exact: bool) -> bool {
+    faults::allowed()
+        && match exact {
+            true => data.try_reserve_exact(extra).is_ok(),
+            false => data.try_reserve(extra).is_ok(),
+        }
+}
+
+/// Allocation failure injection for loading fonts: the shipped binary has
+/// none. Unit tests set it per thread; a build with `--cfg
+/// termshot_alloc_faults` reads TERMSHOT_FONT_FAIL_AT=n and fails the nth
+/// of a load's allocations (the file's bytes, each time they grow, the
+/// padding), which tests/run.sh and tests/library.rs check are errors.
+#[cfg(any(test, termshot_alloc_faults))]
+pub(crate) mod faults {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Allocations so far, and the one to fail (0 for none).
+        pub(crate) static FAULTS: Cell<(u32, u32)> = Cell::new((0, 0));
+    }
+
+    /// Starts a load: count from zero, and fail where asked.
+    pub(crate) fn start() {
+        #[cfg(not(test))]
+        let fail_at = std::env::var("TERMSHOT_FONT_FAIL_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        #[cfg(test)]
+        let fail_at = FAULTS.with(|f| f.get().1);
+        FAULTS.with(|f| f.set((0, fail_at)));
+    }
+
+    /// Whether this allocation may go ahead.
+    pub(crate) fn allowed() -> bool {
+        FAULTS.with(|f| {
+            let (calls, fail_at) = f.get();
+            f.set((calls + 1, fail_at));
+            let fail = calls + 1 == fail_at;
+            // So tests/run.sh knows when it has failed them all.
+            #[cfg(not(test))]
+            if fail {
+                eprintln!("termshot: font allocation {} fails", calls + 1);
+            }
+            !fail
+        })
+    }
+}
+
+#[cfg(not(any(test, termshot_alloc_faults)))]
+pub(crate) mod faults {
+    pub(crate) fn start() {}
+
+    #[inline(always)]
+    pub(crate) fn allowed() -> bool {
+        true
+    }
+}
+
 /// The same as load(), with the clocks LoadTimings describes.
 pub fn load_timed(spec: &Spec, timings: &mut LoadTimings) -> Result<Font, LoadError> {
     let path = &spec.path;
@@ -188,9 +247,12 @@ pub fn load_timed(spec: &Spec, timings: &mut LoadTimings) -> Result<Font, LoadEr
     // Sized as fs::read sizes it: a hint, which the read grows past.
     let len = file.metadata().map_or(0, |m| m.len() as usize);
     let opened = ms(started);
+    faults::start();
     let started = Instant::now();
     let mut data = Vec::new();
-    data.try_reserve_exact(len).map_err(|_| out_of_memory(path))?;
+    if !reserve(&mut data, len, true) {
+        return Err(out_of_memory(path));
+    }
     timings.allocate_ms = ms(started);
     let started = Instant::now();
     read_all(&mut file, &mut data).map_err(|error| match error {
@@ -214,7 +276,7 @@ pub fn load_timed(spec: &Spec, timings: &mut LoadTimings) -> Result<Font, LoadEr
 /// Read `file` to its end into `data`, growing it with try_reserve, so a
 /// file larger than memory (or one that never ends, as /dev/zero) is an
 /// error, None, rather than an abort. Some(error) when a read fails.
-fn read_all(file: &mut fs::File, data: &mut Vec<u8>) -> Result<(), Option<std::io::Error>> {
+fn read_all(file: &mut impl Read, data: &mut Vec<u8>) -> Result<(), Option<std::io::Error>> {
     loop {
         if data.len() == data.capacity() {
             // Full, as the size the file had when opened: find its end
@@ -229,7 +291,10 @@ fn read_all(file: &mut fs::File, data: &mut Vec<u8>) -> Result<(), Option<std::i
             if read == 0 {
                 return Ok(());
             }
-            data.try_reserve(data.capacity().max(8 << 10)).map_err(|_| None)?;
+            let grow = data.capacity().max(8 << 10);
+            if !reserve(data, grow, false) {
+                return Err(None);
+            }
             data.extend_from_slice(&probe[..read]);
         }
         let room = (data.capacity() - data.len()) as u64;
@@ -250,9 +315,12 @@ pub fn prepare(data: Vec<u8>) -> Result<Font, String> {
 /// prepare() for bytes it copies, the built-in font's, with the clocks
 /// LoadTimings describes. `name` is for messages.
 pub fn prepare_timed(bytes: &[u8], name: &str, timings: &mut LoadTimings) -> Result<Font, LoadError> {
+    faults::start();
     let started = Instant::now();
     let mut data = Vec::new();
-    data.try_reserve_exact(bytes.len()).map_err(|_| out_of_memory(name))?;
+    if !reserve(&mut data, bytes.len(), true) {
+        return Err(out_of_memory(name));
+    }
     timings.allocate_ms = ms(started);
     let started = Instant::now();
     data.extend_from_slice(bytes);
@@ -271,6 +339,7 @@ pub fn prepare_timed(bytes: &[u8], name: &str, timings: &mut LoadTimings) -> Res
 /// or a name, None for the first) at the instance `axes` picks (as Spec's
 /// axes), and append the padding. `name` stands for the file in messages.
 pub fn from_bytes(data: Vec<u8>, face: Option<&str>, axes: Option<&str>, name: &str) -> Result<Font, LoadError> {
+    faults::start();
     let mut font = choose(data, face, name)?;
     if let Some(axes) = axes {
         vary(&mut font, axes, name)?;
@@ -286,7 +355,9 @@ fn check_first(data: Vec<u8>) -> Result<Font, String> {
 
 /// Append PADDING zero bytes, or say memory ran out for the font `name`.
 fn pad(mut font: Font, name: &str) -> Result<Font, LoadError> {
-    font.data.try_reserve_exact(PADDING).map_err(|_| out_of_memory(name))?;
+    if !reserve(&mut font.data, PADDING, true) {
+        return Err(out_of_memory(name));
+    }
     font.data.resize(font.data.len() + PADDING, 0);
     Ok(font)
 }
@@ -948,6 +1019,57 @@ pub mod tests {
         glyph.extend_from_slice(flags);
         glyph.resize(glyph.len() + coordinates, 0);
         glyph
+    }
+
+    /// Each of a font load's allocations fails it in turn, as an error,
+    /// never an abort: the file's bytes, each time they grow past the size
+    /// the file had (a pipe has none), and the padding.
+    #[test]
+    fn a_failed_font_allocation_fails_the_load() {
+        use faults::FAULTS;
+        let font = fs::read(FONT).unwrap();
+        // Read from a reader with no size, as a pipe is: the bytes grow.
+        let mut fail = 1;
+        loop {
+            FAULTS.with(|f| f.set((0, fail)));
+            faults::start();
+            let mut data = Vec::new();
+            let read = read_all(&mut &font[..], &mut data);
+            FAULTS.with(|f| f.set((0, 0)));
+            match read {
+                Err(None) => fail += 1,
+                Ok(()) => {
+                    assert_eq!(data, font);
+                    break;
+                }
+                Err(Some(error)) => panic!("{error}"),
+            }
+        }
+        // 8 KiB, then doubling past the font's 274 KB: 8, 16, ..., 512 KiB.
+        assert_eq!(fail - 1, 7, "{} growths failed", fail - 1);
+        for load in [0, 1, 2] {
+            let mut fail = 1;
+            loop {
+                FAULTS.with(|f| f.set((0, fail)));
+                let result = match load {
+                    0 => load_timed(&Spec::parse(FONT).unwrap(), &mut LoadTimings::default()),
+                    1 => prepare_timed(&font, "built-in font", &mut LoadTimings::default()),
+                    _ => from_bytes(font.clone(), None, None, "font"),
+                };
+                FAULTS.with(|f| f.set((0, 0)));
+                match result {
+                    Err(LoadError::OutOfMemory(message)) => {
+                        assert!(message.ends_with(": out of memory loading the font"), "{message}");
+                        fail += 1;
+                    }
+                    Err(error) => panic!("load {load}, allocation {fail}: {error}"),
+                    Ok(_) => break,
+                }
+            }
+            // The file's bytes or their copy, and the padding; from_bytes
+            // has the bytes already.
+            assert_eq!(fail - 1, if load == 2 { 1 } else { 2 }, "load {load}");
+        }
     }
 
     #[test]
