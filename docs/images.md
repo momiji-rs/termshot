@@ -15,7 +15,7 @@ the cell's edge), use their native pixel size or fit a `c`/`r` cell rectangle wh
 aspect ratio, and blend alpha over the existing screen. `x`, `y`, `w`, `h` choose a source
 rectangle in pixels, and the part of it inside the image is shown; that crop's aspect ratio is
 the one kept, and an empty crop draws nothing. Scaling uses deterministic nearest-neighbor
-sampling. Cell dimensions come from the selected font and `--px`. `C=1` keeps the cursor in
+sampling. Cell dimensions come from the selected font and `--px`, or `--cell`. `C=1` keeps the cursor in
 place; otherwise it moves as kitty moves it: right by the placement's columns and down by its
 rows less one, to the next row's start if that reaches the right edge, scrolling the region up
 if it passes the bottom margin.
