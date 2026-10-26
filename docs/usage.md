@@ -113,7 +113,8 @@ with reverse video and dim already applied, and concealed text has `fg` equal to
 |---|---|
 | `-f`, `--font FILE` | TrueType or OpenType (CFF or CFF2) font (default: built-in JetBrains Mono); `FILE#N` or `FILE#NAME` picks a face of a collection, `FILE#wght=700` an instance of a CFF2 variable font |
 | `--fallback-font FILE` | TrueType or OpenType (CFF or CFF2) font for characters the first lacks, such as CJK; faces as for `--font` |
-| `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48) |
+| `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48); it picks a step of whole-pixel cell widths, so nearby values can draw alike (see [Cell size](#cell-size)) |
+| `--cell WxH` | the cell size in pixels, 1 to 1024 each, whatever the font's, with the glyphs centered in it: the largest that fit, or at `--px` if given (see [Cell size](#cell-size)) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default: a cast's size, else 100x30) |
 | `--cast` | read the log as an asciinema `.cast` (v2 or v3), even if its first line isn't a header |
 | `--raw` | read the log as raw PTY output, even if its first line looks like a cast's header |
@@ -272,3 +273,34 @@ frame around the image termshot draws without it: the cells, glyphs, images and 
 the margin and are cut at the cells' edges as before, and the cell size, so where an image
 moves the cursor, doesn't change. The margin counts towards the 2^27-pixel limit, and `-v`
 prints the padded size. `--text` and `--json` don't change.
+
+## Cell size
+
+The cell is the font's at `--px`: as wide as the font's `M` advance rounded to whole pixels,
+and as tall as its ascent, descent and line gap at the scale that width gives. So `--px` picks
+a step of cell widths, and every px in a step draws alike: with the built-in font, 28 to 29.5
+give 13×29 cells, 30 to 31.5 give 14×31 and 32 to 34 give 15×33. `-v` prints the cell. The
+height follows the width, about 2.2 to 1 for JetBrains Mono, so some sizes are never a font's.
+
+A program that places images by pixels sizes them for the cell size its terminal reported,
+which may be one of those. tmux reports 16×32 when its client gives no pixel size, and a
+program that cuts an image into a strip per row cuts 32 px strips. Drawn into 13×29 cells,
+each strip is squeezed into its row and the image shows a seam at every strip.
+
+`--cell WxH` sets the cell to W×H pixels, each from 1 to 1024, whatever the font. Images,
+Sixel, the cursor moves of native-sized images and the image size all use it. The glyphs are
+centered in it: the font's narrow glyphs move right by half the spare width, wide and fallback
+glyphs are centered as before, and the spare height splits as a line gap does. Without `--px`
+the glyphs are the largest that fit, at a scale not rounded to whole pixels: in 16×32, the
+built-in font's are 14.5 px wide and fill the height. With `--px` they are that size, and its
+cell must fit in the box, or it is a usage error (exit 2).
+
+```sh
+./termshot --cell 16x32 --size 160x48 session.pty session.png
+```
+
+`-v` prints the glyphs' size in the box, as `cell 16x32 glyphs 14.5x32`. The letters are
+further apart than in the terminal, since 16×32 is narrower for its height than the font's
+own cells. The image is `cols`×W by `rows`×H pixels, so a screenshot drawn again with `--cell`
+changes size. `--text` and `--json` need no font with `--cell`, even for a log whose images
+need a cell size.

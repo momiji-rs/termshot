@@ -156,7 +156,8 @@ const _: () = assert!(std::mem::size_of::<GlyphFace>() == 56);
 /// The fonts of a render, as stb_glue.c's TextFonts: the font and the fallback
 /// (whose `info` is null when there is none), the stb functions any face
 /// may be asked, the italic pivot (the middle of the body, in pixels above
-/// the baseline, for both fonts) and the baseline in the cell.
+/// the baseline, for both fonts), the baseline in the cell, and how far the
+/// font's narrow glyphs move right in a cell box (`--cell`; 0 otherwise).
 #[repr(C)]
 pub struct TextFonts {
     pub font: GlyphFace,
@@ -167,9 +168,10 @@ pub struct TextFonts {
     pub free_shape: Option<FreeShapeFn>,
     pub italic_pivot: f32,
     pub baseline: i32,
+    pub pad_x: i32,
 }
 
-const _: () = assert!(std::mem::size_of::<TextFonts>() == 152);
+const _: () = assert!(std::mem::size_of::<TextFonts>() == 160);
 
 /// What the text cost and did, for TERMSHOT_PROFILE (src/render.rs):
 /// the time spent painting the backdrop, box drawing, finding glyphs and
@@ -422,10 +424,13 @@ unsafe fn paint_text(cv: &Canvas, bd: &mut Backdrop, marks: &[CellMarks], fonts:
 /// # Safety
 /// As termshot_paint_text says of the canvas; `cells` is cols x rows.
 unsafe fn paint_lines(cv: &Canvas, cells: &[Cell], cols: i32, rows: i32, cell_w: i32, cell_h: i32, baseline: i32) {
-    let line_t = if cell_w / 12 < 1 { 1 } else { cell_w / 12 };
+    // A twelfth of the width, at most a third of the height: in a cell box
+    // (--cell) far wider than it is tall, a twelfth of the width would be
+    // taller than the row. The font's own cells are never that wide.
+    let line_t = (cell_w / 12).max(1).min((cell_h / 3).max(1));
     let mut under_y = baseline + (cell_h - baseline) / 3;
     if under_y > cell_h - line_t {
-        under_y = cell_h - line_t;
+        under_y = (cell_h - line_t).max(0);
     }
     let mut double_y = if under_y + 3 * line_t <= cell_h { under_y } else { cell_h - 3 * line_t };
     if double_y < 0 {
@@ -441,14 +446,18 @@ unsafe fn paint_lines(cv: &Canvas, cells: &[Cell], cols: i32, rows: i32, cell_w:
             let fg = [cell.fr, cell.fg, cell.fb];
             let (x0, y) = (c * cell_w, r * cell_h);
             let x1 = x0 + cell_w;
+            // A stroke `at` pixels down the cell, cut at its row's bottom:
+            // a row only 1 or 2 pixels tall has no room for a double
+            // underline, or a strike-through past the baseline.
+            let stroke = |at: i32| geometry::fill_rect(cv, x0, y + at, x1, (y + at + line_t).min(y + cell_h), fg);
             if cell.attrs & DOUBLE_UNDERLINE != 0 {
-                geometry::fill_rect(cv, x0, y + double_y, x1, y + double_y + line_t, fg);
-                geometry::fill_rect(cv, x0, y + double_y + 2 * line_t, x1, y + double_y + 3 * line_t, fg);
+                stroke(double_y);
+                stroke(double_y + 2 * line_t);
             } else if cell.attrs & UNDERLINE != 0 {
-                geometry::fill_rect(cv, x0, y + under_y, x1, y + under_y + line_t, fg);
+                stroke(under_y);
             }
             if cell.attrs & STRIKE != 0 {
-                geometry::fill_rect(cv, x0, y + strike_y, x1, y + strike_y + line_t, fg);
+                stroke(strike_y);
             }
         }
     }
@@ -690,6 +699,7 @@ struct Glyphs {
     rasterize: RasterizeFn,
     free_shape: FreeShapeFn,
     italic_pivot: f32,
+    pad_x: i32,
     cache: Vec<Glyph>,
     scratch: Outline,
     glyphs: usize,
@@ -735,6 +745,7 @@ impl Glyphs {
             rasterize: fonts.rasterize.expect("stbtt_Rasterize"),
             free_shape: fonts.free_shape.expect("stbtt_FreeShape"),
             italic_pivot: fonts.italic_pivot,
+            pad_x: fonts.pad_x,
             cache,
             scratch: Outline { v: Vec::new(), n: 0, face: ptr::null(), glyph: 0, bbox: [0; 4] },
             glyphs: 0,
@@ -827,10 +838,10 @@ impl Glyphs {
         if glyph == 0 {
             return Ok(slot);
         }
-        // The primary font's narrow glyphs sit where the font puts them.
-        // Wide and fallback glyphs are centered, and a fallback glyph too
-        // wide for its cells is shrunk. A mark is neither (paint_marks
-        // places it).
+        // The primary font's narrow glyphs sit where the font puts them,
+        // moved by pad_x in a cell box. Wide and fallback glyphs are
+        // centered, and a fallback glyph too wide for its cells is shrunk. A
+        // mark is neither (paint_marks places it).
         let (mut glyph_adv, mut glyph_lsb) = (0, 0);
         (self.get_glyph_h_metrics)(source.info, glyph, &mut glyph_adv, &mut glyph_lsb);
         // At an instance, as HVAR varies it.
@@ -846,6 +857,8 @@ impl Glyphs {
         entry.advance = advance;
         if !mark && (wide || from_fallback) {
             entry.shift = ((span as f32 - advance) / 2.0 + 0.5).floor() as i32;
+        } else if !mark {
+            entry.shift = self.pad_x;
         }
         // stb's outline, freed on the way out; or the CFF face's, in scratch.
         let mut shape = Shape { v: ptr::null_mut(), info: source.info, free_shape: self.free_shape };

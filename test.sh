@@ -468,6 +468,28 @@ check "--json reports the palette's colours" 'cmp -s "$out/grid-palette.json" "$
 ./termshot --text "$out/pad.txt" --json "$out/pad.json" --padding 40 "$log" "$out/pad.png"
 check "padding changes no --text or --json" 'cmp -s "$out/pad.txt" "$out/text-png.txt" && cmp -s "$out/pad.json" "$out/both.json"'
 check "--padding without a PNG needs no font" './termshot --font README.md --padding 4 --text "$out/q.txt" "$log"'
+# --cell (#109): the cell box's values, the glyphs that must fit it, -v, and
+# a log whose images need a cell size, read without a font. The goldens and
+# tests/library.rs check its pixels.
+for bad in 0x32 16x0 1025x32 16x1025 16 16x x32 16x32x2 -16x32 16.5x32; do
+    expect 2 "$log" "$out/x.png" --cell "$bad"
+done
+expect 2 "$log" "$out/x.png" --cell
+check "--cell names its range and form" \
+    './termshot --cell 16 "$log" "$out/x.png" 2>&1 | grep -q "cell must be pixels from 1 to 1024 on each side, as 16x32"'
+rm -f "$out/gone.png"
+expect 2 --cell 16x32 --px 32 "$log" "$out/gone.png"
+check "glyphs at --px that overflow the cell are refused, and leave no output" \
+    './termshot --cell 16x32 --px 32 "$log" "$out/gone.png" 2>&1 | grep -q "the font.s cell at px 32 is 15x33, larger than the cell 16x32" && [ ! -e "$out/gone.png" ]'
+check "-v prints the cell box and the glyphs' size in it" \
+    './termshot -v --cell 16x32 "$log" "$out/q.png" 2>&1 | grep -q "scale 0.02424 cell 16x32 glyphs 14.5x32 baseline 25 image 1600x960"'
+check "-v prints the glyphs at --px in a cell box" \
+    './termshot -v --cell 16x32 --px 30 "$log" "$out/q.png" 2>&1 | grep -q "scale 0.02333 cell 16x32 glyphs 14.0x31 baseline 24 image 1600x960"'
+check "-v prints no glyphs' size without a cell box" \
+    '! ./termshot -v "$log" "$out/q.png" 2>&1 | grep -q "glyphs"'
+check "a cell box is quiet" '[ -z "$(./termshot --cell 16x32 "$log" "$out/q.png" 2>&1)" ]'
+check "--cell gives a sized log its cell without a font" \
+    './termshot --font README.md --cell 16x32 --text "$out/q.txt" tests/fixtures/kitty-strips.pty'
 # A wide character on a one-column screen (#18).
 check "one-column wide character renders" 'printf "\347\225\214" | ./termshot --size 1x1 - "$out/one-column.png"'
 # Quiet unless asked; a failed run leaves no file behind.

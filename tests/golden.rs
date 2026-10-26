@@ -108,10 +108,15 @@ fn render(log: &str, px: &str, cols: u32, rows: u32, fonts: &[&str]) -> Result<(
     let src = candidates.iter().find(|path| fs::metadata(path).is_ok()).unwrap_or(&candidates[1]).clone();
     let mut command = Command::new("./termshot");
     command.args(["--text", &grids[0], "--json", &grids[1]]);
-    if fonts.is_empty() {
+    let cell = px.strip_prefix("cell");
+    if fonts.is_empty() && cell.is_none() {
         command.args([&src, &png, FONT, px, &cols.to_string(), &rows.to_string()]);
     } else {
-        command.args(fonts).args(["--px", px, "--size", &format!("{cols}x{rows}"), &src, &png]);
+        command.args(fonts).args(match cell {
+            Some(cell) => ["--cell", cell],
+            None => ["--px", px],
+        });
+        command.args(["--size", &format!("{cols}x{rows}"), &src, &png]);
     }
     let output = command
         .env_remove("TERMSHOT_PROFILE")

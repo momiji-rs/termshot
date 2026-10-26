@@ -264,6 +264,7 @@ fn paint(cells: &[Cell], marks: &[CellMarks], font: GlyphFace, fallback: GlyphFa
         free_shape: Some(free_shape),
         italic_pivot: 4.0,
         baseline: BASELINE,
+        pad_x: 0,
     };
     let mut bd = std::mem::MaybeUninit::<Backdrop>::uninit();
     let mut empty = EmptyGlyphs::default();

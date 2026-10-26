@@ -27,7 +27,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::ExitCode;
 
 use termshot::{
-    Cursor, CursorShape, Error, FaceSelector, Font, FontSpec, Grid, Lf, Palette, ParseOptions, RenderOptions,
+    CellSize, Cursor, CursorShape, Error, FaceSelector, Font, FontSpec, Grid, Lf, Palette, ParseOptions,
+    RenderOptions,
 };
 
 mod golden_cases;
@@ -146,16 +147,22 @@ fn case_png(log: &str, px: &str, cols: u32, rows: u32, args: &[&str]) -> Result<
     let name = format!("{log} {px}");
     let data = read_log(log)?;
     let mut parse_options = ParseOptions::default();
-    let (mut font, mut fallback, mut padding) = (None, None, (0, 0));
+    let (mut font, mut fallback, mut padding, mut cell_box) = (None, None, (0, 0), None);
     // With no options, the original form, which names the font file.
     if args.is_empty() {
         font = Some(open(FONT)?);
     }
+    let side = |v: &str| v.parse::<u32>().map_err(|_| format!("{name}: cell {v}"));
+    let cell_of = |value: &str| {
+        let (w, h) = value.split_once('x').ok_or(format!("{name}: cell {value}"))?;
+        Ok::<_, String>((side(w)?, side(h)?))
+    };
     for pair in args.chunks(2) {
         match pair {
             ["--font", value] => font = Some(open(value)?),
             ["--fallback-font", value] => fallback = Some(open(value)?),
             ["--palette", path] => parse_options.palette = palette(path)?,
+            ["--cell", value] => cell_box = Some(cell_of(value)?),
             ["--padding", value] => {
                 let (x, y) = value.split_once(',').ok_or(format!("{name}: padding {value}"))?;
                 padding = (x.parse().map_err(|_| format!("{name}: {x}"))?, y.parse().map_err(|_| format!("{name}: {y}"))?);
@@ -167,9 +174,23 @@ fn case_png(log: &str, px: &str, cols: u32, rows: u32, args: &[&str]) -> Result<
         Some(font) => font,
         None => Font::embedded().map_err(|error| error.to_string())?,
     };
-    let size: f64 = px.parse().map_err(|_| format!("{name}: px"))?;
-    let options = RenderOptions { px: size, font: Some(&font), fallback: fallback.as_ref(), padding, ..RenderOptions::default() };
-    let cell = font.cell_size(size).map_err(|error| format!("{name}: {error}"))?;
+    // A px of cellWxH is --cell without --px; --cell with one is Px.
+    let (size, cell_size) = match (px.strip_prefix("cell"), cell_box) {
+        (Some(value), _) => {
+            let (width, height) = cell_of(value)?;
+            (48.0, CellSize::Fit { width, height })
+        }
+        (None, cell_box) => {
+            let size: f64 = px.parse().map_err(|_| format!("{name}: px"))?;
+            (size, cell_box.map_or(CellSize::Font, |(width, height)| CellSize::Px { width, height }))
+        }
+    };
+    let options = RenderOptions { px: size, cell: cell_size, font: Some(&font), fallback: fallback.as_ref(), padding,
+                                  ..RenderOptions::default() };
+    let cell = match cell_size.cell_box() {
+        Some(cell) => cell,
+        None => font.cell_size(size).map_err(|error| format!("{name}: {error}"))?,
+    };
     let grid = termshot::parse_with_cell_size(&data, cols as usize, rows as usize, &parse_options, cell)
         .map_err(|error| format!("{name}: {error}"))?;
     let rendered = termshot::render(&grid, &options).map_err(|error| format!("{name}: {error}"))?;
@@ -187,6 +208,81 @@ fn case_png(log: &str, px: &str, cols: u32, rows: u32, args: &[&str]) -> Result<
     let (width, height, rgba) = decode(&path)?;
     if (image.width, image.height) != (width, height) || image.rgba != rgba || image.empty_glyph != rendered.empty_glyph {
         return Err(format!("{name}: render_rgba's {}x{} pixels differ from {path}'s", image.width, image.height));
+    }
+    Ok(())
+}
+
+/// A cell box (#109): an image herdr cut into 32 px strips for 16x32 cells
+/// (tests/fixtures/kitty-strips.pty) comes out whole in a 16x32 box, each
+/// pixel its own, with no seam; and the glyphs are centered in the box.
+fn cell_box() -> Result<(), String> {
+    let fail = |what: String| Err(format!("cell_box: {what}"));
+    let data = read_log("kitty-strips")?;
+    let grid = termshot::parse_with_cell_size(&data, 10, 5, &ParseOptions::default(), (16, 32))
+        .map_err(|error| format!("cell_box: {error}"))?;
+    // Fit leaves px unused, so any px will do, even one render refuses alone.
+    let fit = RenderOptions { px: 0.0, cell: CellSize::Fit { width: 16, height: 32 }, ..RenderOptions::default() };
+    let image = termshot::render_rgba(&grid, &fit).map_err(|error| format!("cell_box: {error}"))?;
+    if (image.width, image.height) != (160, 160) {
+        return fail(format!("a {}x{} image, not 160x160", image.width, image.height));
+    }
+    // The image's pixels, as the fixture made them: three strips at column
+    // 1, rows 1 to 3, are (16, 32) to (48, 128) in the PNG.
+    for y in 0..96u32 {
+        for x in 0..32u32 {
+            let mut want = [30, 40, 60];
+            if y % 8 == 0 {
+                want = [90, 160, 220];
+            }
+            if (x as i32 - (y / 3) as i32).abs() <= 1 {
+                want = [240, 200, 80];
+            }
+            let at = (((32 + y) * 160 + 16 + x) * 4) as usize;
+            if image.rgba[at..at + 3] != want {
+                return fail(format!("the image's pixel ({x}, {y}) is {:?}, not {want:?}", &image.rgba[at..at + 3]));
+            }
+        }
+    }
+    // An M alone, in the box and in the font's own 14x31 cell at px 30: its
+    // ink is the same, moved right by half the box's 2 spare pixels across;
+    // the 1 spare down splits as a line gap does, all of it below.
+    let ink = |options: &RenderOptions, cell: (u32, u32)| -> Result<(u32, u32, u32, u32), String> {
+        let grid = termshot::parse_with_cell_size(b"M", 1, 1, &ParseOptions::default(), cell)
+            .map_err(|error| format!("cell_box: {error}"))?;
+        let options = RenderOptions { cursor: Cursor::Hidden, ..*options };
+        let image = termshot::render_rgba(&grid, &options).map_err(|error| format!("cell_box: {error}"))?;
+        let background = image.rgba[..4].to_vec();
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        for (i, pixel) in image.rgba.chunks_exact(4).enumerate() {
+            if pixel != background.as_slice() {
+                let (x, y) = (i as u32 % image.width, i as u32 / image.width);
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+        Ok((x0, y0, x1, y1))
+    };
+    let own = ink(&RenderOptions { px: 30.0, ..RenderOptions::default() }, (14, 31))?;
+    let boxed = RenderOptions { px: 30.0, cell: CellSize::Px { width: 16, height: 32 }, ..RenderOptions::default() };
+    let centered = ink(&boxed, (16, 32))?;
+    if centered != (own.0 + 1, own.1, own.2 + 1, own.3) {
+        return fail(format!("M at px 30 is inked over {own:?} in its own cell, but {centered:?} in 16x32"));
+    }
+    // In a box far wider than it is tall, where a twelfth of the width is
+    // taller than the row, the second row's underline, double underline,
+    // strike-through and underline cursor stay in it: the first row is as
+    // it is with nothing below it.
+    let shallow = CellSize::Fit { width: 120, height: 4 };
+    let first_row = |log: &[u8], cursor: Cursor, shape: CursorShape| -> Result<Vec<u8>, String> {
+        let grid = termshot::parse_with_cell_size(log, 8, 2, &ParseOptions::default(), (120, 4))
+            .map_err(|error| format!("cell_box: {error}"))?;
+        let options = RenderOptions { cell: shallow, cursor, cursor_shape: Some(shape), ..RenderOptions::default() };
+        let image = termshot::render_rgba(&grid, &options).map_err(|error| format!("cell_box: {error}"))?;
+        Ok(image.rgba[..(image.width * 4 * 4) as usize].to_vec())
+    };
+    let alone = first_row(b"ab", Cursor::Hidden, CursorShape::Block)?;
+    let lined = b"ab\r\n\x1b[4m  \x1b[4:2m  \x1b[24;9m  \x1b[m";
+    if first_row(lined, Cursor::At { row: 1, col: 7 }, CursorShape::Underline)? != alone {
+        return fail("the second row's lines or underline cursor reach into the first, in 120x4 cells".into());
     }
     Ok(())
 }
@@ -335,6 +431,23 @@ fn errors() -> Result<(), String> {
     match render(RenderOptions { padding: (0, padding), ..RenderOptions::default() }) {
         Err(Error::Options(message)) if message.contains("padding") => {}
         other => return fail(format!("padding {padding}: {other:?}")),
+    }
+    let over = termshot::MAX_CELL + 1;
+    for (width, height) in [(0, 32), (16, 0), (over, 32), (16, over)] {
+        for cell in [CellSize::Fit { width, height }, CellSize::Px { width, height }] {
+            match render(RenderOptions { cell, ..RenderOptions::default() }) {
+                Err(Error::Options(message))
+                    if message == format!("cell must be pixels from 1 to 1024 on each side, not {width}x{height}") => {}
+                other => return fail(format!("{cell:?}: {other:?}")),
+            }
+        }
+    }
+    // Glyphs at px must fit in the cell box: 15x33 at 32 px does not fit 16x32.
+    match render(RenderOptions { px: 32.0, cell: CellSize::Px { width: 16, height: 32 }, ..RenderOptions::default() }) {
+        Err(Error::Options(message))
+            if message == "the font's cell at px 32 is 15x33, larger than the cell 16x32; \
+                           lower px, or leave it out to fit the glyphs to the cell" => {}
+        other => return fail(format!("px 32 in 16x32: {other:?}")),
     }
     for (row, col) in [(2, 0), (0, 4), (usize::MAX, usize::MAX)] {
         match render(RenderOptions { cursor: Cursor::At { row, col }, ..RenderOptions::default() }) {
@@ -830,9 +943,9 @@ fn main() -> ExitCode {
         }
     }
     println!("ok, {} PNGs byte for byte as the CLI writes them, and render_rgba's pixels theirs", golden_cases::CASES.len());
-    if !run(&[accessors, fonts, errors, findings, cursor_options, sizes, threads, cast, hostile]) {
+    if !run(&[accessors, fonts, errors, findings, cursor_options, sizes, cell_box, threads, cast, hostile]) {
         return ExitCode::FAILURE;
     }
-    println!("ok, the API: accessors, fonts, every error, findings, cursors, sizes, 36 renders on 12 threads, casts");
+    println!("ok, the API: accessors, fonts, every error, findings, cursors, sizes, a cell box, 36 renders on 12 threads, casts");
     ExitCode::SUCCESS
 }

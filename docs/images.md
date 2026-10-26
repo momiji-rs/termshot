@@ -15,7 +15,7 @@ the cell's edge), use their native pixel size or fit a `c`/`r` cell rectangle wh
 aspect ratio, and blend alpha over the existing screen. `x`, `y`, `w`, `h` choose a source
 rectangle in pixels, and the part of it inside the image is shown; that crop's aspect ratio is
 the one kept, and an empty crop draws nothing. Scaling uses deterministic nearest-neighbor
-sampling. Cell dimensions come from the selected font and `--px`. `C=1` keeps the cursor in
+sampling. Cell dimensions come from the selected font and `--px`, or `--cell`. `C=1` keeps the cursor in
 place; otherwise it moves as kitty moves it: right by the placement's columns and down by its
 rows less one, to the next row's start if that reaches the right edge, scrolling the region up
 if it passes the bottom margin.
@@ -84,8 +84,8 @@ Sixel images (`ESC P P1;P2;P3 q … ESC \`) are drawn too, following xterm's dec
   the wrong number of parameters is ignored.
 - Repeats (`!Pn`), graphics carriage return (`$`) and next line (`-`), and raster attributes
   (`"Pan;Pad;Ph;Pv`). Pixels are square device pixels at their native size, as in xterm, which
-  also ignores `P1` and `Pan;Pad`; cell dimensions come from the font and `--px`, as for
-  kitty's native sizing. The image is as large as `Ph`x`Pv` or its pixels reach, whichever is
+  also ignores `P1` and `Pan;Pad`; cell dimensions come from the font and `--px`, or
+  `--cell`, as for kitty's native sizing. The image is as large as `Ph`x`Pv` or its pixels reach, whichever is
   larger; an extent given as 0 or left empty counts as 1, as in xterm.
 - `P2` 1 leaves pixels no sixel set transparent. `P2` 0 or 2 paints the area the raster
   attributes declared before the first sixel with register 0, as xterm does; pixels past it

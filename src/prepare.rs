@@ -85,7 +85,9 @@ pub(crate) fn cursor_mark(
     let (fg, bg) = (palette.foreground, palette.background);
     let (r, g, b) = if (first.br, first.bg, first.bb) == fg { bg } else { fg };
     let (cell_w, cell_h) = (i64::from(cell_w), i64::from(cell_h));
-    let thick = (cell_w / 8).max(1);
+    // At most the cell's height, so an underline cursor in a cell box (--cell)
+    // far wider than it is tall stays in its row.
+    let thick = (cell_w / 8).max(1).min(cell_h.max(1));
     let (x, y) = ((under.start - row * cols) as i64 * cell_w, row as i64 * cell_h);
     let rect = match shape {
         CursorShape::Underline => (x, y + cell_h - thick, under.len() as i64 * cell_w, thick),

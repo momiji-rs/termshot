@@ -7,9 +7,10 @@ pub const CJK_VF: &str = "third_party/noto-sans-cjk-vf/NotoSansCJKtc-VF-Subset.o
 pub const MARKS: &str = "third_party/noto-sans-marks/NotoSans-Marks-Subset.ttf";
 // (log, px, cols, rows, options). A log is examples/<log>.pty,
 // tests/fixtures/<log>.pty, or an asciinema recording tests/fixtures/<log>.cast;
-// with no options it is drawn with FONT, in the original form.
+// with no options it is drawn with FONT, in the original form. A px of
+// cellWxH is --cell WxH without --px: the largest glyphs that fit (#109).
 // px 46 is sensitive to FMA contraction (macOS vs Linux, #3); px 48 is the README size.
-pub const CASES: [(&str, &str, u32, u32, &[&str]); 68] = [
+pub const CASES: [(&str, &str, u32, u32, &[&str]); 72] = [
     ("reply-sent", "46", 100, 30, &[]),
     ("reply-sent", "48", 100, 30, &[]),
     ("draft-ready", "46", 100, 30, &[]),
@@ -113,4 +114,13 @@ pub const CASES: [(&str, &str, u32, u32, &[&str]); 68] = [
     // Padding (#87): the kitty layers in a margin of the default background
     // (a size of their own, so the PNG is not kitty-layers-24's).
     ("kitty-layers", "33", 8, 4, &["--padding", "12,6"]),
+    // A cell box (#109): an image cut into 32 px strips, one placement a row,
+    // as herdr cuts one for 16x32 cells. At px 28 (13x29) each strip is
+    // squeezed into its row and the diagonal breaks at every strip; in a
+    // 16x32 box they meet. Then the glyphs at px 30 in that box, and
+    // combining marks and the fallback's glyphs centered in a wider one.
+    ("kitty-strips", "28", 10, 5, &[]),
+    ("kitty-strips", "cell16x32", 10, 5, &[]),
+    ("kitty-strips", "30", 10, 5, &["--cell", "16x32"]),
+    ("marks", "cell20x40", 40, 6, &["--fallback-font", MARKS]),
 ];

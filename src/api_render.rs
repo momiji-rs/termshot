@@ -24,6 +24,10 @@ static EMBEDDED_FONT: &[u8] = include_bytes!("../third_party/jetbrains-mono/JetB
 /// The most padding on a side, in pixels: 1,024, as `--padding` allows.
 pub const MAX_PADDING: u32 = render::MAX_PADDING;
 
+/// The most pixels on a side of a cell box ([`CellSize`]): 1,024, as
+/// `--cell` allows.
+pub const MAX_CELL: u32 = 1024;
+
 extern "C" {
     /// stb_glue.c: the cell of `font` at `px`, as the render sizes it; 0
     /// when its metrics are unusable.
@@ -222,14 +226,59 @@ pub enum Cursor {
     },
 }
 
+/// How large a render's cells are. A cell box fixes the cell, whatever the
+/// font: a log written for cells of another size than the font's (a
+/// program that placed its images by that size) renders at it. The glyphs
+/// are centered in the box: across, the font's narrow glyphs move right by
+/// half the spare width, and down, the spare height splits as a line gap
+/// does. Parse such a log with the same cell,
+/// [`parse_with_cell_size`](crate::parse_with_cell_size)`(.., (width, height))`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CellSize {
+    /// The font's own cell at [`RenderOptions::px`] ([`Font::cell_size`]).
+    #[default]
+    Font,
+    /// A cell box (`--cell` without `--px`) with the largest glyphs that
+    /// fit in it, their scale not rounded to a whole-pixel advance as the
+    /// font's cell rounds it; [`RenderOptions::px`] is not used.
+    Fit {
+        /// The cell's width in pixels, from 1 to [`MAX_CELL`].
+        width: u32,
+        /// Its height in pixels, from 1 to [`MAX_CELL`].
+        height: u32,
+    },
+    /// A cell box (`--cell` with `--px`) with the glyphs at
+    /// [`RenderOptions::px`], whose own cell must fit in it
+    /// ([`Error::Options`]).
+    Px {
+        /// The cell's width in pixels, from 1 to [`MAX_CELL`].
+        width: u32,
+        /// Its height in pixels, from 1 to [`MAX_CELL`].
+        height: u32,
+    },
+}
+
+impl CellSize {
+    /// The box's width and height, or None for the font's cell.
+    pub fn cell_box(&self) -> Option<(u32, u32)> {
+        match *self {
+            CellSize::Font => None,
+            CellSize::Fit { width, height } | CellSize::Px { width, height } => Some((width, height)),
+        }
+    }
+}
+
 /// How to draw a grid. [`RenderOptions::default`] draws as the CLI does with
 /// no options: the built-in font at 48 px, no fallback, no padding, and the
 /// cursor where the grid has it. Name the fields you change and fill in the
 /// rest with `..RenderOptions::default()`; fields may be added.
 #[derive(Clone, Copy, Debug)]
 pub struct RenderOptions<'a> {
-    /// The font's pixel height, above 0 and below 256 (`--px`).
+    /// The font's pixel height, above 0 and below 256 (`--px`). It picks a
+    /// step of whole-pixel cell widths: every px in a step draws alike.
     pub px: f64,
+    /// The cell's size: the font's at `px`, or a cell box (`--cell`).
+    pub cell: CellSize,
     /// The font to draw with (`--font`); None is [`Font::embedded`].
     pub font: Option<&'a Font>,
     /// A font for the characters the first lacks (`--fallback-font`), such
@@ -253,6 +302,7 @@ impl Default for RenderOptions<'_> {
     fn default() -> Self {
         RenderOptions {
             px: 48.0,
+            cell: CellSize::Font,
             font: None,
             fallback: None,
             padding: (0, 0),
@@ -360,9 +410,50 @@ fn check_px(px: f64) -> Result<(), Error> {
     Err(Error::Options(format!("px must be a number above 0 and below 256, not {px}")))
 }
 
+/// An [`Error::Options`] unless a cell box's sides are from 1 to MAX_CELL.
+fn check_cell(cell: CellSize) -> Result<(), Error> {
+    match cell.cell_box() {
+        Some((w, h)) if !(1..=MAX_CELL).contains(&w) || !(1..=MAX_CELL).contains(&h) => {
+            Err(Error::Options(format!("cell must be pixels from 1 to {MAX_CELL} on each side, not {w}x{h}")))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// check_px, unless a Fit cell box leaves px unused, then check_cell.
+fn check_size(px: f64, cell: CellSize) -> Result<(), Error> {
+    if !matches!(cell, CellSize::Fit { .. }) {
+        check_px(px)?;
+    }
+    check_cell(cell)
+}
+
+/// How `font` sizes the cells `cell` and `px` ask for, and the cell, once
+/// both are checked: a cell box's glyphs at px must fit in it.
+fn sizing(font: &Font, px: f64, cell: CellSize) -> Result<(render::Sizing, (i32, i32)), Error> {
+    match cell {
+        CellSize::Font => Ok((render::Sizing::font(px), font.cell(px)?)),
+        CellSize::Fit { width, height } => {
+            let cell = (width as i32, height as i32);
+            Ok((render::Sizing { px: 0.0, cell }, cell))
+        }
+        CellSize::Px { width, height } => {
+            let (w, h) = font.cell(px)?;
+            if w as u32 > width || h as u32 > height {
+                return Err(Error::Options(format!(
+                    "the font's cell at px {px} is {w}x{h}, larger than the cell {width}x{height}; \
+                     lower px, or leave it out to fit the glyphs to the cell"
+                )));
+            }
+            let cell = (width as i32, height as i32);
+            Ok((render::Sizing { px, cell }, cell))
+        }
+    }
+}
+
 /// Check the options, then draw, with any panic an Error::Internal.
 fn draw(grid: &Grid, options: &RenderOptions, encoding: Encoding) -> Result<(render::Drawn, Option<EmptyGlyph>), Error> {
-    check_px(options.px)?;
+    check_size(options.px, options.cell)?;
     let (x, y) = options.padding;
     if x > MAX_PADDING || y > MAX_PADDING {
         return Err(Error::Options(format!("padding must be pixels from 0 to {MAX_PADDING} on each side, not {x},{y}")));
@@ -390,7 +481,7 @@ fn draw(grid: &Grid, options: &RenderOptions, encoding: Encoding) -> Result<(ren
 fn draw_checked(grid: &Grid, font: &Font, options: &RenderOptions, encoding: Encoding)
     -> Result<(render::Drawn, Option<EmptyGlyph>), Error> {
     let (cols, rows) = (grid.cols, grid.rows);
-    let cell = font.cell(options.px)?;
+    let (sizing, cell) = sizing(font, options.px, options.cell)?;
     let palette = Palette { foreground: grid.foreground, background: grid.background, ..Palette::DEFAULT };
     render::start_faults();
     // The copies the cells are prepared in, made with try_reserve_exact.
@@ -442,7 +533,7 @@ fn draw_checked(grid: &Grid, font: &Font, options: &RenderOptions, encoding: Enc
         // call; each view's pixels are a placement's, which the grid holds,
         // or the cursor's pixel.
         unsafe {
-            render::draw(&cells, &marks, cols, rows, face.ffi(), fallback.map(font::Face::ffi), options.px, &images,
+            render::draw(&cells, &marks, cols, rows, face.ffi(), fallback.map(font::Face::ffi), sizing, &images,
                          Some(&mut empty), &render_options, encoding, options.profile)
         }
     };
@@ -480,21 +571,23 @@ pub mod cli {
     pub use crate::font::LoadTimings;
 
     /// The line -v prints before a render of a `cols` x `rows` grid with
-    /// these fonts: the font's advance, scale, cell and baseline, and the
-    /// image's size, padding included. The fonts are set up as the render
-    /// sets them up, so a face that can't be is the same Error.
-    pub fn verbose_line(font: &Font, fallback: Option<&Font>, px: f64, cols: usize, rows: usize,
+    /// these fonts: the font's advance, scale, cell (and in a cell box, the
+    /// glyphs' size) and baseline, and the image's size, padding included.
+    /// The fonts are set up as the render sets them up, so a face that
+    /// can't be, or options it refuses, are the same Error.
+    pub fn verbose_line(font: &Font, fallback: Option<&Font>, px: f64, cell: CellSize, cols: usize, rows: usize,
                         padding: (u32, u32)) -> Result<String, Error> {
-        check_px(px)?;
+        check_size(px, cell)?;
+        let (sizing, _) = sizing(font, px, cell)?;
         let metrics = |face: &font::Face, fallback: Option<&font::Face>| {
             // SAFETY: the faces are checked fonts', padded and borrowed.
-            unsafe { render::cell_metrics(face.ffi(), fallback.map(font::Face::ffi), px) }
+            unsafe { render::cell_metrics(face.ffi(), fallback.map(font::Face::ffi), sizing) }
         };
         let metrics = font.font.with_face(|face| match fallback {
             None => Ok(metrics(face, None)),
             Some(fallback) => fallback.font.with_face(|fallback| metrics(face, Some(fallback))),
         });
         let m = metrics.and_then(|m| m).map_err(Error::Font)?.map_err(failure)?;
-        Ok(render::verbose_line(&m, render::image_size(&m, cols, rows, padding).1))
+        Ok(render::verbose_line(&m, sizing.boxed(), render::image_size(&m, cols, rows, padding).1))
     }
 }
