@@ -420,6 +420,14 @@ fn check_cell(cell: CellSize) -> Result<(), Error> {
     }
 }
 
+/// check_px, unless a Fit cell box leaves px unused, then check_cell.
+fn check_size(px: f64, cell: CellSize) -> Result<(), Error> {
+    if !matches!(cell, CellSize::Fit { .. }) {
+        check_px(px)?;
+    }
+    check_cell(cell)
+}
+
 /// How `font` sizes the cells `cell` and `px` ask for, and the cell, once
 /// both are checked: a cell box's glyphs at px must fit in it.
 fn sizing(font: &Font, px: f64, cell: CellSize) -> Result<(render::Sizing, (i32, i32)), Error> {
@@ -445,8 +453,7 @@ fn sizing(font: &Font, px: f64, cell: CellSize) -> Result<(render::Sizing, (i32,
 
 /// Check the options, then draw, with any panic an Error::Internal.
 fn draw(grid: &Grid, options: &RenderOptions, encoding: Encoding) -> Result<(render::Drawn, Option<EmptyGlyph>), Error> {
-    check_px(options.px)?;
-    check_cell(options.cell)?;
+    check_size(options.px, options.cell)?;
     let (x, y) = options.padding;
     if x > MAX_PADDING || y > MAX_PADDING {
         return Err(Error::Options(format!("padding must be pixels from 0 to {MAX_PADDING} on each side, not {x},{y}")));
@@ -570,8 +577,7 @@ pub mod cli {
     /// can't be, or options it refuses, are the same Error.
     pub fn verbose_line(font: &Font, fallback: Option<&Font>, px: f64, cell: CellSize, cols: usize, rows: usize,
                         padding: (u32, u32)) -> Result<String, Error> {
-        check_px(px)?;
-        check_cell(cell)?;
+        check_size(px, cell)?;
         let (sizing, _) = sizing(font, px, cell)?;
         let metrics = |face: &font::Face, fallback: Option<&font::Face>| {
             // SAFETY: the faces are checked fonts', padded and borrowed.

@@ -220,7 +220,8 @@ fn cell_box() -> Result<(), String> {
     let data = read_log("kitty-strips")?;
     let grid = termshot::parse_with_cell_size(&data, 10, 5, &ParseOptions::default(), (16, 32))
         .map_err(|error| format!("cell_box: {error}"))?;
-    let fit = RenderOptions { cell: CellSize::Fit { width: 16, height: 32 }, ..RenderOptions::default() };
+    // Fit leaves px unused, so any px will do, even one render refuses alone.
+    let fit = RenderOptions { px: 0.0, cell: CellSize::Fit { width: 16, height: 32 }, ..RenderOptions::default() };
     let image = termshot::render_rgba(&grid, &fit).map_err(|error| format!("cell_box: {error}"))?;
     if (image.width, image.height) != (160, 160) {
         return fail(format!("a {}x{} image, not 160x160", image.width, image.height));
