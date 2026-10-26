@@ -156,7 +156,8 @@ const _: () = assert!(std::mem::size_of::<GlyphFace>() == 56);
 /// The fonts of a render, as stb_glue.c's TextFonts: the font and the fallback
 /// (whose `info` is null when there is none), the stb functions any face
 /// may be asked, the italic pivot (the middle of the body, in pixels above
-/// the baseline, for both fonts) and the baseline in the cell.
+/// the baseline, for both fonts), the baseline in the cell, and how far the
+/// font's narrow glyphs move right in a cell box (`--cell`; 0 otherwise).
 #[repr(C)]
 pub struct TextFonts {
     pub font: GlyphFace,
@@ -167,9 +168,10 @@ pub struct TextFonts {
     pub free_shape: Option<FreeShapeFn>,
     pub italic_pivot: f32,
     pub baseline: i32,
+    pub pad_x: i32,
 }
 
-const _: () = assert!(std::mem::size_of::<TextFonts>() == 152);
+const _: () = assert!(std::mem::size_of::<TextFonts>() == 160);
 
 /// What the text cost and did, for TERMSHOT_PROFILE (src/render.rs):
 /// the time spent painting the backdrop, box drawing, finding glyphs and
@@ -690,6 +692,7 @@ struct Glyphs {
     rasterize: RasterizeFn,
     free_shape: FreeShapeFn,
     italic_pivot: f32,
+    pad_x: i32,
     cache: Vec<Glyph>,
     scratch: Outline,
     glyphs: usize,
@@ -735,6 +738,7 @@ impl Glyphs {
             rasterize: fonts.rasterize.expect("stbtt_Rasterize"),
             free_shape: fonts.free_shape.expect("stbtt_FreeShape"),
             italic_pivot: fonts.italic_pivot,
+            pad_x: fonts.pad_x,
             cache,
             scratch: Outline { v: Vec::new(), n: 0, face: ptr::null(), glyph: 0, bbox: [0; 4] },
             glyphs: 0,
@@ -827,10 +831,10 @@ impl Glyphs {
         if glyph == 0 {
             return Ok(slot);
         }
-        // The primary font's narrow glyphs sit where the font puts them.
-        // Wide and fallback glyphs are centered, and a fallback glyph too
-        // wide for its cells is shrunk. A mark is neither (paint_marks
-        // places it).
+        // The primary font's narrow glyphs sit where the font puts them,
+        // moved by pad_x in a cell box. Wide and fallback glyphs are
+        // centered, and a fallback glyph too wide for its cells is shrunk. A
+        // mark is neither (paint_marks places it).
         let (mut glyph_adv, mut glyph_lsb) = (0, 0);
         (self.get_glyph_h_metrics)(source.info, glyph, &mut glyph_adv, &mut glyph_lsb);
         // At an instance, as HVAR varies it.
@@ -846,6 +850,8 @@ impl Glyphs {
         entry.advance = advance;
         if !mark && (wide || from_fallback) {
             entry.shift = ((span as f32 - advance) / 2.0 + 0.5).floor() as i32;
+        } else if !mark {
+            entry.shift = self.pad_x;
         }
         // stb's outline, freed on the way out; or the CFF face's, in scratch.
         let mut shape = Shape { v: ptr::null_mut(), info: source.info, free_shape: self.free_shape };

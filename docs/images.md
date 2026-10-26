@@ -84,8 +84,8 @@ Sixel images (`ESC P P1;P2;P3 q … ESC \`) are drawn too, following xterm's dec
   the wrong number of parameters is ignored.
 - Repeats (`!Pn`), graphics carriage return (`$`) and next line (`-`), and raster attributes
   (`"Pan;Pad;Ph;Pv`). Pixels are square device pixels at their native size, as in xterm, which
-  also ignores `P1` and `Pan;Pad`; cell dimensions come from the font and `--px`, as for
-  kitty's native sizing. The image is as large as `Ph`x`Pv` or its pixels reach, whichever is
+  also ignores `P1` and `Pan;Pad`; cell dimensions come from the font and `--px`, or
+  `--cell`, as for kitty's native sizing. The image is as large as `Ph`x`Pv` or its pixels reach, whichever is
   larger; an extent given as 0 or left empty counts as 1, as in xterm.
 - `P2` 1 leaves pixels no sixel set transparent. `P2` 0 or 2 paints the area the raster
   attributes declared before the first sixel with register 0, as xterm does; pixels past it

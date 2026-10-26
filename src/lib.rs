@@ -128,8 +128,8 @@ pub use api::{
     Error, Grid, GridCell, Lf, Palette, ParseOptions, Rgb, MAX_CELLS, MAX_PALETTE_BYTES, MAX_PIXELS, MAX_SIDE,
 };
 pub use api_render::{
-    render, render_rgba, Cursor, EmptyGlyph, FaceSelector, Font, FontSpec, Rendered, RenderOptions, RgbaImage,
-    MAX_PADDING,
+    render, render_rgba, CellSize, Cursor, EmptyGlyph, FaceSelector, Font, FontSpec, Rendered, RenderOptions,
+    RgbaImage, MAX_CELL, MAX_PADDING,
 };
 #[doc(hidden)]
 pub use api_render::cli;

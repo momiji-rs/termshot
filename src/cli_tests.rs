@@ -37,6 +37,25 @@ fn cursor_option_counts_from_0_as_tmux_does() {
     assert!(message.contains("rows from 0 to 3"), "{message}");
 }
 
+#[test]
+fn cell_takes_whole_pixels_and_fits_the_glyphs_unless_px_is_given() {
+    assert_eq!(parse_cell("16x32"), Ok((16, 32)));
+    assert_eq!(parse_cell("1X1024"), Ok((1, 1024)));
+    for bad in ["0x32", "16x0", "1025x32", "16", "16x", "x32", "16x32x2", "-16x32", "16.5x32", " 16x32", ""] {
+        assert!(parse_cell(bad).is_err(), "{bad:?} accepted");
+    }
+    let cell = |list: &[&str]| match parse_args(list.iter().map(|s| s.to_string())) {
+        Ok(Command::Render(options)) => (options.cell, options.px),
+        _ => panic!("{list:?}"),
+    };
+    assert_eq!(cell(&["log", "out.png"]), (CellSize::Font, 48.0));
+    assert_eq!(cell(&["--cell", "16x32", "log", "out.png"]), (CellSize::Fit { width: 16, height: 32 }, 48.0));
+    assert_eq!(cell(&["--cell=16x32", "-p30", "log", "out.png"]), (CellSize::Px { width: 16, height: 32 }, 30.0));
+    // The original form's px is a --px too.
+    let legacy = cell(&["--cell", "16x32", "log", "out.png", FONT, "30"]);
+    assert_eq!(legacy, (CellSize::Px { width: 16, height: 32 }, 30.0));
+}
+
 /// The CLI's warning for what a render reports in `empty`, None when it
 /// reports nothing.
 fn warning(args: &[&str], empty: Option<Empty>, font: &[u8], fallback: Option<&[u8]>) -> Option<String> {

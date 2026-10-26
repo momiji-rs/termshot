@@ -76,7 +76,8 @@ struct FontInfoStorage([u8; 160]);
 
 /// The cell metrics of the font, as CellMetrics in stb_glue.c: its advance
 /// in font units, the cell, the ascent-to-descent body, the baseline (from
-/// the cell's top), the scale and the italic pivot in pixels.
+/// the cell's top), how far its narrow glyphs move right in a cell box, the
+/// scale and the italic pivot in pixels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CellMetrics {
@@ -85,11 +86,35 @@ pub struct CellMetrics {
     pub cell_h: i32,
     body: i32,
     pub baseline: i32,
+    pad_x: i32,
     pub scale: f32,
     italic_pivot: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<CellMetrics>() == 28);
+const _: () = assert!(std::mem::size_of::<CellMetrics>() == 32);
+
+/// How a render sizes its cells, as termshot_font_setup takes them: the
+/// font at `px` in its own cell, or with `cell` (both sides above 0) in a
+/// cell box of that many pixels, the glyphs at `px`, whose own cell the
+/// caller has checked fits in the box, or for a `px` of 0 the largest that
+/// fit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sizing {
+    pub px: f64,
+    pub cell: (i32, i32),
+}
+
+impl Sizing {
+    /// The font at `px`, in its own cell.
+    pub fn font(px: f64) -> Sizing {
+        Sizing { px, cell: (0, 0) }
+    }
+
+    /// Whether the cell is a box, not the font's.
+    pub fn boxed(&self) -> bool {
+        self.cell.0 > 0 && self.cell.1 > 0
+    }
+}
 
 /// A render's fonts, filled in by termshot_font_setup, as FontSetup in
 /// stb_glue.c: stb's font for each face, what the text may ask stb (whose
@@ -103,13 +128,15 @@ struct FontSetup {
     metrics: CellMetrics,
 }
 
-const _: () = assert!(std::mem::size_of::<FontSetup>() == 504);
+const _: () = assert!(std::mem::size_of::<FontSetup>() == 512);
 
 extern "C" {
     /// stb_glue.c: stb's fonts for the faces (fallback null for none), the
-    /// cell metrics at `px` and TextFonts, in `setup`: 0 done, 1 a face
+    /// cell metrics at `px` in a `box_w` x `box_h` cell box (0 x 0 for the
+    /// font's cell; Sizing) and TextFonts, in `setup`: 0 done, 1 a face
     /// can't be used, 2 the font's metrics are unusable. It prints nothing.
-    fn termshot_font_setup(font: *const Face, fallback: *const Face, px: f64, setup: *mut FontSetup) -> c_int;
+    fn termshot_font_setup(font: *const Face, fallback: *const Face, px: f64, box_w: c_int, box_h: c_int,
+                           setup: *mut FontSetup) -> c_int;
     /// stb_glue.c: the PNG of `h` filtered scanlines of `w` RGB pixels,
     /// `*len` bytes in the buffer termshot_png_alloc made (a Vec's, which
     /// png_bytes takes back; never free it), or null when an allocation
@@ -298,22 +325,25 @@ pub struct Drawn {
     pub profile: Option<String>,
 }
 
-/// The cell metrics of `font` at `px`, as a render with `fallback` uses
-/// them: the same setup, so the same failure when a face can't be used.
+/// The cell metrics of `font` sized as `sizing` says, as a render with
+/// `fallback` uses them: the same setup, so the same failure when a face
+/// can't be used.
 ///
 /// # Safety
 /// As draw.
-pub unsafe fn cell_metrics(font: &Face, fallback: Option<&Face>, px: f64) -> Result<CellMetrics, Failure> {
+pub unsafe fn cell_metrics(font: &Face, fallback: Option<&Face>, sizing: Sizing) -> Result<CellMetrics, Failure> {
     // SAFETY: all zeros is a valid FontSetup (null pointers, no functions).
     let mut setup: FontSetup = std::mem::zeroed();
-    font_setup(font, fallback, px, &mut setup)?;
+    font_setup(font, fallback, sizing, &mut setup)?;
     Ok(setup.metrics)
 }
 
 /// termshot_font_setup into `setup`, its result as a Failure.
-unsafe fn font_setup(font: &Face, fallback: Option<&Face>, px: f64, setup: &mut FontSetup) -> Result<(), Failure> {
+unsafe fn font_setup(font: &Face, fallback: Option<&Face>, sizing: Sizing, setup: &mut FontSetup)
+    -> Result<(), Failure> {
     let fallback = fallback.map_or(std::ptr::null(), |f| f as *const Face);
-    match termshot_font_setup(font, fallback, px, setup) {
+    let (box_w, box_h) = if sizing.boxed() { sizing.cell } else { (0, 0) };
+    match termshot_font_setup(font, fallback, sizing.px, box_w, box_h, setup) {
         0 => Ok(()),
         1 => Err(Failure::FontInit),
         _ => Err(Failure::FontMetrics),
@@ -329,10 +359,16 @@ pub fn image_size(m: &CellMetrics, cols: usize, rows: usize, padding: (u32, u32)
 }
 
 /// The line -v prints for a render of `m`'s cells into an image of
-/// `width` x `height` pixels.
-pub fn verbose_line(m: &CellMetrics, (width, height): (i64, i64)) -> String {
+/// `width` x `height` pixels. In a cell box (`boxed`), it also says how
+/// large the glyphs are in it: their advance and body.
+pub fn verbose_line(m: &CellMetrics, boxed: bool, (width, height): (i64, i64)) -> String {
+    let glyphs = if boxed {
+        format!(" glyphs {:.1}x{}", f64::from(m.adv as f32 * m.scale), m.body)
+    } else {
+        String::new()
+    };
     format!(
-        "advance {} units scale {:.5} cell {}x{} baseline {} image {}x{}",
+        "advance {} units scale {:.5} cell {}x{}{glyphs} baseline {} image {}x{}",
         m.adv,
         f64::from(m.scale),
         m.cell_w,
@@ -343,8 +379,8 @@ pub fn verbose_line(m: &CellMetrics, (width, height): (i64, i64)) -> String {
     )
 }
 
-/// Paint `cols` x `rows` cells with `font` and return the image as
-/// `encoding` asks. `fallback` supplies the characters `font` lacks;
+/// Paint `cols` x `rows` cells with `font`, sized as `sizing` says, and
+/// return the image as `encoding` asks. `fallback` supplies the characters `font` lacks;
 /// characters neither has are drawn as an outlined box. `marks`, sorted by
 /// cell, gives the cells' combining marks, drawn over them
 /// (src/glyphs.rs). `images` are the image views in their order, the cursor
@@ -363,7 +399,7 @@ pub fn verbose_line(m: &CellMetrics, (width, height): (i64, i64)) -> String {
 /// pixels must hold its `width` x `height` RGBA pixels.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize, font: &Face,
-                   fallback: Option<&Face>, font_px: f64, images: &[ImageView], mut empty: Option<&mut EmptyGlyphs>,
+                   fallback: Option<&Face>, sizing: Sizing, images: &[ImageView], mut empty: Option<&mut EmptyGlyphs>,
                    options: &RenderOptions, encoding: Encoding, profiling: bool) -> Result<Drawn, Failure> {
     assert!(cells.len() >= cols * rows, "{} cells for {cols}x{rows}", cells.len());
     if let Some(empty) = empty.as_deref_mut() {
@@ -376,7 +412,7 @@ pub unsafe fn draw(cells: &[Cell], marks: &[CellMarks], cols: usize, rows: usize
     // SAFETY: all zeros is a valid FontSetup (null pointers, no functions);
     // it is filled in where it stays.
     let mut setup: FontSetup = std::mem::zeroed();
-    font_setup(font, fallback, font_px, &mut setup)?;
+    font_setup(font, fallback, sizing, &mut setup)?;
     let m = setup.metrics;
     let (cell_w, cell_h) = (m.cell_w, m.cell_h);
     // The cells' pixels, and the PNG's: the cells and the margin.
@@ -545,14 +581,14 @@ pub unsafe fn draw_png_with(cells: &[Cell], marks: &[CellMarks], cols: usize, ro
     };
     start_faults();
     if verbose {
-        match cell_metrics(font, fallback, font_px) {
-            Ok(m) => eprintln!("{}", verbose_line(&m, image_size(&m, cols, rows, options.padding).1)),
+        match cell_metrics(font, fallback, Sizing::font(font_px)) {
+            Ok(m) => eprintln!("{}", verbose_line(&m, false, image_size(&m, cols, rows, options.padding).1)),
             Err(failure) => return fail(failure),
         }
     }
     let profiling = std::env::var_os("TERMSHOT_PROFILE").is_some();
-    let drawn = match draw(cells, marks, cols, rows, font, fallback, font_px, images, empty, options, Encoding::Png,
-                           profiling) {
+    let drawn = match draw(cells, marks, cols, rows, font, fallback, Sizing::font(font_px), images, empty, options,
+                           Encoding::Png, profiling) {
         Ok(drawn) => drawn,
         Err(failure) => return fail(failure),
     };

@@ -13,7 +13,7 @@ use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use termshot::{CursorShape, EmptyGlyph, Font, FontSpec, Lf, Palette, ParseOptions, RenderOptions};
+use termshot::{CellSize, CursorShape, EmptyGlyph, Font, FontSpec, Lf, Palette, ParseOptions, RenderOptions};
 
 #[cfg(test)]
 mod cli_tests;
@@ -42,7 +42,14 @@ options:
       --fallback-font FILE
                     a font for the characters the first lacks, such
                     as CJK or emoji; others are drawn as an empty box
-  -p, --px N        font pixel height, above 0 and below 256 (default 48)
+  -p, --px N        font pixel height, above 0 and below 256 (default 48);
+                    it picks a step of whole-pixel cell widths, so nearby
+                    values can draw alike (-v prints the cell)
+      --cell WxH    cell size in pixels, 1 to 1024 each, whatever the
+                    font's: for logs written for cells of that size, such
+                    as images placed by it. The glyphs are centered in it,
+                    the largest that fit, or at --px if given, whose cell
+                    must fit
   -s, --size CxR    grid size in columns x rows, up to 500x200 (default: a
                     cast's size, else 100x30)
       --cast        read <log> as an asciinema .cast; without it or --raw,
@@ -112,6 +119,8 @@ struct Options {
     font: Option<FontSpec>,
     fallback_font: Option<FontSpec>,
     px: f64,
+    /// --cell: a cell box, with the glyphs at --px if it was given.
+    cell: CellSize,
     /// The grid size given, by --size or the original form's cols and rows;
     /// what is missing comes from a cast's header, or the defaults.
     cols: Option<usize>,
@@ -145,6 +154,15 @@ fn parse_px(value: &str) -> Result<f64, String> {
         Ok(px) if px > 0.0 && px < 256.0 => Ok(px),
         _ => Err(format!("px must be a number above 0 and below 256, not {value:?}")),
     }
+}
+
+/// --cell's value: W x H pixels, each from 1 to MAX_CELL.
+fn parse_cell(value: &str) -> Result<(u32, u32), String> {
+    let side = |v: &str| v.parse::<u32>().ok().filter(|n| (1..=termshot::MAX_CELL).contains(n));
+    let parsed = value.split_once(['x', 'X']).and_then(|(w, h)| side(w).zip(side(h)));
+    parsed.ok_or_else(|| {
+        format!("cell must be pixels from 1 to {} on each side, as 16x32, not {value:?}", termshot::MAX_CELL)
+    })
 }
 
 fn parse_count(value: &str, what: &str, max: usize) -> Result<usize, String> {
@@ -239,6 +257,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut args = args.into_iter();
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
+    let mut cell = None;
     let (mut lf, mut cast) = (Lf::Index, None);
     let (mut cursor, mut cursor_shape, mut text, mut json) = (None, None, None, None);
     let (mut palette, mut fg, mut bg, mut padding) = (None, None, None, (0, 0));
@@ -280,6 +299,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "--fallback-font" => fallback_font = Some(option_value(&name, attached, &mut args)?),
             "-p" | "--px" => px = Some(parse_px(&option_value(&name, attached, &mut args)?)?),
             "-s" | "--size" => size = Some(parse_size(&option_value(&name, attached, &mut args)?)?),
+            "--cell" => cell = Some(parse_cell(&option_value(&name, attached, &mut args)?)?),
             // Checked once the grid size is known.
             "--cursor" => cursor = Some(option_value(&name, attached, &mut args)?),
             "--cursor-shape" => {
@@ -349,6 +369,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         font: font.as_deref().map(font_spec).transpose()?,
         fallback_font: fallback_font.as_deref().map(font_spec).transpose()?,
         px: px.unwrap_or(48.0),
+        cell: match (cell, px) {
+            (None, _) => CellSize::Font,
+            (Some((width, height)), None) => CellSize::Fit { width, height },
+            (Some((width, height)), Some(_)) => CellSize::Px { width, height },
+        },
         cols,
         rows,
         lf,
@@ -660,8 +685,10 @@ fn main() -> ExitCode {
     let font_started = Instant::now();
     let mut font_timings = [termshot::cli::LoadTimings::default(); 2];
     // Plain text/JSON logs need no fonts. Graphics also need cell metrics,
-    // even without a PNG, because placement can move the text cursor.
-    let needs_fonts = options.out.is_some() || termshot::needs_cell_size(&data);
+    // even without a PNG, because placement can move the text cursor;
+    // --cell gives them without a font.
+    let needs_fonts =
+        options.out.is_some() || (options.cell == CellSize::Font && termshot::needs_cell_size(&data));
     let fonts = match needs_fonts.then(|| load_fonts(&options, &mut font_timings)).transpose() {
         Ok(fonts) => fonts,
         Err(error) => return cleanup(status(&error), error.to_string()),
@@ -683,9 +710,10 @@ fn main() -> ExitCode {
     }
 
     let parse_started = Instant::now();
-    let cell = match &fonts {
-        Some((font, _)) => font.cell_size(options.px),
-        None => Ok((1, 1)),
+    let cell = match (options.cell.cell_box(), &fonts) {
+        (Some(cell), _) => Ok(cell),
+        (None, Some((font, _))) => font.cell_size(options.px),
+        (None, None) => Ok((1, 1)),
     };
     let grid = cell.and_then(|cell| termshot::parse_with_cell_size(&data, cols, rows, &parse_options, cell));
     let mut grid = match grid {
@@ -723,6 +751,7 @@ fn main() -> ExitCode {
         }
         let render_options = RenderOptions {
             px: options.px,
+            cell: options.cell,
             font: Some(font),
             fallback: fallback.as_ref(),
             padding: options.padding,
@@ -730,7 +759,8 @@ fn main() -> ExitCode {
             ..RenderOptions::default()
         };
         if options.verbose {
-            match termshot::cli::verbose_line(font, fallback.as_ref(), options.px, cols, rows, options.padding) {
+            match termshot::cli::verbose_line(font, fallback.as_ref(), options.px, options.cell, cols, rows,
+                                              options.padding) {
                 Ok(line) => eprintln!("{line}"),
                 Err(error) => return cleanup(status(&error), error.to_string()),
             }

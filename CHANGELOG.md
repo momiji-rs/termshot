@@ -5,6 +5,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`--cell WxH` sets the cell size in pixels**, whatever the font's (#109),
+  for logs written for cells of that size: a program that cut an image into
+  32 px strips for tmux's 16x32 cells draws without seams at `--cell 16x32`.
+  The glyphs are centered in the cell, the largest that fit, or at `--px` if
+  given, whose cell must fit (exit 2 otherwise). `-v` prints their size in it.
+  In the library, `RenderOptions::cell` takes a `CellSize`.
+
+### Changed
+
+- The help and docs/usage.md say what `--px` does to the cell: it picks a
+  step of whole-pixel cell widths, so nearby values, fractions included, can
+  draw alike. A fraction is not truncated; it was never refused, and still
+  isn't.
+
 ## [0.3.2] - 2026-10-07
 
 ### Changed

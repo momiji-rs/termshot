@@ -165,7 +165,7 @@ static int init_face(stbtt_fontinfo *font, const Face *face) {
 
 /* As CellMetrics in src/render.rs. */
 typedef struct {
-    int adv, cell_w, cell_h, body, baseline;
+    int adv, cell_w, cell_h, body, baseline, pad_x;
     float scale, italic_pivot;
 } CellMetrics;
 
@@ -179,22 +179,52 @@ static int to_px(float v) {
     return v >= limit ? (1 << 28) : v <= -limit ? -(1 << 28) : (int)v;
 }
 
-static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double font_px, CellMetrics *m) {
+/* The cell of the font at font_px: its width the advance of M rounded to
+   whole pixels, the scale that width gives, and its height the body and
+   line gap at that scale. With a cell box (box_w and box_h above 0, as
+   --cell), the cell is the box instead: the glyphs at font_px, whose own
+   cell the caller has checked fits in it, or with font_px 0 the largest
+   that fit, their advance and body at most the box's sides. Either way
+   they are centered in it: the spare height splits as the line gap does,
+   and narrow glyphs of the font move pad_x right, half the spare width
+   rounded. */
+static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double font_px, int box_w, int box_h,
+                        CellMetrics *m) {
     int ascent, descent, line_gap;
     face_v_metrics(font, face, &ascent, &descent, &line_gap);
     int adv = face_advance(font, face, stbtt_FindGlyphIndex(font, 'M'));
     if (adv <= 0 || ascent <= descent) return 0;
-    float scale = face_scale(font, face, (float)font_px);
-    int cell_w = to_px(adv * scale + 0.5f);
-    if (cell_w < 1) cell_w = 1;
-    scale = (float)cell_w / (float)adv;
-    int body = to_px((float)((long long)ascent - descent) * scale + 0.5f);
-    int gap = to_px(line_gap * scale + 0.5f);
-    if (gap < 0) gap = 0;
-    int cell_h = body + gap;
-    if (cell_h < 1) cell_h = 1;
+    float height = (float)((long long)ascent - descent);
+    int boxed = box_w > 0 && box_h > 0;
+    float scale, spare_w = 0;
+    int cell_w = 0, cell_h = 0, body;
+    if (boxed && font_px <= 0) {
+        float by_w = (float)box_w / (float)adv, by_h = (float)box_h / height;
+        scale = by_w < by_h ? by_w : by_h;
+        body = to_px(height * scale + 0.5f);
+        if (body > box_h) body = box_h;
+        spare_w = (float)box_w - (float)adv * scale;
+    } else {
+        scale = face_scale(font, face, (float)font_px);
+        cell_w = to_px(adv * scale + 0.5f);
+        if (cell_w < 1) cell_w = 1;
+        scale = (float)cell_w / (float)adv;
+        body = to_px(height * scale + 0.5f);
+        int gap = to_px(line_gap * scale + 0.5f);
+        if (gap < 0) gap = 0;
+        cell_h = body + gap;
+        if (cell_h < 1) cell_h = 1;
+        spare_w = (float)(box_w - cell_w);
+    }
+    int pad_x = 0;
+    if (boxed) {
+        cell_w = box_w;
+        cell_h = box_h;
+        pad_x = spare_w > 0 ? to_px(spare_w / 2 + 0.5f) : 0;
+    }
     int baseline = to_px(ascent * scale + 0.5f) + (cell_h - body) / 2;
-    *m = (CellMetrics){adv, cell_w, cell_h, body, baseline, scale, (float)((long long)ascent + descent) * scale / 2};
+    *m = (CellMetrics){adv,   cell_w, cell_h, body, baseline, pad_x,
+                       scale, (float)((long long)ascent + descent) * scale / 2};
     return 1;
 }
 
@@ -203,7 +233,7 @@ static int cell_metrics(const stbtt_fontinfo *font, const Face *face, double fon
 int draw_face_cell_size(const Face *face, double px, int *w, int *h) {
     stbtt_fontinfo font;
     CellMetrics m;
-    if (!init_font(&font, face->ttf, face->start) || !cell_metrics(&font, face, px, &m)) return 0;
+    if (!init_font(&font, face->ttf, face->start) || !cell_metrics(&font, face, px, 0, 0, &m)) return 0;
     *w = m.cell_w;
     *h = m.cell_h;
     return 1;
@@ -233,8 +263,9 @@ int draw_cell_size(const unsigned char *ttf, int ttf_start, double px, int *w, i
    NULL for them, so stb never runs its charstrings: its outlines come from
    Face.outline (src/cff.rs) and go to stbtt_Rasterize. TextFonts is both
    faces (fallback.info NULL for none), the stb functions any face may be
-   asked (cmap, metrics, the rasterizer, freeing a shape), the italic pivot
-   and the baseline. */
+   asked (cmap, metrics, the rasterizer, freeing a shape), the italic pivot,
+   the baseline, and how far the font's narrow glyphs move right in a cell
+   box (CellMetrics.pad_x). */
 typedef struct {
     const stbtt_fontinfo *info;
     const Face *face;
@@ -257,10 +288,11 @@ typedef struct {
     void (*free_shape)(const stbtt_fontinfo *info, stbtt_vertex *vertices);
     float italic_pivot; /* the middle of the body, in pixels above the baseline */
     int32_t baseline;
+    int32_t pad_x;
 } TextFonts;
 
 _Static_assert(sizeof(GlyphFace) == 56, "GlyphFace ABI must match the Rust side");
-_Static_assert(sizeof(TextFonts) == 152, "TextFonts ABI must match the Rust side");
+_Static_assert(sizeof(TextFonts) == 160, "TextFonts ABI must match the Rust side");
 
 /* A face for termshot_paint_text, with stb's outline readers for TrueType
    only (init_face has checked that a face without Face.outline has glyf);
@@ -286,19 +318,22 @@ typedef struct {
     CellMetrics metrics;
 } FontSetup;
 
-_Static_assert(sizeof(CellMetrics) == 28, "CellMetrics ABI must match the Rust side");
-_Static_assert(sizeof(FontSetup) == 504, "FontSetup ABI must match the Rust side");
+_Static_assert(sizeof(CellMetrics) == 32, "CellMetrics ABI must match the Rust side");
+_Static_assert(sizeof(FontSetup) == 512, "FontSetup ABI must match the Rust side");
 
 /* Set up the fonts of a render in s: font_face to draw with, and
-   fallback_face, or NULL, for the characters it lacks. 0 when done; 1 when
-   a face can't be used, 2 when the font's metrics are unusable. It prints
-   nothing: src/render.rs says why (FontFailure there). */
-int termshot_font_setup(const Face *font_face, const Face *fallback_face, double font_px, FontSetup *s) {
+   fallback_face, or NULL, for the characters it lacks, at font_px and in a
+   cell box of box_w x box_h, or the font's own cell for 0 x 0 (as
+   cell_metrics). 0 when done; 1 when a face can't be used, 2 when the
+   font's metrics are unusable. It prints nothing: src/render.rs says why
+   (FontFailure there). */
+int termshot_font_setup(const Face *font_face, const Face *fallback_face, double font_px, int box_w, int box_h,
+                        FontSetup *s) {
     stbtt_fontinfo *font = &s->font, *fallback = &s->fallback;
     if (!init_face(font, font_face) || (fallback_face && !init_face(fallback, fallback_face))) return 1;
 
     CellMetrics metrics;
-    if (!cell_metrics(font, font_face, font_px, &metrics)) return 2;
+    if (!cell_metrics(font, font_face, font_px, box_w, box_h, &metrics)) return 2;
     /* The fallback is sized to the same ascent-to-descent height and shares
        the baseline. */
     float fallback_scale = fallback_face ? face_scale(fallback, fallback_face, (float)metrics.body) : 0;
@@ -307,7 +342,7 @@ int termshot_font_setup(const Face *font_face, const Face *fallback_face, double
     s->text = (TextFonts){glyph_face(font, font_face, metrics.scale),
                           glyph_face(fallback_face ? fallback : NULL, fallback_face, fallback_scale),
                           stbtt_FindGlyphIndex, stbtt_GetGlyphHMetrics, stbtt_Rasterize, stbtt_FreeShape,
-                          metrics.italic_pivot, metrics.baseline};
+                          metrics.italic_pivot, metrics.baseline, metrics.pad_x};
     s->metrics = metrics;
     return 0;
 }
