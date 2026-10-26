@@ -424,10 +424,13 @@ unsafe fn paint_text(cv: &Canvas, bd: &mut Backdrop, marks: &[CellMarks], fonts:
 /// # Safety
 /// As termshot_paint_text says of the canvas; `cells` is cols x rows.
 unsafe fn paint_lines(cv: &Canvas, cells: &[Cell], cols: i32, rows: i32, cell_w: i32, cell_h: i32, baseline: i32) {
-    let line_t = if cell_w / 12 < 1 { 1 } else { cell_w / 12 };
+    // A twelfth of the width, at most a third of the height: in a cell box
+    // (--cell) far wider than it is tall, a twelfth of the width would be
+    // taller than the row. The font's own cells are never that wide.
+    let line_t = (cell_w / 12).max(1).min((cell_h / 3).max(1));
     let mut under_y = baseline + (cell_h - baseline) / 3;
     if under_y > cell_h - line_t {
-        under_y = cell_h - line_t;
+        under_y = (cell_h - line_t).max(0);
     }
     let mut double_y = if under_y + 3 * line_t <= cell_h { under_y } else { cell_h - 3 * line_t };
     if double_y < 0 {
@@ -443,14 +446,18 @@ unsafe fn paint_lines(cv: &Canvas, cells: &[Cell], cols: i32, rows: i32, cell_w:
             let fg = [cell.fr, cell.fg, cell.fb];
             let (x0, y) = (c * cell_w, r * cell_h);
             let x1 = x0 + cell_w;
+            // A stroke `at` pixels down the cell, cut at its row's bottom:
+            // a row only 1 or 2 pixels tall has no room for a double
+            // underline, or a strike-through past the baseline.
+            let stroke = |at: i32| geometry::fill_rect(cv, x0, y + at, x1, (y + at + line_t).min(y + cell_h), fg);
             if cell.attrs & DOUBLE_UNDERLINE != 0 {
-                geometry::fill_rect(cv, x0, y + double_y, x1, y + double_y + line_t, fg);
-                geometry::fill_rect(cv, x0, y + double_y + 2 * line_t, x1, y + double_y + 3 * line_t, fg);
+                stroke(double_y);
+                stroke(double_y + 2 * line_t);
             } else if cell.attrs & UNDERLINE != 0 {
-                geometry::fill_rect(cv, x0, y + under_y, x1, y + under_y + line_t, fg);
+                stroke(under_y);
             }
             if cell.attrs & STRIKE != 0 {
-                geometry::fill_rect(cv, x0, y + strike_y, x1, y + strike_y + line_t, fg);
+                stroke(strike_y);
             }
         }
     }

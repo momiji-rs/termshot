@@ -266,6 +266,23 @@ fn cell_box() -> Result<(), String> {
     if centered != (own.0 + 1, own.1, own.2 + 1, own.3) {
         return fail(format!("M at px 30 is inked over {own:?} in its own cell, but {centered:?} in 16x32"));
     }
+    // In a box far wider than it is tall, where a twelfth of the width is
+    // taller than the row, the second row's underline, double underline,
+    // strike-through and underline cursor stay in it: the first row is as
+    // it is with nothing below it.
+    let shallow = CellSize::Fit { width: 120, height: 4 };
+    let first_row = |log: &[u8], cursor: Cursor, shape: CursorShape| -> Result<Vec<u8>, String> {
+        let grid = termshot::parse_with_cell_size(log, 8, 2, &ParseOptions::default(), (120, 4))
+            .map_err(|error| format!("cell_box: {error}"))?;
+        let options = RenderOptions { cell: shallow, cursor, cursor_shape: Some(shape), ..RenderOptions::default() };
+        let image = termshot::render_rgba(&grid, &options).map_err(|error| format!("cell_box: {error}"))?;
+        Ok(image.rgba[..(image.width * 4 * 4) as usize].to_vec())
+    };
+    let alone = first_row(b"ab", Cursor::Hidden, CursorShape::Block)?;
+    let lined = b"ab\r\n\x1b[4m  \x1b[4:2m  \x1b[24;9m  \x1b[m";
+    if first_row(lined, Cursor::At { row: 1, col: 7 }, CursorShape::Underline)? != alone {
+        return fail("the second row's lines or underline cursor reach into the first, in 120x4 cells".into());
+    }
     Ok(())
 }
 
