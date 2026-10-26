@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-26
+
+termshot 0.4.0 draws in a cell size you choose (`--cell WxH`), for logs
+written for a terminal whose cells were that size. Without `--cell`, it
+draws what 0.3.2 drew, pixel for pixel.
+
+Upgrading the library, expect:
+
+- **`RenderOptions` has a new field, `cell`.** Code that names every field
+  in a struct literal no longer compiles; add `cell: CellSize::Font` (the
+  default, the font's own cell), or fill in the rest with
+  `..RenderOptions::default()`, as its docs ask.
+
 ### Added
 
 - **`--cell WxH` sets the cell size in pixels**, whatever the font's (#109),
@@ -549,7 +562,8 @@ Some 0.1.0 renders change. Upgrading, expect:
 - A wide character on a one-column screen panicked (exit 101). It now
   takes the one cell as a narrow character (#18).
 
-[Unreleased]: https://github.com/momiji-rs/termshot/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/momiji-rs/termshot/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/momiji-rs/termshot/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/momiji-rs/termshot/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/momiji-rs/termshot/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/momiji-rs/termshot/compare/v0.2.0...v0.3.0
