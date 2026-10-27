@@ -143,6 +143,50 @@ fn cells_json(json: &str) -> &str {
     json.split_once(",\"images\":").map(|(head, _)| head).unwrap_or(json)
 }
 
+/// One integer, optional sign, and the rest of `s`.
+fn take_int(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let mut i = usize::from(bytes.first() == Some(&b'-'));
+    let start = i;
+    while bytes.get(i).is_some_and(|b| b.is_ascii_digit()) {
+        i += 1;
+    }
+    (i > start).then_some(&s[i..])
+}
+
+/// `json` with each placement's col, row, columns and rows set to 0. Those
+/// follow the cell size. The source rectangle, ids, z and flags stay, so a
+/// later pixel size that changes them still fails.
+fn normalize_placement_cells(json: &str) -> String {
+    let needle = "\"col\":";
+    let mut out = String::with_capacity(json.len());
+    let mut rest = json;
+    while let Some(at) = rest.find(needle) {
+        let tail = &rest[at + needle.len()..];
+        if let Some(consumed) = placement_cell_rect(tail) {
+            out.push_str(&rest[..at]);
+            out.push_str("\"col\":0,\"row\":0,\"columns\":0,\"rows\":0");
+            rest = &tail[consumed..];
+        } else {
+            out.push_str(&rest[..at + needle.len()]);
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The bytes of `NUM,"row":NUM,"columns":NUM,"rows":NUM`, the placement
+/// form. A text run's `"col"` is followed by `"text"` and is not this.
+fn placement_cell_rect(s: &str) -> Option<usize> {
+    let start = s.len();
+    let s = take_int(s)?.strip_prefix(",\"row\":")?;
+    let s = take_int(s)?.strip_prefix(",\"columns\":")?;
+    let s = take_int(s)?.strip_prefix(",\"rows\":")?;
+    let s = take_int(s)?;
+    Some(start - s.len())
+}
+
 /// Check each log's grid outputs against tests/grids/, or rewrite them. A
 /// log's cases share a grid, so the text agrees and the JSON of the cells
 /// agrees. Image placements may cover a different number of cells at
@@ -152,7 +196,8 @@ fn check_grids(grids: &[(&str, Vec<String>)], update: bool) -> bool {
     for (i, (log, outputs)) in grids.iter().enumerate() {
         if let Some((_, first)) = grids[..i].iter().find(|(other, _)| other == log) {
             let same_cells = cells_json(&first[1]) == cells_json(&outputs[1]);
-            if first[0] != outputs[0] || !same_cells {
+            let same_images = normalize_placement_cells(&first[1]) == normalize_placement_cells(&outputs[1]);
+            if first[0] != outputs[0] || !same_cells || !same_images {
                 println!("FAIL {log}: the grid outputs differ between its cases");
                 ok = false;
             }

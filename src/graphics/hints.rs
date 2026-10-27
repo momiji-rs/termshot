@@ -136,10 +136,18 @@ impl Scan {
 
     /// The key of an image this transmission stores. Retransmitting an id
     /// drops the placements it had, as the replay does, before the new bytes
-    /// are known to load.
+    /// are known to load. Past the image cap the scan stops: a later command
+    /// is not a cell size, and `--cell auto` says it cannot tell.
     fn transmit(&mut self, cmd: &Command) -> u64 {
+        if self.truncated {
+            return 0;
+        }
         if cmd.id != 0 {
             self.forget_id(cmd.id);
+        }
+        if self.by_id.len() >= MAX_SAMPLES || self.by_number.len() >= MAX_SAMPLES {
+            self.truncated = true;
+            return 0;
         }
         let key = if cmd.id != 0 { u64::from(cmd.id) } else { self.alloc() };
         if cmd.id != 0 {
@@ -197,6 +205,18 @@ impl Scan {
 
     fn id_of(&self, key: u64) -> Option<u32> {
         self.by_id.iter().find(|(_, stored)| *stored == key).map(|(id, _)| *id)
+    }
+
+    /// A later put with the same nonzero placement id moves that placement,
+    /// as the replay does. An image without an id ignores the placement id,
+    /// so each of its puts is a new one. The old sample goes even when the
+    /// new command omits `h` and is not recorded.
+    fn replace_placement(&mut self, key: u64, cmd: &Command) {
+        if self.id_of(key).is_none() || cmd.placement_id == 0 {
+            return;
+        }
+        let placement = cmd.placement_id;
+        self.samples.retain(|sample| !(sample.image == key && sample.placement == placement));
     }
 
     /// `columns` and `rows` in `--json` are the command's `c` and `r` when
@@ -270,6 +290,7 @@ impl Scan {
             _ => return,
         };
         self.placed(&cmd);
+        self.replace_placement(key, &cmd);
         self.record(&cmd, key);
     }
 
@@ -297,7 +318,13 @@ impl Scan {
                 next_y = next_y.min(other.y);
             }
             let end = sample.y.saturating_add(sample.h);
-            if next_y != u32::MAX && next_y > end {
+            // A placement that starts at or above this one can still paint
+            // the rows up to the next strip. Those rows are drawn.
+            let covered = next_y != u32::MAX && self.samples.iter().any(|other| {
+                other.image == sample.image && overlaps(sample, other) && other.y < next_y
+                    && other.y.saturating_add(other.h) > end
+            });
+            if next_y != u32::MAX && next_y > end && !covered {
                 gaps.push(SourceGap { image: sample.id, y: end, rows: next_y - end });
             }
         }
@@ -451,5 +478,45 @@ mod tests {
         // are the pixels divided by the render's cell.
         assert!(hints(&["a=T,i=1,s=40,v=20,C=1"]).follows_cell);
         assert!(hints(&["a=T,i=1,c=3,w=2,h=2"]).follows_cell);
+    }
+
+    #[test]
+    fn updating_a_placement_keeps_only_the_new_rectangle() {
+        // The same placement id moves that placement. 32 px across 2 columns
+        // is 16, not the 32 the first put asked for.
+        let got = hints(&[
+            "a=t,i=7",
+            "a=p,i=7,p=1,w=32,h=32,c=1,r=1",
+            "a=p,i=7,p=1,w=32,h=32,c=2,r=1",
+        ]);
+        assert_eq!(got.cells, vec![cell(16, 32)]);
+        // Omitting h drops the old sample and records nothing.
+        let cleared = hints(&["a=t,i=7", "a=p,i=7,p=1,w=32,h=32,c=1,r=1", "a=p,i=7,p=1,c=2,r=1"]);
+        assert!(cleared.cells.is_empty(), "{:?}", cleared.cells);
+    }
+
+    #[test]
+    fn a_placement_that_covers_the_rows_is_not_a_gap() {
+        // The strip at y 32 leaves y 31 undrawn, and the third placement
+        // paints that row as part of y 0..100.
+        let got = hints(&[
+            "a=t,i=1",
+            "a=p,i=1,p=1,y=0,w=10,h=31,c=1,r=1",
+            "a=p,i=1,p=2,y=32,w=10,h=10,c=1,r=1",
+            "a=p,i=1,p=3,y=0,w=10,h=100,c=1,r=1",
+        ]);
+        assert!(got.gaps.is_empty(), "{:?}", got.gaps);
+    }
+
+    #[test]
+    fn stored_images_past_the_cap_stop_the_scan() {
+        let mut commands = Vec::new();
+        for i in 1..=MAX_SAMPLES + 1 {
+            commands.extend(apc(&format!("a=t,i={i}")));
+        }
+        commands.extend(apc(&format!("a=p,i={},c=2,r=1,w=32,h=32", MAX_SAMPLES + 1)));
+        let got = placement_hints(&commands);
+        assert!(got.truncated);
+        assert!(got.cells.is_empty(), "{:?}", got.cells);
     }
 }
