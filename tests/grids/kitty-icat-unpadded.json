@@ -5,4 +5,11 @@
 [],
 [{"col":0,"text":"done","fg":"#dbe7f7","bg":"#111823"}],
 []
+],"images":[
+{"id":42,"width":4,"height":2,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":4,"h":2},"col":9,"row":1,"columns":1,"rows":1,"z":-1,"virtual":true}
+]},
+{"width":4,"height":2,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":4,"h":2},"col":9,"row":3,"columns":1,"rows":1,"z":0}
+]}
 ]}

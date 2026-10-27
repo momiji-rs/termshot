@@ -3,4 +3,8 @@
 [],
 [{"col":0,"text":"$","fg":"#dbe7f7","bg":"#111823"}],
 []
+],"images":[
+{"width":40,"height":22,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":40,"h":22},"col":0,"row":1,"columns":4,"rows":1,"z":0,"sixel":true}
+]}
 ]}

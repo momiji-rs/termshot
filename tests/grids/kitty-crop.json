@@ -3,4 +3,14 @@
 [],
 [],
 []
+],"images":[
+{"width":4,"height":2,"format":"rgba","placements":[
+{"src":{"x":1,"y":0,"w":2,"h":2},"col":1,"row":1,"columns":3,"rows":2,"z":0}
+]},
+{"width":4,"height":2,"format":"rgba","placements":[
+{"src":{"x":3,"y":0,"w":1,"h":2},"col":5,"row":0,"columns":1,"rows":2,"z":0}
+]},
+{"width":4,"height":2,"format":"rgba","placements":[
+{"src":{"x":1,"y":1,"w":2,"h":1},"col":4,"row":3,"columns":2,"rows":1,"z":0}
+]}
 ]}

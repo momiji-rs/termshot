@@ -247,7 +247,7 @@ fn the_default_background_is_the_palette_s() {
     // --json: colours as the palette resolves them, and trailing blanks in
     // its background left out, while the old default background shows.
     let g = replay_in(format!("\x1b[31ma\x1b[m \x1b[48;2;{};{};{}m \x1b[m  ", old.0, old.1, old.2).as_bytes(), 6, 2, p);
-    let json = grid_json(&g.cells, &g.marks, 6, 2, None, CursorShape::Block, p.background);
+    let json = grid_json(&g.cells, &g.marks, 6, 2, None, CursorShape::Block, p.background, &[]);
     let want = "{\"cols\":6,\"rows\":2,\"cursor\":null,\"lines\":[\n\
         [{\"col\":0,\"text\":\"a\",\"fg\":\"#0b65c7\",\"bg\":\"#010203\"},\
         {\"col\":1,\"text\":\" \",\"fg\":\"#faf0e6\",\"bg\":\"#010203\"},\

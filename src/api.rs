@@ -5,7 +5,8 @@ use crate::cell::{Cell, BOLD, DOUBLE_UNDERLINE, ITALIC, STRIKE, TAIL, UNDERLINE,
 use crate::{cast, grid, vt};
 
 pub use crate::cast::Cast;
-pub use crate::grid::Grid;
+pub use crate::graphics::{placement_hints, CellRatio, PlacementHints, SourceGap};
+pub use crate::grid::{Grid, ImagePlacement, ScreenImage};
 pub use crate::palette::{parse_color, Palette, Rgb};
 pub use crate::screen::{CursorShape, Lf};
 pub use crate::vt::ParseOptions;
@@ -128,10 +129,13 @@ pub fn parse_with_cell_size(
 
 /// Whether the screen `log` leaves may depend on the cell size: it has a
 /// kitty command or a Sixel image that may move the text cursor by cells of
-/// the font's size. False means the cell size cannot matter. The scan does
-/// not decode images, so true does not promise a difference: a transmission
-/// that fails, or a malformed image, still counts. The CLI reads a font for
-/// `--text` and `--json` only when this is true.
+/// the font's size. False means the cursor and the cells written after an
+/// image do not. A placement can still cover a different number of cells:
+/// [`PlacementHints::follows_cell`] is that, and `--json` then uses the
+/// font's cell too. The scan does not decode images, so true does not
+/// promise a difference: a transmission that fails, or a malformed image,
+/// still counts. The CLI reads a font for `--text` and `--json` when this
+/// is true, and for `--json` when placements follow the cell.
 pub fn needs_cell_size(log: &[u8]) -> bool {
     vt::needs_cell_metrics(log)
 }

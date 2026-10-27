@@ -454,8 +454,8 @@ fn json_has_runs_of_alike_cells_and_the_cursor() {
 []
 ]}
 "##;
-    assert_eq!(grid_json(&g.cells, &g.marks, 8, 4, g.cursor, g.cursor_shape, DEFAULT_BG), want);
-    let bar = grid_json(&g.cells, &g.marks, 8, 4, g.cursor, CursorShape::Bar, DEFAULT_BG);
+    assert_eq!(grid_json(&g.cells, &g.marks, 8, 4, g.cursor, g.cursor_shape, DEFAULT_BG, &[]), want);
+    let bar = grid_json(&g.cells, &g.marks, 8, 4, g.cursor, CursorShape::Bar, DEFAULT_BG, &[]);
     assert!(bar.starts_with(r#"{"cols":8,"rows":4,"cursor":{"col":2,"row":2,"shape":"bar"},"#), "{bar}");
 }
 
@@ -465,7 +465,7 @@ fn json_escapes_controls_and_reports_a_hidden_cursor() {
     cells[1].ch = 0x1b;
     let want = "{\"cols\":3,\"rows\":1,\"cursor\":null,\"lines\":[\n\
         [{\"col\":0,\"text\":\"a\\u001b\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"italic\":true,\"double_underline\":true,\"strike\":true}]\n]}\n";
-    assert_eq!(grid_json(&cells, &[], 3, 1, None, CursorShape::Bar, DEFAULT_BG), want);
+    assert_eq!(grid_json(&cells, &[], 3, 1, None, CursorShape::Bar, DEFAULT_BG, &[]), want);
 }
 
 #[test]
@@ -1526,7 +1526,7 @@ fn text_and_json_put_marks_after_their_character() {
         {\"col\":1,\"text\":\"x\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\",\"bold\":true},\
         {\"col\":2,\"text\":\" \u{302}\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\"}],\n\
         [{\"col\":0,\"text\":\"界\u{e31}\u{e48}\",\"fg\":\"#dbe7f7\",\"bg\":\"#111823\"}]\n]}\n";
-    assert_eq!(grid_json(&g.cells, &g.marks, 6, 2, g.cursor, g.cursor_shape, DEFAULT_BG), want);
+    assert_eq!(grid_json(&g.cells, &g.marks, 6, 2, g.cursor, g.cursor_shape, DEFAULT_BG, &[]), want);
     assert_eq!(marks_of(&g.marks, 0), [0x301]);
     assert_eq!(marks_of(&g.marks, 1), []);
     assert_eq!(marks_of(&g.marks, 6), [0xe31, 0xe48]);

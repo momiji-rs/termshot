@@ -5,6 +5,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`--json` includes the images on the screen** (#111): each image's id (omitted
+  when it has none, as a Sixel image), its pixel size, and its placements. A
+  placement gives its id, the source rectangle in pixels, the cells it covers,
+  its z-index, and `virtual`, `relative` or `sixel` when those apply. When the
+  command sets both `c` and `r`, that count is what was asked for, at any cell
+  size, and a text or JSON run still reads no font. Otherwise the count is how
+  many cells the pixels cover, and `--json` reads the font unless `--cell`
+  gives the size, so it matches a PNG at the same `--px`. The `images` key is
+  left out when the screen has none, so a log without them keeps the JSON it
+  had. `Grid::images` returns the same value. `placement_hints` reports
+  `follows_cell` when a placement omits `c` or `r`.
+- **termshot says when kitty placements were written for another cell size**
+  (#110). A placement that names `c`, `r`, `w` and `h` implies cells of `w/c`
+  by `h/r`. When those agree with each other and not with the cell this run
+  uses, stderr names the implied size and the `--cell` to pass. A source row
+  the next strip starts past is reported too, since it is never drawn.
+  `--cell auto` renders at the implied size when it is a whole number of
+  pixels from 1 to 1024 on each side; otherwise it is a usage error (exit 2).
+  In the library, `placement_hints` returns the same sizes and gaps.
+
 ## [0.4.0] - 2026-10-26
 
 termshot 0.4.0 draws in a cell size you choose (`--cell WxH`), for logs

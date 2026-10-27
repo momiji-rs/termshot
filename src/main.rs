@@ -45,10 +45,13 @@ options:
   -p, --px N        font pixel height, above 0 and below 256 (default 48);
                     it picks a step of whole-pixel cell widths, so nearby
                     values can draw alike (-v prints the cell)
-      --cell WxH    cell size in pixels, 1 to 1024 each, whatever the
+      --cell WxH|auto
+                    cell size in pixels, 1 to 1024 each, whatever the
                     font's: for logs written for cells of that size, such
-                    as images placed by it. The glyphs are centered in it,
-                    the largest that fit, or at --px if given, whose cell
+                    as images placed by it. auto uses the size the log's
+                    kitty placements imply, when that is a whole number of
+                    pixels. The glyphs are centered in the cell, the
+                    largest that fit, or at --px if given, whose cell
                     must fit
   -s, --size CxR    grid size in columns x rows, up to 500x200 (default: a
                     cast's size, else 100x30)
@@ -81,9 +84,10 @@ options:
       --text FILE   write the screen as text, a line per row with trailing
                     spaces trimmed, as tmux capture-pane -p prints it; the
                     PNG is then optional, and fonts are only read for it
-      --json FILE   write the screen as JSON: the cursor and its shape, and for
+      --json FILE   write the screen as JSON: the cursor and its shape, for
                     each row the runs of cells alike in colour (#rrggbb)
-                    and attributes, with the column each starts at
+                    and attributes, with the column each starts at, and
+                    the images with where they are placed
   -v, --verbose     print the cell and image size, the face of each
                     collection and the instance of each variable font,
                     to stderr
@@ -141,6 +145,10 @@ struct Options {
     /// --padding: left and right, top and bottom.
     padding: (u32, u32),
     verbose: bool,
+    /// --cell auto, resolved once the log is read.
+    cell_auto: bool,
+    /// Whether --px, or the original form's px, was given.
+    px_set: bool,
 }
 
 enum Command {
@@ -258,6 +266,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     let mut positional = Vec::new();
     let (mut font, mut fallback_font, mut px, mut size, mut verbose) = (None, None, None, None, false);
     let mut cell = None;
+    let mut cell_auto = false;
     let (mut lf, mut cast) = (Lf::Index, None);
     let (mut cursor, mut cursor_shape, mut text, mut json) = (None, None, None, None);
     let (mut palette, mut fg, mut bg, mut padding) = (None, None, None, (0, 0));
@@ -299,7 +308,16 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
             "--fallback-font" => fallback_font = Some(option_value(&name, attached, &mut args)?),
             "-p" | "--px" => px = Some(parse_px(&option_value(&name, attached, &mut args)?)?),
             "-s" | "--size" => size = Some(parse_size(&option_value(&name, attached, &mut args)?)?),
-            "--cell" => cell = Some(parse_cell(&option_value(&name, attached, &mut args)?)?),
+            "--cell" => {
+                let value = option_value(&name, attached, &mut args)?;
+                if value == "auto" {
+                    cell_auto = true;
+                    cell = None;
+                } else {
+                    cell_auto = false;
+                    cell = Some(parse_cell(&value)?);
+                }
+            }
             // Checked once the grid size is known.
             "--cursor" => cursor = Some(option_value(&name, attached, &mut args)?),
             "--cursor-shape" => {
@@ -385,7 +403,114 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         bg,
         padding,
         verbose,
+        cell_auto,
+        px_set: px.is_some(),
     }))
+}
+
+/// A cell ratio as pixels, one decimal when it is not a whole number, with
+/// the unreduced fraction then so a caller can see it is not whole.
+fn format_side((num, den): (u32, u32)) -> String {
+    if den == 1 {
+        return num.to_string();
+    }
+    let tenths = (u64::from(num) * 10 + u64::from(den) / 2) / u64::from(den);
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
+fn format_ratio(ratio: &termshot::CellRatio) -> String {
+    let text = format!("{}x{}", format_side(ratio.width), format_side(ratio.height));
+    if ratio.whole().is_some() {
+        return text;
+    }
+    let exact = |(num, den): (u32, u32)| {
+        if den == 1 { num.to_string() } else { format!("{num}/{den}") }
+    };
+    format!("{text} ({by} by {down})", by = exact(ratio.width), down = exact(ratio.height))
+}
+
+fn join_ratios(ratios: &[termshot::CellRatio]) -> String {
+    let parts: Vec<String> = ratios.iter().map(format_ratio).collect();
+    match parts.as_slice() {
+        [one] => one.clone(),
+        [left, right] => format!("{left} and {right}"),
+        _ => {
+            let (last, rest) = parts.split_last().unwrap();
+            format!("{} and {last}", rest.join(", "))
+        }
+    }
+}
+
+/// The cell `--cell auto` renders at, or why the log does not imply one.
+fn cell_from_hints(hints: &termshot::PlacementHints) -> Result<(u32, u32), String> {
+    if hints.truncated {
+        return Err("--cell auto: too many kitty placements to infer a cell size".into());
+    }
+    match hints.cells.as_slice() {
+        [] => Err("--cell auto: no kitty placement names both a cell count (c, r) and a source rectangle (w, h)".into()),
+        [one] => match one.whole() {
+            Some((w, h)) if (1..=termshot::MAX_CELL).contains(&w) && (1..=termshot::MAX_CELL).contains(&h) => Ok((w, h)),
+            _ => Err(format!(
+                "--cell auto: kitty placements imply {} px cells, not whole pixels from 1 to {} on each side",
+                format_ratio(one),
+                termshot::MAX_CELL
+            )),
+        },
+        many => Err(format!("--cell auto: kitty placements imply more than one cell size ({})", join_ratios(many))),
+    }
+}
+
+/// The warning when the log's placements imply a cell other than `cell`,
+/// which is what this run renders with. None when they agree, or when no
+/// placement names a source rectangle and a cell count.
+fn cell_size_warning(hints: &termshot::PlacementHints, cell: (u32, u32)) -> Option<String> {
+    if hints.truncated {
+        return Some("too many kitty placements to say what cell size they imply".into());
+    }
+    match hints.cells.as_slice() {
+        [] => None,
+        [one] if one.width == (cell.0, 1) && one.height == (cell.1, 1) => None,
+        [one] => {
+            let fix = match one.whole() {
+                Some((w, h)) if (1..=termshot::MAX_CELL).contains(&w) && (1..=termshot::MAX_CELL).contains(&h) => {
+                    format!("pass --cell {w}x{h}")
+                }
+                _ => "see --cell".into(),
+            };
+            Some(format!(
+                "kitty placements imply {} px cells; rendering {}x{}, so images are rescaled ({fix})",
+                format_ratio(one),
+                cell.0,
+                cell.1
+            ))
+        }
+        many => Some(format!(
+            "kitty placements imply more than one cell size ({}); rendering {}x{}",
+            join_ratios(many),
+            cell.0,
+            cell.1
+        )),
+    }
+}
+
+/// One line per source gap, and a count once there are more than eight.
+fn gap_warnings(hints: &termshot::PlacementHints) -> Vec<String> {
+    if hints.truncated {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    for (n, gap) in hints.gaps.iter().enumerate() {
+        if n == 8 {
+            lines.push(format!("{} more gaps in kitty image sources", hints.gaps.len() - 8));
+            break;
+        }
+        let who = match gap.image {
+            Some(id) => format!("image {id}"),
+            None => "an image without an id".into(),
+        };
+        lines.push(format!("{who}'s placements leave {} px of the source undrawn at y {}", gap.rows, gap.y));
+    }
+    lines
 }
 
 /// The font and fallback font a render asks for, checked and padded.
@@ -573,7 +698,7 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::from(2);
     }
-    let options = match parse_args(env::args().skip(1)) {
+    let mut options = match parse_args(env::args().skip(1)) {
         Ok(Command::Render(options)) => options,
         Ok(Command::Help) => {
             print!("{USAGE}");
@@ -682,13 +807,32 @@ fn main() -> ExitCode {
         );
     }
 
+    // --cell auto takes the size the place commands name, before the font
+    // is read: a text or JSON run then needs no font, as --cell WxH doesn't.
+    let report = termshot::placement_hints(&data);
+    if options.cell_auto {
+        let (width, height) = match cell_from_hints(&report) {
+            Ok(cell) => cell,
+            Err(message) => return cleanup(2, message),
+        };
+        options.cell = if options.px_set {
+            CellSize::Px { width, height }
+        } else {
+            CellSize::Fit { width, height }
+        };
+    }
+
     let font_started = Instant::now();
     let mut font_timings = [termshot::cli::LoadTimings::default(); 2];
-    // Plain text/JSON logs need no fonts. Graphics also need cell metrics,
-    // even without a PNG, because placement can move the text cursor;
-    // --cell gives them without a font.
-    let needs_fonts =
-        options.out.is_some() || (options.cell == CellSize::Font && termshot::needs_cell_size(&data));
+    // A PNG reads the font. So does text or JSON when an image may move the
+    // cursor by cells of that font. JSON also reads it when a placement
+    // omits c or r: the cells it covers are the pixels divided by this
+    // cell, which a 1x1 parse would get wrong. A placement that sets both,
+    // and a cursor no image moves, stays font-free. --cell gives the size
+    // either way, so no font is read then.
+    let images_follow_cell = options.json.is_some() && report.follows_cell;
+    let needs_fonts = options.out.is_some()
+        || (options.cell == CellSize::Font && (termshot::needs_cell_size(&data) || images_follow_cell));
     let fonts = match needs_fonts.then(|| load_fonts(&options, &mut font_timings)).transpose() {
         Ok(fonts) => fonts,
         Err(error) => return cleanup(status(&error), error.to_string()),
@@ -715,7 +859,23 @@ fn main() -> ExitCode {
         (None, Some((font, _))) => font.cell_size(options.px),
         (None, None) => Ok((1, 1)),
     };
-    let grid = cell.and_then(|cell| termshot::parse_with_cell_size(&data, cols, rows, &parse_options, cell));
+    let cell = match cell {
+        Ok(cell) => cell,
+        Err(error) => return cleanup(status(&error), error.to_string()),
+    };
+    // The log can say what cell it was written for. Say when this run uses
+    // another, and when a strip of an image starts past the one above it.
+    // A text or JSON run that reads no font parses at 1x1, which is not a
+    // render: comparing that with the implied size would only say so.
+    if fonts.is_some() || options.cell != CellSize::Font {
+        if let Some(message) = cell_size_warning(&report, cell) {
+            eprintln!("termshot: {message}");
+        }
+    }
+    for message in gap_warnings(&report) {
+        eprintln!("termshot: {message}");
+    }
+    let grid = termshot::parse_with_cell_size(&data, cols, rows, &parse_options, cell);
     let mut grid = match grid {
         Ok(grid) => grid,
         Err(error) => return cleanup(status(&error), error.to_string()),

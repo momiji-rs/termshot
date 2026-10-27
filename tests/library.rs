@@ -101,7 +101,9 @@ fn options(log: &str) -> Result<ParseOptions, String> {
 
 /// The built-in font's cell at 24 px, in pixels: a log whose grid depends
 /// on the cell size is parsed with it. tests/golden.rs draws every such log
-/// at 24 px, among others, and checks that its grids agree at every size.
+/// at 24 px first, and that case is the shared grid. A later pixel size can
+/// cover a native-pixel image with a different number of cells; the cells
+/// themselves agree.
 fn cell_24px() -> Result<(u32, u32), String> {
     let font = Font::embedded().map_err(|error| format!("the built-in font: {error}"))?;
     let cell = font.cell_size(24.0).map_err(|error| format!("cell_size: {error}"))?;
@@ -119,11 +121,11 @@ fn check(log: &str, cell: (u32, u32)) -> Result<bool, String> {
     let (cols, rows) = size(&json).ok_or(format!("{GRIDS}/{log}.json: no grid size"))?;
     let data = read_log(log)?;
     let sized = termshot::needs_cell_size(&data);
-    let grid = match sized {
-        true => termshot::parse_with_cell_size(&data, cols, rows, &options(log)?, cell),
-        false => termshot::parse(&data, cols, rows, &options(log)?),
-    };
-    let grid = grid.map_err(|error| format!("{log}: {error}"))?;
+    // The file is the CLI's first case. A placement that omits c or r covers
+    // a different number of cells at 1x1 than at 24 px, so every log is
+    // parsed at this cell. Text does not use the cell size.
+    let grid = termshot::parse_with_cell_size(&data, cols, rows, &options(log)?, cell)
+        .map_err(|error| format!("{log}: {error}"))?;
     if (grid.cols(), grid.rows()) != (cols, rows) {
         return Err(format!("{log}: a {}x{} grid, not {cols}x{rows}", grid.cols(), grid.rows()));
     }

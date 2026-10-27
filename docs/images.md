@@ -54,7 +54,8 @@ scrolls and is erased with them. A placeholder whose image or placement does not
 nothing. `d=i`, `n` and `r` delete virtual placements; the other selectors, full-screen erase
 and reset leave them. A relative placement may name a virtual parent: it starts from the top
 row and the leftmost column the image shows in. Placeholder cells are drawn blank; `--text` and
-`--json` keep U+10EEEE and its diacritics.
+`--json` keep U+10EEEE and its diacritics. `--json`'s `images` lists each image and the cells
+its placements cover, including the ones placeholder cells show (`"virtual":true`).
 
 ### Animation
 

@@ -5,4 +5,17 @@
 [],
 [],
 [{"col":0,"text":"end","fg":"#dbe7f7","bg":"#111823"}]
+],"images":[
+{"id":4,"width":1,"height":1,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":1,"h":1},"col":0,"row":5,"columns":3,"rows":1,"z":-1,"relative":true}
+]},
+{"id":1,"width":4,"height":2,"format":"rgba","placements":[
+{"id":1,"src":{"x":0,"y":0,"w":4,"h":2},"col":0,"row":3,"columns":4,"rows":2,"z":0}
+]},
+{"id":3,"width":1,"height":1,"format":"rgba","placements":[
+{"id":1,"src":{"x":0,"y":0,"w":1,"h":1},"col":7,"row":2,"columns":1,"rows":1,"z":0,"relative":true}
+]},
+{"id":2,"width":1,"height":1,"format":"rgba","placements":[
+{"id":1,"src":{"x":0,"y":0,"w":1,"h":1},"col":5,"row":4,"columns":2,"rows":1,"z":1,"relative":true}
+]}
 ]}

@@ -3,7 +3,11 @@
 //! of the RGBA pixels with tests/goldens.txt. Hashing pixels rather than file bytes keeps the
 //! goldens valid when the encoder changes but the image does not. The same runs
 //! write --text and --json, which are compared byte for byte with
-//! tests/grids/<log>.txt and <log>.json.
+//! tests/grids/<log>.txt and <log>.json. A log drawn at two pixel sizes
+//! shares that JSON: the cells do not depend on it. An image placed in
+//! native pixels covers however many cells those pixels fill, so that part
+//! of the JSON may differ; the file is the first case, which for those logs
+//! is 24 px, the cell tests/library.rs parses with.
 //!
 //! Built and run by test.sh from the repo root:
 //!   golden             check
@@ -133,13 +137,22 @@ fn render(log: &str, px: &str, cols: u32, rows: u32, fonts: &[&str]) -> Result<(
     Ok((format!("{} {width}x{height} {log} {px}", sha256(&rgba)), grids.collect::<Result<_, _>>()?))
 }
 
+/// The JSON of the cells, before `images`. A placement's cell count follows
+/// the cell size when the command leaves it to the pixels; the cells do not.
+fn cells_json(json: &str) -> &str {
+    json.split_once(",\"images\":").map(|(head, _)| head).unwrap_or(json)
+}
+
 /// Check each log's grid outputs against tests/grids/, or rewrite them. A
-/// log's cases share a grid size, so they must agree on them.
+/// log's cases share a grid, so the text agrees and the JSON of the cells
+/// agrees. Image placements may cover a different number of cells at
+/// another pixel size; the file kept is the first case.
 fn check_grids(grids: &[(&str, Vec<String>)], update: bool) -> bool {
     let mut ok = true;
     for (i, (log, outputs)) in grids.iter().enumerate() {
         if let Some((_, first)) = grids[..i].iter().find(|(other, _)| other == log) {
-            if first != outputs {
+            let same_cells = cells_json(&first[1]) == cells_json(&outputs[1]);
+            if first[0] != outputs[0] || !same_cells {
                 println!("FAIL {log}: the grid outputs differ between its cases");
                 ok = false;
             }

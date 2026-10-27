@@ -16,7 +16,9 @@
 //! ```
 //!
 //! A log whose kitty or Sixel images move the cursor by pixels
-//! ([`needs_cell_size`]) parses as the CLI parses it with the font's cell:
+//! ([`needs_cell_size`]), or whose placements omit `c` or `r`
+//! ([`PlacementHints::follows_cell`]), parses as the CLI parses it with
+//! the font's cell. `--json` then reports the cells a PNG at that px covers:
 //!
 //! ```no_run
 //! # fn main() -> Result<(), termshot::Error> {
@@ -124,8 +126,9 @@ const DEFAULT_FG: Rgb = Palette::DEFAULT.foreground;
 const DEFAULT_BG: Rgb = Palette::DEFAULT.background;
 
 pub use api::{
-    decode_cast, is_cast, lacks_cr, needs_cell_size, parse, parse_color, parse_with_cell_size, Cast, CursorShape,
-    Error, Grid, GridCell, Lf, Palette, ParseOptions, Rgb, MAX_CELLS, MAX_PALETTE_BYTES, MAX_PIXELS, MAX_SIDE,
+    decode_cast, is_cast, lacks_cr, needs_cell_size, parse, parse_color, parse_with_cell_size, placement_hints, Cast,
+    CellRatio, CursorShape, Error, Grid, GridCell, ImagePlacement, Lf, Palette, ParseOptions, PlacementHints, Rgb,
+    ScreenImage, SourceGap, MAX_CELLS, MAX_PALETTE_BYTES, MAX_PIXELS, MAX_SIDE,
 };
 pub use api_render::{
     render, render_rgba, CellSize, Cursor, EmptyGlyph, FaceSelector, Font, FontSpec, Rendered, RenderOptions,

@@ -3,4 +3,8 @@
 [],
 [],
 []
+],"images":[
+{"width":2,"height":2,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":2,"h":2},"col":0,"row":0,"columns":4,"rows":2,"z":0}
+]}
 ]}

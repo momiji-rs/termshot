@@ -51,9 +51,60 @@ fn cell_takes_whole_pixels_and_fits_the_glyphs_unless_px_is_given() {
     assert_eq!(cell(&["log", "out.png"]), (CellSize::Font, 48.0));
     assert_eq!(cell(&["--cell", "16x32", "log", "out.png"]), (CellSize::Fit { width: 16, height: 32 }, 48.0));
     assert_eq!(cell(&["--cell=16x32", "-p30", "log", "out.png"]), (CellSize::Px { width: 16, height: 32 }, 30.0));
+    // auto is resolved once the log is read, so parsing leaves the font's cell.
+    let auto = |list: &[&str]| match parse_args(list.iter().map(|s| s.to_string())) {
+        Ok(Command::Render(options)) => (options.cell_auto, options.px_set, options.cell),
+        _ => panic!("{list:?}"),
+    };
+    assert_eq!(auto(&["--cell", "auto", "log", "out.png"]), (true, false, CellSize::Font));
+    assert_eq!(auto(&["--cell=auto", "-p30", "log", "out.png"]), (true, true, CellSize::Font));
+    // A later --cell replaces auto, and the other way round.
+    assert_eq!(auto(&["--cell", "auto", "--cell", "16x32", "log", "out.png"]).0, false);
+    assert_eq!(auto(&["--cell", "16x32", "--cell", "auto", "log", "out.png"]).0, true);
     // The original form's px is a --px too.
     let legacy = cell(&["--cell", "16x32", "log", "out.png", FONT, "30"]);
     assert_eq!(legacy, (CellSize::Px { width: 16, height: 32 }, 30.0));
+}
+
+#[test]
+fn the_cell_warning_names_the_implied_size_and_what_to_pass() {
+    let ratio = |width, height| termshot::CellRatio { width, height };
+    let hints = |cells: &[termshot::CellRatio], gaps: Vec<termshot::SourceGap>, truncated: bool| termshot::PlacementHints {
+        cells: cells.to_vec(),
+        gaps,
+        truncated,
+        follows_cell: false,
+    };
+    let sixteen = hints(&[ratio((16, 1), (32, 1))], vec![], false);
+    assert_eq!(cell_size_warning(&sixteen, (16, 32)), None);
+    assert_eq!(
+        cell_size_warning(&sixteen, (13, 29)).as_deref(),
+        Some("kitty placements imply 16x32 px cells; rendering 13x29, so images are rescaled (pass --cell 16x32)")
+    );
+    assert_eq!(cell_from_hints(&sixteen).unwrap(), (16, 32));
+    // 299/19 is 15.736..., which the message rounds to one decimal and also gives exactly.
+    let fractional = hints(&[ratio((299, 19), (31, 1))], vec![], false);
+    let message = cell_size_warning(&fractional, (13, 29)).unwrap();
+    assert_eq!(
+        message,
+        "kitty placements imply 15.7x31 (299/19 by 31) px cells; rendering 13x29, so images are rescaled (see --cell)"
+    );
+    assert!(cell_from_hints(&fractional).unwrap_err().contains("not whole pixels"));
+    assert!(cell_from_hints(&hints(&[], vec![], false)).unwrap_err().contains("no kitty placement"));
+    let both = hints(&[ratio((16, 1), (32, 1)), ratio((8, 1), (16, 1))], vec![], false);
+    assert!(cell_size_warning(&both, (13, 29)).unwrap().contains("16x32 and 8x16"));
+    assert!(cell_from_hints(&both).is_err());
+    let gap = hints(
+        &[],
+        vec![termshot::SourceGap { image: Some(7), y: 63, rows: 1 }],
+        false,
+    );
+    assert_eq!(
+        gap_warnings(&gap),
+        vec!["image 7's placements leave 1 px of the source undrawn at y 63".to_string()]
+    );
+    assert!(cell_size_warning(&hints(&[], vec![], true), (13, 29)).unwrap().contains("too many"));
+    assert!(cell_from_hints(&hints(&[], vec![], true)).is_err());
 }
 
 /// The CLI's warning for what a render reports in `empty`, None when it

@@ -103,7 +103,7 @@ pub struct Placement {
     pub width: u32,
     pub height: u32,
     /// The source rectangle shown, x, y, w and h: the crop, within the image.
-    src: [u32; 4],
+    pub(crate) src: [u32; 4],
     pub x: i64,
     pub w: i64,
     pub h: i64,
@@ -113,17 +113,17 @@ pub struct Placement {
     clip_x: (i64, i64),
     /// The image's key, and a copy of its id, which never changes while the
     /// image has placements.
-    image: u64,
-    id: u32,
+    pub(crate) image: u64,
+    pub(crate) id: u32,
     key: u64,
-    placement_id: u32,
-    z: i32,
+    pub(crate) placement_id: u32,
+    pub(crate) z: i32,
     /// The cells it covers, for the delete selectors; rows follow scrolling.
     /// A relative placement's are where it is drawn.
-    col: i64,
-    cols: i64,
-    row: i64,
-    rows: i64,
+    pub(crate) col: i64,
+    pub(crate) cols: i64,
+    pub(crate) row: i64,
+    pub(crate) rows: i64,
     /// A Sixel image, whose pixels later text and erasure clear.
     pub sixel: bool,
     /// kitty's start row: the row its children are placed from. It follows
@@ -132,7 +132,7 @@ pub struct Placement {
     anchor: i64,
     /// A relative placement's parent placement, by key, and its offset in
     /// cells (H, V) from the parent's top left cell.
-    parent: Option<u64>,
+    pub(crate) parent: Option<u64>,
     offset: (i64, i64),
     /// Where the parent was in `placements` when last laid out: a hint.
     parent_at: usize,
@@ -146,6 +146,10 @@ pub struct Placement {
     /// placement's key and the offset in cells from it. It has no position
     /// until the final screen's placeholders give the virtual one theirs.
     virtual_root: Option<(u64, i64, i64)>,
+    /// Drawn from Unicode placeholder cells in `finish`, rather than placed
+    /// by the command that stored `is_virtual`. The virtual placement itself
+    /// is not drawn; these are the runs of cells that show it.
+    pub(crate) by_placeholder: bool,
 }
 
 /// A visible vertical part of a placement. `y` is the translated origin of
@@ -969,6 +973,7 @@ impl Graphics {
                 inner: (x, y - row as i64 * ch),
                 is_virtual: cmd.virtual_put,
                 virtual_root: None,
+                by_placeholder: false,
             });
             // kitty's draw order: z-index, then image and placement creation.
             self.placements.sort_by_key(|p| (p.z, p.image, p.key));
@@ -1522,6 +1527,7 @@ impl Graphics {
                 inner: (0, 0),
                 is_virtual: false,
                 virtual_root: None,
+                by_placeholder: true,
                 ..*v
             });
         }
@@ -1545,6 +1551,9 @@ impl Graphics {
         Some(out)
     }
 }
+
+mod hints;
+pub use hints::{placement_hints, CellRatio, PlacementHints, SourceGap};
 
 #[cfg(test)]
 mod tests;
