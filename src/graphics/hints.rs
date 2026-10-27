@@ -667,6 +667,57 @@ mod tests {
     }
 
     #[test]
+    fn a_gap_is_the_columns_shared_with_every_strip_at_the_next_row() {
+        // Both strips start at y 20. The left is covered and the right is not.
+        let one_side = hints(&[
+            "a=t,i=1",
+            "a=p,i=1,p=1,x=0,y=0,w=10,h=10,c=1,r=1",
+            "a=p,i=1,p=2,x=0,y=0,w=5,h=100,c=1,r=1",
+            "a=p,i=1,p=3,x=0,y=20,w=5,h=10,c=1,r=1",
+            "a=p,i=1,p=4,x=5,y=20,w=5,h=10,c=1,r=1",
+        ]);
+        assert_eq!(one_side.gaps, vec![SourceGap { image: Some(1), y: 10, rows: 10 }]);
+        // Omitting w means the rest of the image, so it covers every column.
+        let rest = hints(&[
+            "a=t,i=1",
+            "a=p,i=1,p=1,x=0,y=0,w=10,h=10,c=1,r=1",
+            "a=p,i=1,p=2,y=0,h=100,c=1,r=1",
+            "a=p,i=1,p=3,x=0,y=20,w=10,h=10,c=1,r=1",
+        ]);
+        assert!(rest.gaps.is_empty(), "{:?}", rest.gaps);
+        // One that stops at y 12 does not cover the rows down to y 20, and its
+        // own end is a gap too.
+        let short = hints(&[
+            "a=t,i=1",
+            "a=p,i=1,p=1,x=0,y=0,w=10,h=10,c=1,r=1",
+            "a=p,i=1,p=2,y=0,h=12,c=1,r=1",
+            "a=p,i=1,p=3,x=0,y=20,w=10,h=10,c=1,r=1",
+        ]);
+        assert_eq!(
+            short.gaps,
+            vec![
+                SourceGap { image: Some(1), y: 10, rows: 10 },
+                SourceGap { image: Some(1), y: 12, rows: 8 },
+            ]
+        );
+        // A cover that reaches y 15 of a gap to y 20 still names the whole span,
+        // and its own end is a gap too.
+        let partial = hints(&[
+            "a=t,i=1",
+            "a=p,i=1,p=1,y=0,w=10,h=10,c=1,r=1",
+            "a=p,i=1,p=2,y=0,w=10,h=15,c=1,r=1",
+            "a=p,i=1,p=3,y=20,w=10,h=10,c=1,r=1",
+        ]);
+        assert_eq!(
+            partial.gaps,
+            vec![
+                SourceGap { image: Some(1), y: 10, rows: 10 },
+                SourceGap { image: Some(1), y: 15, rows: 5 },
+            ]
+        );
+    }
+
+    #[test]
     fn stored_images_past_the_cap_stop_the_scan() {
         let mut commands = Vec::new();
         for i in 1..=MAX_SAMPLES + 1 {
