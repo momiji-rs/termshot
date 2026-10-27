@@ -22,7 +22,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (#110). A placement that names `c`, `r`, `w` and `h` implies cells of `w/c`
   by `h/r`. When those agree with each other and not with the cell this run
   uses, stderr names the implied size and the `--cell` to pass. A source row
-  the next strip starts past is reported too, since it is never drawn.
+  the next strip starts past, in the columns the two share, is reported too
+  when nothing else draws those columns. A transmission that names a number
+  and no id takes the lowest free id, and a later command can place or
+  delete it by that id.
   `--cell auto` renders at the implied size when it is a whole number of
   pixels from 1 to 1024 on each side; otherwise it is a usage error (exit 2).
   In the library, `placement_hints` returns the same sizes and gaps.

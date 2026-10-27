@@ -152,12 +152,32 @@ impl Scan {
         let key = if cmd.id != 0 { u64::from(cmd.id) } else { self.alloc() };
         if cmd.id != 0 {
             self.by_id.push((cmd.id, key));
+        } else if cmd.number != 0 {
+            // A number and no id takes the lowest free id, as the replay does,
+            // so a later `i=` places or deletes this image.
+            let assigned = self.free_id();
+            self.by_id.push((assigned, key));
         }
         if cmd.number != 0 {
             self.by_number.retain(|(number, _)| *number != cmd.number);
             self.by_number.push((cmd.number, key));
         }
         key
+    }
+
+    /// The lowest id no stored image has. kitty gives this to a transmission
+    /// that names a number and no id.
+    fn free_id(&self) -> u32 {
+        let mut ids: Vec<u32> = self.by_id.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        let mut free = 1;
+        for id in ids {
+            if id > free {
+                break;
+            }
+            free = id.saturating_add(1);
+        }
+        free
     }
 
     fn lookup(&self, cmd: &Command) -> Option<u64> {
@@ -318,13 +338,11 @@ impl Scan {
                 next_y = next_y.min(other.y);
             }
             let end = sample.y.saturating_add(sample.h);
-            // A placement that starts at or above this one can still paint
-            // the rows up to the next strip. Those rows are drawn.
-            let covered = next_y != u32::MAX && self.samples.iter().any(|other| {
-                other.image == sample.image && overlaps(sample, other) && other.y < next_y
-                    && other.y.saturating_add(other.h) > end
-            });
-            if next_y != u32::MAX && next_y > end && !covered {
+            // A taller placement hides the gap only when it draws the columns
+            // this strip shares with the next one. Overlapping some other
+            // columns of this strip does not.
+            if next_y != u32::MAX && next_y > end && !rows_drawn(&self.samples, sample, end, next_y)
+            {
                 gaps.push(SourceGap { image: sample.id, y: end, rows: next_y - end });
             }
         }
@@ -345,10 +363,83 @@ fn overlaps(a: &Sample, b: &Sample) -> bool {
     a.x < b_end && b.x < a_end
 }
 
+/// The columns `sample` and the next strip share. None when both omitted
+/// `w`: that width is the rest of the image, not a known range.
+fn shared_columns(sample: &Sample, next: &Sample) -> Option<(u32, u32)> {
+    if sample.w == 0 && next.w == 0 {
+        return None;
+    }
+    if sample.w == 0 {
+        return Some((next.x, next.x.saturating_add(next.w)));
+    }
+    if next.w == 0 {
+        return Some((sample.x, sample.x.saturating_add(sample.w)));
+    }
+    let start = sample.x.max(next.x);
+    let end = sample.x.saturating_add(sample.w).min(next.x.saturating_add(next.w));
+    Some((start, end))
+}
+
+/// True when every column `sample` shares with a strip at `next_y` is drawn
+/// from `start` through that strip. Several placements can cover the columns
+/// between them. A placement that only covers part of the rows does not
+/// count, so the warning still names the whole span.
+fn rows_drawn(samples: &[Sample], sample: &Sample, start: u32, next_y: u32) -> bool {
+    let mut unknown = false;
+    let mut need = Vec::new();
+    for other in samples {
+        if other.image != sample.image || other.y != next_y || !overlaps(sample, other) {
+            continue;
+        }
+        match shared_columns(sample, other) {
+            None => unknown = true,
+            Some((from, to)) if from < to => need.push((from, to)),
+            Some(_) => {}
+        }
+    }
+    let mut cover = Vec::new();
+    for other in samples {
+        if other.image != sample.image || other.y > start || other.y.saturating_add(other.h) < next_y
+        {
+            continue;
+        }
+        // `w` of 0 is the rest of the image, so it covers every column.
+        if other.w == 0 {
+            return true;
+        }
+        cover.push((other.x, other.x.saturating_add(other.w)));
+    }
+    if unknown || need.is_empty() {
+        return false;
+    }
+    cover.sort_unstable();
+    for (from, to) in need {
+        let mut at = from;
+        for &(lo, hi) in &cover {
+            if hi <= at {
+                continue;
+            }
+            if lo > at {
+                break;
+            }
+            at = hi;
+            if at >= to {
+                break;
+            }
+        }
+        if at < to {
+            return false;
+        }
+    }
+    true
+}
+
 /// The cell sizes `log`'s kitty placements imply, and the source rows they
 /// leave undrawn. The scan reads each command's header and not its image
-/// bytes. It follows the deletes that name no cell (`d=a`, `d=i`, `d=n`,
-/// `d=r`, `d=z`), and a retransmission of an id. A delete by cursor, cell,
+/// bytes. A transmission that names a number and no id takes the lowest
+/// free id, so a later command can name it. It follows the deletes that
+/// name no cell (`d=a`, `d=i`, `d=n`, `d=r`, `d=z`), and a retransmission
+/// of an id. A delete by cursor, cell,
 /// column or row is left in place, since that needs the replay's positions,
 /// and an uppercase delete frees the image in the replay but here only
 /// drops the placements it names. Sixel is not a kitty command and is not
@@ -506,6 +597,48 @@ mod tests {
             "a=p,i=1,p=3,y=0,w=10,h=100,c=1,r=1",
         ]);
         assert!(got.gaps.is_empty(), "{:?}", got.gaps);
+    }
+
+    #[test]
+    fn a_numbered_image_is_placed_and_deleted_by_the_id_it_was_given() {
+        // The first image named only by a number is id 1.
+        let placed = hints(&["a=t,I=5", "a=p,i=1,C=1"]);
+        assert!(placed.follows_cell);
+        let ratio = hints(&["a=t,I=5", "a=p,i=1,c=2,r=1,w=32,h=32"]);
+        assert_eq!(ratio.cells, vec![cell(16, 32)]);
+        // An explicit id keeps its number, so the numbered image is the next one.
+        let second = hints(&["a=t,i=1", "a=t,I=9", "a=p,i=2,c=1,r=1,w=8,h=8"]);
+        assert_eq!(second.cells, vec![cell(8, 8)]);
+        // The same number again is a new image. `I=` places the newest, `i=1` the first.
+        let newest = hints(&["a=t,I=5", "a=t,I=5", "a=p,I=5,c=1,r=1,w=8,h=8"]);
+        assert_eq!(newest.cells, vec![cell(8, 8)]);
+        let first = hints(&["a=t,I=5", "a=t,I=5", "a=p,i=1,c=2,r=1,w=32,h=32"]);
+        assert_eq!(first.cells, vec![cell(16, 32)]);
+        let deleted = hints(&["a=T,I=5,c=2,r=1,w=32,h=32", "a=d,d=i,i=1"]);
+        assert!(deleted.cells.is_empty(), "{:?}", deleted.cells);
+    }
+
+    #[test]
+    fn a_narrow_cover_leaves_the_other_columns_a_gap() {
+        // The second rectangle paints the left 4 columns through y 29. The
+        // strip at y 20 uses columns 6..9, and rows 10..19 of those columns
+        // are never drawn.
+        let got = hints(&[
+            "a=t,i=1",
+            "a=p,i=1,p=1,x=0,y=0,w=10,h=10,c=1,r=1",
+            "a=p,i=1,p=2,x=0,y=0,w=4,h=30,c=1,r=1",
+            "a=p,i=1,p=3,x=6,y=20,w=4,h=10,c=1,r=1",
+        ]);
+        assert_eq!(got.gaps, vec![SourceGap { image: Some(1), y: 10, rows: 10 }]);
+        // The same rows, split across two placements, are drawn.
+        let split = hints(&[
+            "a=t,i=1",
+            "a=p,i=1,p=1,x=0,y=0,w=10,h=10,c=1,r=1",
+            "a=p,i=1,p=2,x=0,y=0,w=5,h=100,c=1,r=1",
+            "a=p,i=1,p=3,x=5,y=0,w=5,h=100,c=1,r=1",
+            "a=p,i=1,p=4,x=0,y=20,w=10,h=10,c=1,r=1",
+        ]);
+        assert!(split.gaps.is_empty(), "{:?}", split.gaps);
     }
 
     #[test]

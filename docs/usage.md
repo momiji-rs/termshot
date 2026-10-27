@@ -334,8 +334,8 @@ A size that is not a whole number of pixels is reported too, with the fraction, 
 at the implied size when every such placement agrees and both sides are whole pixels from 1
 to 1024; otherwise it is a usage error (exit 2) and draws nothing. A placement that names
 `c` and `r` but not `w` and `h` scales its image into the render's cells and implies nothing.
-The same scan reports a gap: the next strip of an image that overlaps in x starts past the
-previous strip's source rows, so those rows are never drawn.
+The same scan reports a gap: the next strip of an image starts past the previous strip's
+source rows, in the columns the two share, and no other placement draws those columns.
 
 ```text
 termshot: image 7's placements leave 1 px of the source undrawn at y 31
