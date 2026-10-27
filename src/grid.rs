@@ -42,12 +42,114 @@ impl Grid {
         grid_text(&self.cells, &self.marks, self.cols)
     }
 
-    /// The screen as JSON, byte for byte what `--json` writes: the grid
-    /// size, the cursor (or null when the log hid it), and a line per row
-    /// of the runs of cells alike in colour and attributes.
+        /// The screen as JSON, byte for byte what `--json` writes: the grid
+    /// size, the cursor (or null when the log hid it), a line per row of
+    /// the runs of cells alike in colour and attributes, and, when the
+    /// screen has any, the images and where they are placed.
     pub fn to_json(&self) -> String {
-        grid_json(&self.cells, &self.marks, self.cols, self.rows, self.cursor, self.cursor_shape, self.background)
+        let images = screen_images(&self.images);
+        grid_json(
+            &self.cells,
+            &self.marks,
+            self.cols,
+            self.rows,
+            self.cursor,
+            self.cursor_shape,
+            self.background,
+            &images,
+        )
     }
+
+    /// The images on the final screen, in draw order, each with the
+    /// placements that show it. Empty when the screen has none. [`Grid::to_json`]
+    /// writes this as `images` and leaves that key out when it is empty.
+    pub fn images(&self) -> Vec<ScreenImage> {
+        screen_images(&self.images)
+    }
+}
+
+/// An image on the final screen, as `--json` describes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenImage {
+    /// Kitty's image id. None for a Sixel image, and for a kitty image
+    /// transmitted without one.
+    pub id: Option<u32>,
+    /// The image's width in pixels.
+    pub width: u32,
+    /// The image's height in pixels.
+    pub height: u32,
+    /// Where it is drawn, in draw order.
+    pub placements: Vec<ImagePlacement>,
+}
+
+/// One place an image is drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImagePlacement {
+    /// Kitty's placement id (`p`), when the command named one.
+    pub id: Option<u32>,
+    /// The source rectangle's left edge, in image pixels.
+    pub x: u32,
+    /// The source rectangle's top edge, in image pixels.
+    pub y: u32,
+    /// The source rectangle's width, in image pixels.
+    pub w: u32,
+    /// The source rectangle's height, in image pixels.
+    pub h: u32,
+    /// The column the placement covers, from 0. Negative when scrolling
+    /// has carried it off the left of the screen.
+    pub col: i64,
+    /// The row the placement covers, from 0. Negative when scrolling has
+    /// carried it above the screen.
+    pub row: i64,
+    /// How many columns it covers.
+    pub columns: i64,
+    /// How many rows it covers.
+    pub rows: i64,
+    /// Kitty's z-index: 0 and up draw over the text, below 0 under it.
+    pub z: i32,
+    /// Shown through Unicode placeholder cells.
+    pub virtual_placement: bool,
+    /// Placed relative to another placement.
+    pub relative: bool,
+    /// A Sixel image.
+    pub sixel: bool,
+}
+
+/// The images `--json` lists, grouped by the image they show, in the
+/// placements' draw order.
+fn screen_images(placements: &[graphics::Placement]) -> Vec<ScreenImage> {
+    let mut images: Vec<(u64, ScreenImage)> = Vec::new();
+    for placement in placements {
+        let drawn = ImagePlacement {
+            id: (placement.placement_id != 0).then_some(placement.placement_id),
+            x: placement.src[0],
+            y: placement.src[1],
+            w: placement.src[2],
+            h: placement.src[3],
+            col: placement.col,
+            row: placement.row,
+            columns: placement.cols,
+            rows: placement.rows,
+            z: placement.z,
+            virtual_placement: placement.by_placeholder,
+            relative: placement.parent.is_some(),
+            sixel: placement.sixel,
+        };
+        if let Some((_, image)) = images.iter_mut().find(|(key, _)| *key == placement.image) {
+            image.placements.push(drawn);
+        } else {
+            images.push((
+                placement.image,
+                ScreenImage {
+                    id: (placement.id != 0).then_some(placement.id),
+                    width: placement.width,
+                    height: placement.height,
+                    placements: vec![drawn],
+                },
+            ));
+        }
+    }
+    images.into_iter().map(|(_, image)| image).collect()
 }
 
 /// A code point as a char; none of the grid's are invalid.
@@ -81,7 +183,8 @@ pub(crate) fn grid_text(cells: &[Cell], marks: &[CellMarks], cols: usize) -> Str
 /// the column it starts at (a wide character takes two). A run's text has each
 /// character followed by its combining marks, as --text does. Blank cells that
 /// end a row are left out, as in --text, unless their background (other than
-/// `background`, the palette's default) or a line shows.
+/// `background`, the palette's default) or a line shows. `images` follows
+/// the rows when the screen has any, and is left out when it has none.
 pub(crate) fn grid_json(
     cells: &[Cell],
     marks: &[CellMarks],
@@ -90,6 +193,7 @@ pub(crate) fn grid_json(
     cursor: Option<(usize, usize)>,
     shape: CursorShape,
     background: (u8, u8, u8),
+    images: &[ScreenImage],
 ) -> String {
     use std::fmt::Write as _;
     const LINES: u8 = UNDERLINE | DOUBLE_UNDERLINE | STRIKE;
@@ -144,6 +248,53 @@ pub(crate) fn grid_json(
         }
         json.push(']');
     }
-    json.push_str("\n]}\n");
+    json.push_str("\n]");
+    push_images(&mut json, images);
+    json.push_str("}\n");
     json
+}
+
+/// `images`, after the rows. Absent when the screen has none, so a log
+/// without images keeps the JSON it had.
+fn push_images(json: &mut String, images: &[ScreenImage]) {
+    use std::fmt::Write as _;
+    if images.is_empty() {
+        return;
+    }
+    json.push_str(",\"images\":[");
+    for (i, image) in images.iter().enumerate() {
+        json.push_str(if i == 0 { "\n{" } else { ",\n{" });
+        if let Some(id) = image.id {
+            let _ = write!(json, "\"id\":{id},");
+        }
+        let _ = write!(
+            json,
+            "\"width\":{},\"height\":{},\"format\":\"rgba\",\"placements\":[",
+            image.width, image.height
+        );
+        for (j, placement) in image.placements.iter().enumerate() {
+            json.push_str(if j == 0 { "\n{" } else { ",\n{" });
+            if let Some(id) = placement.id {
+                let _ = write!(json, "\"id\":{id},");
+            }
+            let _ = write!(
+                json,
+                "\"src\":{{\"x\":{},\"y\":{},\"w\":{},\"h\":{}}},\"col\":{},\"row\":{},\"columns\":{},\"rows\":{},\"z\":{}",
+                placement.x, placement.y, placement.w, placement.h, placement.col, placement.row, placement.columns,
+                placement.rows, placement.z
+            );
+            if placement.virtual_placement {
+                json.push_str(",\"virtual\":true");
+            }
+            if placement.relative {
+                json.push_str(",\"relative\":true");
+            }
+            if placement.sixel {
+                json.push_str(",\"sixel\":true");
+            }
+            json.push('}');
+        }
+        json.push_str("\n]}");
+    }
+    json.push_str("\n]");
 }

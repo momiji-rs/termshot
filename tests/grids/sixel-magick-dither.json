@@ -4,4 +4,8 @@
 [],
 [{"col":0,"text":"$","fg":"#dbe7f7","bg":"#111823"}],
 []
+],"images":[
+{"width":64,"height":45,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":64,"h":45},"col":0,"row":1,"columns":6,"rows":2,"z":0,"sixel":true}
+]}
 ]}

@@ -29,4 +29,11 @@
 [],
 [],
 []
+],"images":[
+{"width":8,"height":8,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":8,"h":8},"col":0,"row":0,"columns":10,"rows":4,"z":-1073741825}
+]},
+{"width":8,"height":8,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":8,"h":8},"col":13,"row":0,"columns":10,"rows":4,"z":-1}
+]}
 ]}

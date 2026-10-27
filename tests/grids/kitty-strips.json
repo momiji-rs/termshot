@@ -4,4 +4,10 @@
 [{"col":0,"text":"    row 1","fg":"#dbe7f7","bg":"#111823"}],
 [{"col":0,"text":"    row 2","fg":"#dbe7f7","bg":"#111823"}],
 [{"col":0,"text":"└─┘ Mg","fg":"#dbe7f7","bg":"#111823"}]
+],"images":[
+{"id":7,"width":32,"height":96,"format":"rgba","placements":[
+{"id":1,"src":{"x":0,"y":0,"w":32,"h":32},"col":1,"row":1,"columns":2,"rows":1,"z":0},
+{"id":2,"src":{"x":0,"y":32,"w":32,"h":32},"col":1,"row":2,"columns":2,"rows":1,"z":0},
+{"id":3,"src":{"x":0,"y":64,"w":32,"h":32},"col":1,"row":3,"columns":2,"rows":1,"z":0}
+]}
 ]}

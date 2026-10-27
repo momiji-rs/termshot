@@ -56,17 +56,90 @@ fn array<'v, 'a>(value: &'v Value<'a>, what: &str) -> Result<&'v [Value<'a>], St
     }
 }
 
+/// A JSON number, with a sign. No leading zero, no fraction.
+fn integer(value: &Value, what: &str) -> Result<i64, String> {
+    let Value::Number(n) = value else {
+        return Err(format!("{what} is not an integer"));
+    };
+    let digits = n.strip_prefix('-').unwrap_or(n);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) || (digits.len() > 1 && digits.starts_with('0')) {
+        return Err(format!("{what} {n} is not an integer"));
+    }
+    n.parse().map_err(|_| format!("{what} {n} is too large"))
+}
+
+/// `images`, when --json wrote it: each image's pixels and the placements
+/// that show it. Absent when the screen has none.
+fn check_images(value: &Value) -> Result<(), String> {
+    let images = array(value, "images")?;
+    if images.is_empty() {
+        return Err("images is empty; --json leaves the key out then".into());
+    }
+    for (i, image) in images.iter().enumerate() {
+        let image = members(image, &format!("image {i}"))?;
+        only(image, &["id", "width", "height", "format", "placements"], &format!("image {i}"))?;
+        if image.iter().any(|(key, _)| key == "id") {
+            whole(field(image, "id", &format!("image {i}"))?, &format!("image {i}: id"))?;
+        }
+        whole(field(image, "width", &format!("image {i}"))?, &format!("image {i}: width"))?;
+        whole(field(image, "height", &format!("image {i}"))?, &format!("image {i}: height"))?;
+        let format = string(field(image, "format", &format!("image {i}"))?, &format!("image {i}: format"))?;
+        if format != "rgba" {
+            return Err(format!("image {i}: format {format}"));
+        }
+        let placements = array(field(image, "placements", &format!("image {i}"))?, &format!("image {i}: placements"))?;
+        if placements.is_empty() {
+            return Err(format!("image {i} has no placement"));
+        }
+        for (j, placement) in placements.iter().enumerate() {
+            let what = format!("image {i}: placement {j}");
+            let placement = members(placement, &what)?;
+            only(
+                placement,
+                &["id", "src", "col", "row", "columns", "rows", "z", "virtual", "relative", "sixel"],
+                &what,
+            )?;
+            if placement.iter().any(|(key, _)| key == "id") {
+                whole(field(placement, "id", &what)?, &format!("{what}: id"))?;
+            }
+            let src = members(field(placement, "src", &what)?, &format!("{what}: src"))?;
+            only(src, &["x", "y", "w", "h"], &format!("{what}: src"))?;
+            for key in ["x", "y", "w", "h"] {
+                whole(field(src, key, &format!("{what}: src"))?, &format!("{what}: src {key}"))?;
+            }
+            for key in ["col", "row", "z"] {
+                integer(field(placement, key, &what)?, &format!("{what}: {key}"))?;
+            }
+            for key in ["columns", "rows"] {
+                whole(field(placement, key, &what)?, &format!("{what}: {key}"))?;
+            }
+            for flag in ["virtual", "relative", "sixel"] {
+                if let Some(value) = placement.iter().find(|(key, _)| key == flag).map(|(_, value)| value) {
+                    if *value != Value::Bool(true) {
+                        return Err(format!("{what}: {flag} is not true"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// That json is what --json promises and spells the rows of text, the
 /// --text output of the same screen: the size, the cursor on the grid, and
 /// per row runs that cover it from column 0, each starting where the one
 /// before ends (a wide character takes two columns, but one on a one-column
 /// screen, and a combining mark none),
 /// with #rrggbb colours and only true style flags, whose text joined and
-/// trimmed of trailing spaces is the row.
+/// trimmed of trailing spaces is the row. `images`, when present, is the
+/// screen's images and their placements.
 fn check_grid(json: &str, text: &str) -> Result<(), String> {
     let grid = parse(json).map_err(|e| format!("bad JSON at byte {}: {}", e.at, e.reason))?;
     let grid = members(&grid, "the grid")?;
-    only(grid, &["cols", "rows", "cursor", "lines"], "the grid")?;
+    only(grid, &["cols", "rows", "cursor", "lines", "images"], "the grid")?;
+    if let Some(images) = grid.iter().find(|(key, _)| key == "images").map(|(_, value)| value) {
+        check_images(images)?;
+    }
     let cols = whole(field(grid, "cols", "the grid")?, "cols")?;
     let rows = whole(field(grid, "rows", "the grid")?, "rows")?;
     let lines = array(field(grid, "lines", "the grid")?, "lines")?;
@@ -263,4 +336,86 @@ fn grid_json_check_refuses_what_json_does_not_promise() {
     }
     // The text is grid_text's, as --text writes it.
     assert_eq!(text, grid_text(&grid.cells, &grid.marks, grid.cols));
+}
+
+#[test]
+fn json_omits_images_when_the_screen_has_none() {
+    let grid = grid_of(b"hi\r\n", 4, 2, Lf::Index);
+    assert!(!grid.to_json().contains("images"), "{}", grid.to_json());
+    assert!(grid.images().is_empty());
+}
+
+#[test]
+fn json_lists_each_strip_of_an_image() {
+    let log = fs::read("tests/fixtures/kitty-strips.pty").unwrap();
+    let grid = replay_with(&log, 10, 5, &ParseOptions::default(), (13, 29)).unwrap();
+    let images = grid.images();
+    assert_eq!(images.len(), 1, "{images:?}");
+    let image = &images[0];
+    assert_eq!(image.id, Some(7));
+    assert_eq!((image.width, image.height), (32, 96));
+    assert_eq!(image.placements.len(), 3);
+    for (i, placement) in image.placements.iter().enumerate() {
+        let i = i as u32;
+        assert_eq!(placement.id, Some(i + 1));
+        assert_eq!((placement.x, placement.y, placement.w, placement.h), (0, i * 32, 32, 32));
+        assert_eq!((placement.col, placement.row, placement.columns, placement.rows), (1, 1 + i64::from(i), 2, 1));
+        assert_eq!(placement.z, 0);
+        assert!(!placement.virtual_placement && !placement.relative && !placement.sixel);
+    }
+    let json = grid.to_json();
+    check_grid(&json, &grid.to_text()).unwrap();
+    assert!(json.contains("\"format\":\"rgba\"") && json.contains("\"y\":64"), "{json}");
+}
+
+#[test]
+fn json_marks_sixel_placeholder_and_relative_placements() {
+    let sixel = replay_with(b"\x1bPq\"1;1;1;1@\x1b\\", 10, 4, &ParseOptions::default(), (8, 16)).unwrap();
+    let images = sixel.images();
+    assert_eq!(images.len(), 1, "{images:?}");
+    assert_eq!(images[0].id, None);
+    assert!(images[0].placements[0].sixel && !images[0].placements[0].relative);
+    assert!(sixel.to_json().contains("\"sixel\":true"));
+    check_grid(&sixel.to_json(), &sixel.to_text()).unwrap();
+
+    let relative = fs::read("tests/fixtures/kitty-relative.pty").unwrap();
+    let grid = replay_with(&relative, 40, 12, &ParseOptions::default(), (8, 16)).unwrap();
+    assert!(grid.images().iter().any(|image| image.placements.iter().any(|placement| placement.relative)));
+    check_grid(&grid.to_json(), &grid.to_text()).unwrap();
+
+    let placeholders = fs::read("tests/fixtures/kitty-placeholders.pty").unwrap();
+    let grid = replay_with(&placeholders, 40, 12, &ParseOptions::default(), (8, 16)).unwrap();
+    assert!(grid.images().iter().any(|image| image.placements.iter().any(|placement| placement.virtual_placement)));
+    check_grid(&grid.to_json(), &grid.to_text()).unwrap();
+}
+
+#[test]
+fn json_cell_span_follows_the_cell_when_the_command_leaves_it() {
+    // kitten icat places this 40x20 image in native pixels, with no c and r.
+    // 11x24 (px 24) covers 4 columns; 22x48 (px 47.5) covers 2. The text does
+    // not move, which is why the two goldens share one grid file.
+    let log = fs::read("tests/fixtures/kitty-icat-animation.pty").unwrap();
+    let at = |cell| replay_with(&log, 20, 6, &ParseOptions::default(), cell).unwrap();
+    let narrow = at((11, 24));
+    let wide = at((22, 48));
+    assert_eq!(narrow.to_text(), wide.to_text());
+    let span = |grid: &Grid| {
+        let image = &grid.images()[0];
+        let placement = &image.placements[0];
+        (
+            image.id,
+            image.width,
+            image.height,
+            placement.x,
+            placement.y,
+            placement.w,
+            placement.h,
+            placement.col,
+            placement.row,
+            placement.columns,
+            placement.rows,
+        )
+    };
+    assert_eq!(span(&narrow), (Some(1), 40, 20, 0, 0, 40, 20, 1, 1, 4, 1));
+    assert_eq!(span(&wide), (Some(1), 40, 20, 0, 0, 40, 20, 1, 1, 2, 1));
 }

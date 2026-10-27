@@ -19,7 +19,8 @@ demo inbox (the customers and messages are fake), at the default 48 px: 2200×14
 - **Deterministic.** Same bytes in, same PNG out, on macOS and on x86-64 and aarch64
   Linux. Commit a reference image and compare against it in CI.
 - **Readable by tests and agents.** `--text` and `--json` write the same screen as text, or as
-  runs of cells with their colours and attributes.
+  runs of cells with their colours and attributes, and `--json` includes each image and where
+  it is placed. `--cell auto` renders at the cell size the log's kitty placements imply.
 - **Embeddable.** It is also a Rust library: parse a log into a grid, render the grid to a PNG.
 
 ## Why termshot

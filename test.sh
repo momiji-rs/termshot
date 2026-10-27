@@ -307,6 +307,46 @@ printf '\033[5 qab' | ./termshot --size 10x2 --json - - > "$out/grid-shape.json"
 check "--json reports the shape the log sets" 'grep -q "\"cursor\":{\"col\":2,\"row\":0,\"shape\":\"bar\"}" "$out/grid-shape.json"'
 printf '\033[5 qab' | ./termshot --size 10x2 --cursor-shape underline --json - - > "$out/grid-shape-option.json"
 check "--json reports --cursor-shape" 'grep -q "\"shape\":\"underline\"" "$out/grid-shape-option.json"'
+# Images (#111) and the cell size a log's placements imply (#110).
+strips=tests/fixtures/kitty-strips.pty
+./termshot --size 10x5 --json - "$strips" > "$out/strips.json" 2>"$out/strips.err"
+check "--json lists an image's strips" 'grep -q "\"id\":7" "$out/strips.json" && grep -q "\"y\":64" "$out/strips.json"'
+check "a log with no images has no images key" '! grep -q images "$out/grid.json"'
+# These placements keep the cursor (C=1), so text and JSON read no font and
+# parse at 1x1. That is not a render, and the warning waits for one.
+check "json alone does not compare the implied size with 1x1" '! grep -q imply "$out/strips.err"'
+# Strips name both c and r, so the cells in --json do not depend on the font.
+check "--json of a cell-counted image reads no font" './termshot --font README.md --size 10x5 --json - "$strips" >/dev/null'
+# A native-pixel placement's columns are the pixels divided by the font's cell.
+check "--json of a native-pixel image reads a font" '! ./termshot --font README.md --size 20x6 --json - tests/fixtures/kitty-icat-animation.pty >/dev/null 2>&1'
+./termshot --size 20x6 --px 24 --json - tests/fixtures/kitty-icat-animation.pty > "$out/icat.json"
+check "native-pixel columns follow the font cell" 'grep -q "\"columns\":4" "$out/icat.json"'
+./termshot --size 10x5 --cell 13x29 --json - "$strips" > "$out/strips-cell.json" 2>"$out/strips-cell.err"
+check "a mismatched cell size is reported" 'grep -q "imply 16x32 px cells" "$out/strips-cell.err" && grep -q "pass --cell 16x32" "$out/strips-cell.err"'
+./termshot --cell auto --size 10x5 "$strips" "$out/auto.png" 2>"$out/auto.err"
+./termshot --cell 16x32 --size 10x5 "$strips" "$out/box.png" 2>"$out/box.err"
+check "--cell auto renders at the size the placements imply" 'cmp -s "$out/auto.png" "$out/box.png"'
+check "a matching cell size is not reported" '! grep -q imply "$out/auto.err" && ! grep -q imply "$out/box.err"'
+printf '\033_Ga=T,i=1,c=2,r=1,w=32,h=32\033\\\033_Ga=T,i=2,c=1,r=1,w=10,h=10\033\\' > "$out/two-cells.pty"
+./termshot --cell auto --json - "$out/two-cells.pty" >"$out/two-cells.json" 2>"$out/two-cells.err" || true
+check "--cell auto refuses placements that disagree" 'grep -q "more than one cell size" "$out/two-cells.err"'
+expect 2 --cell auto --json - "$out/two-cells.pty"
+printf '\033_Ga=T,i=1,c=3,r=1,w=10,h=31\033\\' > "$out/fraction.pty"
+./termshot --cell auto --json - "$out/fraction.pty" >"$out/fraction.json" 2>"$out/fraction.err" || true
+check "--cell auto refuses a fractional cell" 'grep -q "not whole pixels" "$out/fraction.err"'
+expect 2 --cell auto --json - "$out/fraction.pty"
+printf '\033_Ga=t,i=7\033\\\033_Ga=p,i=7,p=1,y=0,w=32,h=31,c=2,r=1\033\\\033_Ga=p,i=7,p=2,y=32,w=32,h=31,c=2,r=1\033\\' > "$out/gap.pty"
+./termshot --size 10x4 --json - "$out/gap.pty" >"$out/gap.json" 2>"$out/gap.err"
+check "a skipped source row is reported" 'grep -q "leave 1 px of the source undrawn at y 31" "$out/gap.err"'
+# A number and no id is image 1. Placing it by that id is what --json and
+# --cell auto see. C=1 keeps the cursor, so the font is read only because
+# the placement omitted c and r.
+printf '\033_Ga=t,I=5,f=24,s=1,v=1;/wAA\033\\\033_Ga=p,i=1,c=1,r=1,w=1,h=1\033\\' > "$out/numbered.pty"
+./termshot --cell auto --size 4x2 --json - "$out/numbered.pty" >"$out/numbered.json" 2>"$out/numbered.err"
+check "a numbered image is placed by the id it was given" 'grep -q "\"id\":1" "$out/numbered.json" && grep -q "\"columns\":1" "$out/numbered.json"'
+check "--cell auto accepts that placement" '! grep -q "no kitty placement" "$out/numbered.err"'
+printf '\033_Ga=t,I=5,f=24,s=1,v=1;/wAA\033\\\033_Ga=p,i=1,C=1\033\\' > "$out/numbered-native.pty"
+expect 1 --font README.md --size 4x2 --json - "$out/numbered-native.pty"
 ./termshot --text "$out/both.txt" --json "$out/both.json" "$log"
 check "--text and --json together match each alone" 'cmp -s "$out/both.txt" "$out/text-png.txt"'
 expect 2 --json - --text - "$log"

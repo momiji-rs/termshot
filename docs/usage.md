@@ -82,8 +82,8 @@ trimmed, each character followed by its combining marks. For logs without images
 PNG skips font loading, drawing and PNG encoding; how much time that saves depends on the log
 (the benchmark's `text` suite times such runs, see [performance](performance.md)). A kitty
 placement or a Sixel image still needs font metrics to replay cursor movement, so the font is
-read for it even for text/JSON-only output; images themselves are not included in these
-formats:
+read for it even for text/JSON-only output, unless `--cell` gives the cell size. `--text` does
+not include images. `--json` does, when the screen has any:
 
 ```sh
 ./termshot --text - session.pty | grep -q 'Saved'        # text only, to stdout
@@ -97,6 +97,10 @@ that look alike, with the column each starts at (a wide character takes two):
 {"cols":100,"rows":30,"cursor":{"col":2,"row":5,"shape":"block"},"lines":[
 [{"col":0,"text":"ok","fg":"#00cd00","bg":"#111823","bold":true},{"col":2,"text":" done","fg":"#dbe7f7","bg":"#111823"}],
 ...
+],"images":[
+{"id":7,"width":598,"height":403,"format":"rgba","placements":[
+{"id":1,"src":{"x":0,"y":0,"w":598,"h":31},"col":0,"row":19,"columns":38,"rows":1,"z":0}
+]}
 ]}
 ```
 
@@ -107,6 +111,17 @@ character followed by its combining marks, as in `--text`, so a mark takes no co
 own. Colours are as drawn: under the palette (see [Colours and padding](#colours-and-padding)),
 with reverse video and dim already applied, and concealed text has `fg` equal to `bg`.
 
+`images` is left out when the screen has none. Each image has its kitty id (left out when it
+has none, as a Sixel image does), its pixel size and `"format":"rgba"`, which is the pixels
+termshot stored after decoding RGB, RGBA or PNG. `placements` are where it is drawn, in draw
+order. `src` is the source rectangle in image pixels. `col`, `row`, `columns` and `rows` are
+the cells it covers, from 0; `col` and `row` are negative when scrolling has carried it off
+the screen. When the place command sets both `c` and `r`, `columns` and `rows` are those
+counts. When it does not, they are how many cells the source pixels cover at this render's
+cell size, so one log at two `--px` values can differ there and nowhere else. `z` is kitty's z-index. `virtual` (Unicode placeholder cells), `relative` and
+`sixel` appear only when set. A placement id (`id` inside a placement) appears only when the
+command named one.
+
 ## Options
 
 | option | |
@@ -114,7 +129,7 @@ with reverse video and dim already applied, and concealed text has `fg` equal to
 | `-f`, `--font FILE` | TrueType or OpenType (CFF or CFF2) font (default: built-in JetBrains Mono); `FILE#N` or `FILE#NAME` picks a face of a collection, `FILE#wght=700` an instance of a CFF2 variable font |
 | `--fallback-font FILE` | TrueType or OpenType (CFF or CFF2) font for characters the first lacks, such as CJK; faces as for `--font` |
 | `-p`, `--px N` | font pixel height, above 0 and below 256 (default 48); it picks a step of whole-pixel cell widths, so nearby values can draw alike (see [Cell size](#cell-size)) |
-| `--cell WxH` | the cell size in pixels, 1 to 1024 each, whatever the font's, with the glyphs centered in it: the largest that fit, or at `--px` if given (see [Cell size](#cell-size)) |
+| `--cell WxH` or `auto` | the cell size in pixels, 1 to 1024 each, whatever the font's, with the glyphs centered in it: the largest that fit, or at `--px` if given. `auto` uses the size the log's kitty placements imply (see [Cell size](#cell-size)) |
 | `-s`, `--size CxR` | grid columns × rows, up to 500×200 (default: a cast's size, else 100x30) |
 | `--cast` | read the log as an asciinema `.cast` (v2 or v3), even if its first line isn't a header |
 | `--raw` | read the log as raw PTY output, even if its first line looks like a cast's header |
@@ -122,7 +137,7 @@ with reverse video and dim already applied, and concealed text has `fg` equal to
 | `--cursor COL,ROW` or `none` | draw the cursor there, counting from 0 as tmux's `#{cursor_x},#{cursor_y}` do, or not at all (default: where the log leaves it, unless it hides it) |
 | `--cursor-shape block`, `underline` or `bar` | draw the cursor as that shape (default: the one the log sets with DECSCUSR, or a block) |
 | `--text FILE` | write the screen as text, a line per row with trailing spaces trimmed; the PNG is then optional |
-| `--json FILE` | write the screen as JSON: the cursor and its shape, and per row the runs of cells alike in colour and attributes; the PNG is then optional |
+| `--json FILE` | write the screen as JSON: the cursor and its shape, per row the runs of cells alike in colour and attributes, and the images and where they are placed; the PNG is then optional |
 | `--palette FILE` | the default colours and the 16 named ones, in kitty's colour keys (see [Colours and padding](#colours-and-padding)) |
 | `--fg #RRGGBB`, `--bg #RRGGBB` | the default foreground or background, over the palette's |
 | `--padding N` or `X,Y` | a margin of N pixels around the cells, or X left and right and Y above and below, 0 to 1024, in the default background (default 0) |
@@ -133,8 +148,11 @@ with reverse video and dim already applied, and concealed text has `fg` equal to
 
 It prints nothing on success, except a hint on stderr when the log (for a cast, its output) has
 line feeds but no CR, which means it was probably not captured through a PTY and needs
-`--lf-newline`, and a warning when a font maps a character to an empty glyph, so it was drawn
-as a box. The warning names the first such cell, the font, and what to pass instead. Exit
+`--lf-newline`, a warning when a font maps a character to an empty glyph, so it was drawn
+as a box, and a note when the log's kitty placements imply a cell size other than the one
+this run uses, or leave a gap in an image's source. The empty-glyph warning names the first
+such cell, the font, and what to pass instead. The cell note names the implied size and, when
+it is a whole number of pixels, the `--cell` to pass. Exit
 status is 0 when done; 1 when a file can't be read or written, a `.cast` is malformed, or the
 font is unusable; and 2 for bad arguments, including a malformed `--palette` file, an image
 over 2^27 pixels (its padding included) and a cast larger than 500×200 without `--size`.
@@ -297,6 +315,30 @@ cell must fit in the box, or it is a usage error (exit 2).
 
 ```sh
 ./termshot --cell 16x32 --size 160x48 session.pty session.png
+./termshot --cell auto session.pty session.png
+```
+
+When a placement names both a cell count (`c`, `r`) and a source rectangle (`w`, `h`), the
+cell it was written for is `w/c` by `h/r`. Placements that agree, and that differ from the
+cell a PNG or a `--cell` uses, are reported on stderr. A `--text` or `--json` run that reads
+no font parses at 1×1 and does not compare, since that size is not a render. `--json` does
+read the font when a placement omits `c` or `r`, so the cells it reports are the ones a PNG
+at the same `--px` covers; `--cell` supplies that size without a font:
+
+```text
+termshot: kitty placements imply 16x32 px cells; rendering 13x29, so images are rescaled (pass --cell 16x32)
+```
+
+A size that is not a whole number of pixels is reported too, with the fraction, and without a
+`--cell` to pass. Placements that imply more than one size are listed. `--cell auto` renders
+at the implied size when every such placement agrees and both sides are whole pixels from 1
+to 1024; otherwise it is a usage error (exit 2) and draws nothing. A placement that names
+`c` and `r` but not `w` and `h` scales its image into the render's cells and implies nothing.
+The same scan reports a gap: the next strip of an image starts past the previous strip's
+source rows, in the columns the two share, and no other placement draws those columns.
+
+```text
+termshot: image 7's placements leave 1 px of the source undrawn at y 31
 ```
 
 `-v` prints the glyphs' size in the box, as `cell 16x32 glyphs 14.5x32`. The letters are

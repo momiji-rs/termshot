@@ -3,7 +3,11 @@
 //! of the RGBA pixels with tests/goldens.txt. Hashing pixels rather than file bytes keeps the
 //! goldens valid when the encoder changes but the image does not. The same runs
 //! write --text and --json, which are compared byte for byte with
-//! tests/grids/<log>.txt and <log>.json.
+//! tests/grids/<log>.txt and <log>.json. A log drawn at two pixel sizes
+//! shares that JSON: the cells do not depend on it. An image placed in
+//! native pixels covers however many cells those pixels fill, so that part
+//! of the JSON may differ; the file is the first case, which for those logs
+//! is 24 px, the cell tests/library.rs parses with.
 //!
 //! Built and run by test.sh from the repo root:
 //!   golden             check
@@ -133,13 +137,67 @@ fn render(log: &str, px: &str, cols: u32, rows: u32, fonts: &[&str]) -> Result<(
     Ok((format!("{} {width}x{height} {log} {px}", sha256(&rgba)), grids.collect::<Result<_, _>>()?))
 }
 
+/// The JSON of the cells, before `images`. A placement's cell count follows
+/// the cell size when the command leaves it to the pixels; the cells do not.
+fn cells_json(json: &str) -> &str {
+    json.split_once(",\"images\":").map(|(head, _)| head).unwrap_or(json)
+}
+
+/// One integer, optional sign, and the rest of `s`.
+fn take_int(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let mut i = usize::from(bytes.first() == Some(&b'-'));
+    let start = i;
+    while bytes.get(i).is_some_and(|b| b.is_ascii_digit()) {
+        i += 1;
+    }
+    (i > start).then_some(&s[i..])
+}
+
+/// `json` with each placement's col, row, columns and rows set to 0. Those
+/// follow the cell size. The source rectangle, ids, z and flags stay, so a
+/// later pixel size that changes them still fails.
+fn normalize_placement_cells(json: &str) -> String {
+    let needle = "\"col\":";
+    let mut out = String::with_capacity(json.len());
+    let mut rest = json;
+    while let Some(at) = rest.find(needle) {
+        let tail = &rest[at + needle.len()..];
+        if let Some(consumed) = placement_cell_rect(tail) {
+            out.push_str(&rest[..at]);
+            out.push_str("\"col\":0,\"row\":0,\"columns\":0,\"rows\":0");
+            rest = &tail[consumed..];
+        } else {
+            out.push_str(&rest[..at + needle.len()]);
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The bytes of `NUM,"row":NUM,"columns":NUM,"rows":NUM`, the placement
+/// form. A text run's `"col"` is followed by `"text"` and is not this.
+fn placement_cell_rect(s: &str) -> Option<usize> {
+    let start = s.len();
+    let s = take_int(s)?.strip_prefix(",\"row\":")?;
+    let s = take_int(s)?.strip_prefix(",\"columns\":")?;
+    let s = take_int(s)?.strip_prefix(",\"rows\":")?;
+    let s = take_int(s)?;
+    Some(start - s.len())
+}
+
 /// Check each log's grid outputs against tests/grids/, or rewrite them. A
-/// log's cases share a grid size, so they must agree on them.
+/// log's cases share a grid, so the text agrees and the JSON of the cells
+/// agrees. Image placements may cover a different number of cells at
+/// another pixel size; the file kept is the first case.
 fn check_grids(grids: &[(&str, Vec<String>)], update: bool) -> bool {
     let mut ok = true;
     for (i, (log, outputs)) in grids.iter().enumerate() {
         if let Some((_, first)) = grids[..i].iter().find(|(other, _)| other == log) {
-            if first != outputs {
+            let same_cells = cells_json(&first[1]) == cells_json(&outputs[1]);
+            let same_images = normalize_placement_cells(&first[1]) == normalize_placement_cells(&outputs[1]);
+            if first[0] != outputs[0] || !same_cells || !same_images {
                 println!("FAIL {log}: the grid outputs differ between its cases");
                 ok = false;
             }

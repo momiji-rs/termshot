@@ -185,7 +185,13 @@ if [ "$mode" = glyphs ] || [ "$mode" = full ]; then
             ./termshot "$@" "$log" "$work/out/rust.png" 2>"$work/out/rust.err"
             r=$?
             set -e
-            if [ "$c" -ne "$r" ] || ! cmp -s "$work/out/c.err" "$work/out/rust.err" ||
+            # The cell-size note (#110) is not in the C at this revision.
+            # The pixels and every other line of stderr still have to match.
+            grep -v -e 'kitty placements imply ' -e 'placements leave ' \
+                -e 'more gaps in kitty image sources' \
+                -e 'too many kitty placements to say' \
+                "$work/out/rust.err" > "$work/out/rust-cmp.err" || true
+            if [ "$c" -ne "$r" ] || ! cmp -s "$work/out/c.err" "$work/out/rust-cmp.err" ||
                 { [ -e "$work/out/c.png" ] && ! cmp -s "$work/out/c.png" "$work/out/rust.png"; } ||
                 { [ ! -e "$work/out/c.png" ] && [ -e "$work/out/rust.png" ]; }; then
                 echo "FAIL $log $*: exit $c vs $r, or the PNGs or stderr differ" >&2

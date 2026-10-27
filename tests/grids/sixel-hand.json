@@ -7,4 +7,14 @@
 [],
 [{"col":0,"text":"VT340:","fg":"#dbe7f7","bg":"#111823"}],
 []
+],"images":[
+{"width":88,"height":24,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":88,"h":24},"col":0,"row":0,"columns":8,"rows":1,"z":0,"sixel":true}
+]},
+{"width":33,"height":24,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":33,"h":24},"col":0,"row":2,"columns":3,"rows":1,"z":0,"sixel":true}
+]},
+{"width":64,"height":36,"format":"rgba","placements":[
+{"src":{"x":0,"y":0,"w":64,"h":36},"col":6,"row":6,"columns":6,"rows":2,"z":0,"sixel":true}
+]}
 ]}
