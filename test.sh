@@ -338,6 +338,15 @@ expect 2 --cell auto --json - "$out/fraction.pty"
 printf '\033_Ga=t,i=7\033\\\033_Ga=p,i=7,p=1,y=0,w=32,h=31,c=2,r=1\033\\\033_Ga=p,i=7,p=2,y=32,w=32,h=31,c=2,r=1\033\\' > "$out/gap.pty"
 ./termshot --size 10x4 --json - "$out/gap.pty" >"$out/gap.json" 2>"$out/gap.err"
 check "a skipped source row is reported" 'grep -q "leave 1 px of the source undrawn at y 31" "$out/gap.err"'
+# A number and no id is image 1. Placing it by that id is what --json and
+# --cell auto see. C=1 keeps the cursor, so the font is read only because
+# the placement omitted c and r.
+printf '\033_Ga=t,I=5,f=24,s=1,v=1;/wAA\033\\\033_Ga=p,i=1,c=1,r=1,w=1,h=1\033\\' > "$out/numbered.pty"
+./termshot --cell auto --size 4x2 --json - "$out/numbered.pty" >"$out/numbered.json" 2>"$out/numbered.err"
+check "a numbered image is placed by the id it was given" 'grep -q "\"id\":1" "$out/numbered.json" && grep -q "\"columns\":1" "$out/numbered.json"'
+check "--cell auto accepts that placement" '! grep -q "no kitty placement" "$out/numbered.err"'
+printf '\033_Ga=t,I=5,f=24,s=1,v=1;/wAA\033\\\033_Ga=p,i=1,C=1\033\\' > "$out/numbered-native.pty"
+expect 1 --font README.md --size 4x2 --json - "$out/numbered-native.pty"
 ./termshot --text "$out/both.txt" --json "$out/both.json" "$log"
 check "--text and --json together match each alone" 'cmp -s "$out/both.txt" "$out/text-png.txt"'
 expect 2 --json - --text - "$log"
