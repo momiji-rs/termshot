@@ -1,5 +1,5 @@
 {
- "commit": "76e745d5d3d5305da3416770187e824f10d3c0e5",
+ "commit": "50067bd5659020a764a41a61204a8d1283f249ff",
  "shots": {
   "colors": {
    "json": "objects/fb/fb04f6d8e4d64bbfa7b916cc868ec6e1229912fdcbf7316bea767319ff7b2075.json",
@@ -12,9 +12,11 @@
    "txt": "objects/2a/2a19bb46502ea8a52e82860d36bd51bdf5ea0b8aeb2591216adcefafb772f414.txt"
   },
   "help": {
-   "json": "objects/50/5093aee78778bccea9b835e8f3960493f0a69a50d7711ffccfc6bdd06b24bc94.json",
-   "png": "objects/33/3347a026df52a82976f7846714e8fb230329c81c88db358d7eb861f0e4659358.png",
-   "txt": "objects/7c/7c2f5ada815af5f416f61a8c3556c4ae0a7377e2dcfa6a403c9d39ce1fe34d34.txt"
+   "base_png": "objects/33/3347a026df52a82976f7846714e8fb230329c81c88db358d7eb861f0e4659358.png",
+   "diff": "objects/3a/3a098523c0bbdefb805a4f8ce8018704d1467560850f2f200675bed0761c3606.png",
+   "json": "objects/3f/3f6e73540ba71d9ca8e54d80633fee9a1ca2b09ca6bb67b3be050db231dbe509.json",
+   "png": "objects/36/3625b73b36169ddd227777e660dd4ba2fcf6823d669d4e509514b706b80177ac.png",
+   "txt": "objects/b2/b246d6802c67f0f426725bb9ae9bd0c4e5b769ba2d67f91fba2ae841291d9e01.txt"
   },
   "less": {
    "json": "objects/14/14e7637d736298725ca1504f50544fd4d15c154e8e849f8c1ce4f8b5ecfeeb4c.json",
@@ -33,5 +35,5 @@
   }
  },
  "termshot": "0.4.0",
- "updated": "2026-10-26T23:02:42+00:00"
+ "updated": "2026-10-27T20:53:33+00:00"
 }
