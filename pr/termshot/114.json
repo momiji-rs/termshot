@@ -1,6 +1,6 @@
 {
  "base_ref": "main",
- "commit": "34dbcfcd070a019330a60ee03d3dcf48f7347db6",
+ "commit": "6083eec40604ada481799385e55a1f83a66305af",
  "shots": {
   "colors": {
    "json": "objects/fb/fb04f6d8e4d64bbfa7b916cc868ec6e1229912fdcbf7316bea767319ff7b2075.json",
@@ -36,5 +36,5 @@
   }
  },
  "termshot": "0.4.0",
- "updated": "2026-10-27T20:35:56+00:00"
+ "updated": "2026-10-27T20:44:02+00:00"
 }
