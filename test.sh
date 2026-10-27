@@ -335,6 +335,9 @@ printf '\033_Ga=T,i=1,c=3,r=1,w=10,h=31\033\\' > "$out/fraction.pty"
 ./termshot --cell auto --json - "$out/fraction.pty" >"$out/fraction.json" 2>"$out/fraction.err" || true
 check "--cell auto refuses a fractional cell" 'grep -q "not whole pixels" "$out/fraction.err"'
 expect 2 --cell auto --json - "$out/fraction.pty"
+printf '\033_Ga=t,i=7\033\\\033_Ga=p,i=7,p=1,y=0,w=32,h=31,c=2,r=1\033\\\033_Ga=p,i=7,p=2,y=32,w=32,h=31,c=2,r=1\033\\' > "$out/gap.pty"
+./termshot --size 10x4 --json - "$out/gap.pty" >"$out/gap.json" 2>"$out/gap.err"
+check "a skipped source row is reported" 'grep -q "leave 1 px of the source undrawn at y 31" "$out/gap.err"'
 ./termshot --text "$out/both.txt" --json "$out/both.json" "$log"
 check "--text and --json together match each alone" 'cmp -s "$out/both.txt" "$out/text-png.txt"'
 expect 2 --json - --text - "$log"
