@@ -619,6 +619,31 @@ mod tests {
     }
 
     #[test]
+    fn a_numbered_image_takes_the_lowest_id_nobody_has() {
+        // Id 3 is taken and 1 is free, so the numbered image is 1, not 4.
+        // A put of the hole at 2 names nothing.
+        let got = hints(&[
+            "a=t,i=3",
+            "a=t,I=9",
+            "a=p,i=1,c=1,r=1,w=8,h=8",
+            "a=p,i=2,c=2,r=1,w=32,h=32",
+        ]);
+        assert_eq!(got.cells, vec![cell(8, 8)]);
+        // The next numbered image fills the next hole.
+        let next = hints(&["a=t,i=3", "a=t,I=9", "a=t,I=8", "a=p,i=2,c=2,r=1,w=32,h=32"]);
+        assert_eq!(next.cells, vec![cell(16, 32)]);
+        // An uppercase delete drops the placement and keeps the id, so the
+        // image that follows is 2. Replay would reuse 1; this scan does not.
+        let kept = hints(&[
+            "a=T,I=5,c=2,r=1,w=32,h=32",
+            "a=d,d=I,i=1",
+            "a=t,I=9",
+            "a=p,i=2,c=1,r=1,w=8,h=8",
+        ]);
+        assert_eq!(kept.cells, vec![cell(8, 8)]);
+    }
+
+    #[test]
     fn a_narrow_cover_leaves_the_other_columns_a_gap() {
         // The second rectangle paints the left 4 columns through y 29. The
         // strip at y 20 uses columns 6..9, and rows 10..19 of those columns
