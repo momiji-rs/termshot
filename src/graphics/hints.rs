@@ -412,22 +412,42 @@ fn rows_drawn(samples: &[Sample], sample: &Sample, start: u32, next_y: u32) -> b
     if unknown || need.is_empty() {
         return false;
     }
-    cover.sort_unstable();
-    for (from, to) in need {
-        let mut at = from;
-        for &(lo, hi) in &cover {
-            if hi <= at {
-                continue;
-            }
-            if lo > at {
-                break;
-            }
-            at = hi;
-            if at >= to {
-                break;
-            }
+    // Touching ranges become one, so a stack of copies of the same strip is
+    // not checked once per copy. One merged cover then contains a need, or
+    // it does not.
+    merge_ranges(&mut need);
+    merge_ranges(&mut cover);
+    ranges_covered(&need, &cover)
+}
+
+/// Join ranges that touch or overlap.
+fn merge_ranges(ranges: &mut Vec<(u32, u32)>) {
+    if ranges.is_empty() {
+        return;
+    }
+    ranges.sort_unstable();
+    let mut merged = Vec::with_capacity(ranges.len());
+    let mut cur = ranges[0];
+    for &(lo, hi) in ranges.iter().skip(1) {
+        if lo <= cur.1 {
+            cur.1 = cur.1.max(hi);
+        } else {
+            merged.push(cur);
+            cur = (lo, hi);
         }
-        if at < to {
+    }
+    merged.push(cur);
+    *ranges = merged;
+}
+
+/// Every `need` range sits inside some `cover` range. Both are merged.
+fn ranges_covered(need: &[(u32, u32)], cover: &[(u32, u32)]) -> bool {
+    let mut i = 0;
+    for &(from, to) in need {
+        while i < cover.len() && cover[i].1 <= from {
+            i += 1;
+        }
+        if i >= cover.len() || cover[i].0 > from || cover[i].1 < to {
             return false;
         }
     }
@@ -715,6 +735,35 @@ mod tests {
                 SourceGap { image: Some(1), y: 15, rows: 5 },
             ]
         );
+    }
+
+    #[test]
+    fn repeated_strips_still_report_one_missing_column() {
+        // The same wide strip many times, and a one-column cover of every
+        // column but one. The copies merge, and the missing column stays a gap.
+        const N: u32 = 48;
+        let mut log = Vec::new();
+        log.extend(apc("a=t,i=1"));
+        let mut placement = 1u32;
+        for _ in 0..N {
+            log.extend(apc(&format!("a=p,i=1,p={placement},x=0,y=0,w={N},h=10,c=1,r=1")));
+            placement += 1;
+            log.extend(apc(&format!("a=p,i=1,p={placement},x=0,y=20,w={N},h=10,c=1,r=1")));
+            placement += 1;
+        }
+        for x in 0..N {
+            if x == 7 {
+                continue;
+            }
+            log.extend(apc(&format!("a=p,i=1,p={placement},x={x},y=0,w=1,h=30,c=1,r=1")));
+            placement += 1;
+        }
+        let got = placement_hints(&log);
+        let seam = SourceGap { image: Some(1), y: 10, rows: 10 };
+        assert!(got.gaps.contains(&seam), "{:?}", got.gaps);
+        log.extend(apc(&format!("a=p,i=1,p={placement},x=7,y=0,w=1,h=30,c=1,r=1")));
+        let filled = placement_hints(&log);
+        assert!(filled.gaps.is_empty(), "{:?}", filled.gaps);
     }
 
     #[test]
