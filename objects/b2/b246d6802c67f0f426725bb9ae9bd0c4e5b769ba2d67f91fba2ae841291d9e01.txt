@@ -1,0 +1,28 @@
+usage: termshot [options] <log> <out.png>
+       termshot [options] --text FILE --json FILE <log> [<out.png>]
+       termshot <log> <out.png> <font.ttf> [px] [cols] [rows]
+
+Render the final screen of a terminal log (raw PTY output, or an
+asciinema v2 or v3 .cast recording) as a PNG. Use - as <log> to read
+stdin, and - as an output to write stdout.
+
+options:
+  -f, --font FILE   TrueType or OpenType (CFF, CFF2) font (default:
+                    built-in JetBrains Mono)
+      --fallback-font FILE
+                    a font for the characters the first lacks, such
+                    as CJK or emoji; others are drawn as an empty box
+  -p, --px N        font pixel height, above 0 and below 256 (default 48);
+                    it picks a step of whole-pixel cell widths, so nearby
+                    values can draw alike (-v prints the cell)
+      --cell WxH|auto
+                    cell size in pixels, 1 to 1024 each, whatever the
+                    font's: for logs written for cells of that size, such
+                    as images placed by it. auto uses the size the log's
+                    kitty placements imply, when that is a whole number of
+                    pixels. The glyphs are centered in the cell, the
+                    largest that fit, or at --px if given, whose cell
+                    must fit
+  -s, --size CxR    grid size in columns x rows, up to 500x200 (default: a
+                    cast's size, else 100x30)
+      --cast        read <log> as an asciinema .cast; without it or --raw,
